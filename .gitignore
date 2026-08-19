@@ -6,6 +6,7 @@
 # Local release archives and recovered disk headers
 *.zip
 FHDBMBR*.BIN
+HDDMBR*.BIN
 
 # Editor and operating-system noise
 .DS_Store

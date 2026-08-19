@@ -1,6 +1,37 @@
 # Changelog
 
-All notable changes to FHDB Bootstrap Manager are documented here.
+All notable changes to PS2 HDD Bootstrap Manager are documented here.
+
+## [0.2.0-rc1] - 2026-08-19
+
+### Changed
+
+- Renamed the application from FHDB Bootstrap Manager to PS2 HDD Bootstrap Manager to reflect its broader scope.
+- Replaced automatic cross-card backup selection with an explicit `mc0`, `mc1`, or `mass` storage menu.
+- Changed new backup names to `HDDMBR.BIN` and `HDDMBR2.BIN` while retaining restoration compatibility with `FHDBMBR*.BIN` files from version 0.1.x.
+- Replaced the one-way exit screen with a power menu offering shutdown, restart to the PS2 Browser, or return to the manager.
+
+### Added
+
+- Embedded BDM/FatFs USB mass-storage support for `mass:` backups and payload loading.
+- Stock `MBR.XLF` structure validation and a 4 MiB safety limit.
+- Console-side MagicGate KELF signing through PS2SDK `secrman`, `secrsif`, and the selected PS2 memory card.
+- Manual MBR bootstrap installation to the reserved `__mbr` area beginning at sector `0x2000`.
+- Reserved-area capacity checks before any payload write.
+- Sector-by-sector post-flush verification of the complete signed payload.
+- Pointer-last activation: `osdStart` and `osdSize` are updated only after the payload has been written and verified.
+- English section comments throughout the expanded source.
+
+### Safety
+
+- Bootstrap installation is unavailable until the current pointer is disabled.
+- Every disable, restore, and install path requires a verified header backup and a distinct three-button confirmation chord.
+- Installation does not create partitions or copy the FHDB/HDD-OSD environment; it installs only the signed MBR program.
+
+### Validation status
+
+- The 0.1.1 disable path remains hardware-validated.
+- The new storage, USB, restart, signing, and payload-installation paths are released as a candidate pending real-console testing.
 
 ## [0.1.1] - 2026-08-19
 

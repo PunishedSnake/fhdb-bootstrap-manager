@@ -1,50 +1,97 @@
-# FHDB Bootstrap Manager
+# PS2 HDD Bootstrap Manager
 
-FHDB Bootstrap Manager is a small PlayStation 2 ELF that safely disables or restores the HDD bootstrap pointer stored in the APA `__mbr` header.
+PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, backing up, disabling, restoring, and installing the HDD OSD bootstrap stored in the APA `__mbr` partition.
 
-It exists because uninstalling Free HDBoot can remove the files while leaving the console enthusiastically trying to boot those now-missing files forever. Apparently, "uninstall" and "stop launching it" were separate optional features.
+It began as FHDB Bootstrap Manager after a real console got trapped in a post-uninstall boot loop: FHDB was gone, but the HDD bootstrap pointer was still enabled, so the PS2 kept trying to launch software that no longer existed. Apparently uninstalling a program and persuading the machine to stop booting it were separate premium features.
 
-## The problem it solves
+Version `0.2.0-rc1` broadens the tool into a general bootstrap manager. It can select `mc0:`, `mc1:`, or `mass:` for backups, restore compatible old backups, return to the PS2 Browser or power off, and prepare and install a stock `MBR.XLF` for manual FHDB or HDD-OSD setups.
 
-On a PS2 FAT configured for HDD boot, the ROM checks two fields in the APA master header:
+## Why this exists
+
+The PS2 ROM decides whether to launch an HDD update from two fields in the APA master header:
 
 - `osdStart`: the starting sector of the signed HDD bootstrap program;
-- `osdSize`: the size of that program.
+- `osdSize`: the program size in sectors.
 
-Some FHDB removal paths delete the software but leave these fields populated. The console still sees an enabled HDD update, attempts to execute a payload that is no longer usable, resets, and repeats the performance indefinitely. Removing the entire HDD works, naturally, because unplugging storage is apparently a perfectly reasonable uninstaller.
+If removal software deletes FHDB but leaves those fields populated, the ROM still sees an enabled update, attempts to execute a missing or unusable payload, resets, and repeats. The traditional recovery method is to disconnect the HDD, change a setting, or reach for increasingly archaeological utilities. Naturally, the difficult part turned out to be clearing two 32-bit values without treating the rest of the disk as acceptable collateral damage.
 
-This program clears only those two fields through PS2SDK's documented `HDIOC_SETOSDMBR` interface. It does not format the disk, rewrite the partition table manually, delete games, remove partitions, or change the console's EEPROM HDD-boot setting.
+Manual installation has the opposite problem. Copying an MBR program to a disk is not enough: the KELF/XLF must be signed through the PS2 security hardware, written into the reserved `__mbr` payload area, verified, and only then exposed to the ROM through the pointer. That procedure is perfectly reasonable if your preferred user interface is a collection of half-documented sector operations from different decades.
+
+This manager turns both jobs into explicit, guarded operations in one ELF.
+
+## Release-candidate status
+
+The original disable workflow was successfully tested on real hardware and eliminated an FHDB boot loop. The new `0.2.0-rc1` storage-selection, USB, restart, MagicGate-signing, and payload-installation paths build cleanly and follow the official installer algorithm, but still require hardware validation.
+
+Treat this release as a test build. Keep backups on another machine and do not use the installation function on a disk whose contents you cannot replace.
+
+## Features
+
+- Validates the complete 1024-byte APA `__mbr` header and checksum.
+- Rejects hybrid APA/GPT layouts.
+- Shows the current `osdStart` and `osdSize` values.
+- Lets the user select `mc0:`, `mc1:`, or `mass:` as the working storage device.
+- Creates and reads back a byte-for-byte header backup before any HDD-changing operation.
+- Disables only the bootstrap pointer through `HDIOC_SETOSDMBR`.
+- Restores a non-zero pointer only from a valid backup matched to the same disk.
+- Accepts legacy `FHDBMBR.BIN` and `FHDBMBR2.BIN` backups made by version `0.1.x`.
+- Structurally validates and MagicGate-signs a stock `MBR.XLF`.
+- Writes the signed payload only to the reserved `__mbr` area beginning at sector `0x2000`.
+- Flushes and compares every written payload sector before enabling its pointer.
+- Offers both a controlled power-off and a restart to the PS2 Browser.
+
+## What it deliberately does not do
+
+The manager does not format a disk, create APA partitions, install the FHDB or HDD-OSD file tree, copy applications, configure OSDSYS, or decide which third-party distribution you should trust this week.
+
+The `MBR.XLF` installation option installs only the signed MBR bootstrap program. The partitions and files expected by that program must already exist. Installing the bootstrap without its corresponding environment will merely give the ROM a beautifully verified way to launch something incomplete.
 
 ## Safety model
 
-The program deliberately refuses to write until all of the following are true:
+The manager refuses an HDD-changing operation unless the relevant safety checks pass.
 
-1. `hdd0:` reports a valid APA disk.
-2. The 1024-byte sector-zero header contains the `APA`, `__mbr`, and Sony MBR signatures.
-3. The APA checksum is valid.
-4. The disk is not using the hybrid APA/GPT layout.
-5. A complete header backup has been written to a memory card.
-6. That backup has been read back and compared byte for byte.
-7. The user confirms the operation with `L1 + R1 + X`.
+For every operation:
 
-After changing the pointer, the program flushes the HDD cache, reads the header again, validates its checksum again, and verifies that both fields contain the requested values.
+1. `hdd0:` must report a valid APA disk.
+2. The master header must contain the `APA`, `__mbr`, and Sony MBR signatures.
+3. The APA checksum must be valid.
+4. Hybrid APA/GPT layouts are rejected.
+5. A complete 1024-byte header backup must be saved to the selected device.
+6. The backup must be read back and compared byte for byte.
+7. The operation requires a distinct `L1 + R1 + action` confirmation chord.
+8. The final APA pointer is read back and verified.
 
-## Hardware validation
+The installation path adds these checks:
 
-Version 0.1.1 successfully removed a real post-uninstall FHDB boot loop on:
+1. Installation is available only while the current pointer is disabled.
+2. `MBR.XLF` must pass bounded KELF structure validation and be no larger than 4 MiB.
+3. The `__mbr` partition must report enough reserved capacity after sector `0x2000`.
+4. The payload must be signed successfully through a PS2 memory card and the console security hardware.
+5. The signed payload is written in two-sector chunks.
+6. The HDD cache is flushed and every written sector is compared with the signed buffer.
+7. `osdStart` and `osdSize` are set only after the payload passes read-back verification.
 
-- PlayStation 2 FAT `SCPH-50000` (Japanese model);
-- MechaPWN-enabled console;
-- cross-model Free McBoot memory card;
-- standard non-GPT APA HDD.
+No raw write is ever issued to sectors 0 or 1. Raw writes are used only for the reserved bootstrap payload area; the APA header itself is updated by the standard `ps2hdd` driver so its checksum is recalculated normally.
 
-The console subsequently cold-booted with the HDD connected and without entering the previous reset loop.
+## Preparing the files
 
-This is one confirmed hardware configuration, not a promise that every adapter, disk, ROM revision, or creative twenty-year-old storage arrangement will behave identically.
+Copy `PS2_HDD_BOOTSTRAP_MANAGER.ELF` somewhere your existing launcher can run it.
 
-## Usage
+For bootstrap installation, also copy the stock, unsigned `MBR.XLF` supplied with the matching FHDB/HDD-OSD installer to the root of the device you intend to select:
 
-If the current HDD bootstrap causes a boot loop, first enable this option in Free McBoot Configurator:
+```text
+mc0:/MBR.XLF
+mc1:/MBR.XLF
+mass:/MBR.XLF
+```
+
+Do not rename an ordinary ELF to `MBR.XLF`; the manager checks the KELF container and rejects plain ELF files. Use a payload from the installation package that matches the environment already present on the HDD.
+
+A genuine PS2 memory card is required for MagicGate signing. When `mc0:` or `mc1:` is selected, that card is used automatically. When `mass:` is selected, the manager asks whether `mc0` or `mc1` should perform the signing.
+
+## Recovering from an FHDB boot loop
+
+If the HDD bootstrap prevents a normal boot, first enable this option in Free McBoot Configurator:
 
 ```text
 Configure OSDSYS Options -> Skip HDD Update Check = ON
@@ -52,58 +99,93 @@ Configure OSDSYS Options -> Skip HDD Update Check = ON
 
 Then:
 
-1. Start the console with the HDD and FMCB memory card connected.
-2. Launch `FHDB_BOOTSTRAP_MANAGER.ELF` using wLaunchELF or an FMCB menu entry.
-3. Confirm that the program reports `APA header: valid` and shows non-zero `osdStart`/`osdSize` values.
-4. Press `X` to create and verify the memory-card backup.
-5. Keep the displayed backup file somewhere safe.
-6. Hold `L1 + R1` and press `X` to disable the bootstrap.
-7. Wait for `Bootstrap disabled and verified.` before powering off.
+1. Boot with the HDD and FMCB memory card connected.
+2. Launch `PS2_HDD_BOOTSTRAP_MANAGER.ELF` through wLaunchELF or an FMCB entry.
+3. Confirm that `APA header: valid` is shown with non-zero pointer values.
+4. Press `SELECT`, choose the backup device, and confirm with `X`.
+5. Press `X` on the main screen.
+6. Confirm that the displayed backup path is correct.
+7. Hold `L1 + R1` and press `X`.
+8. Wait for `Bootstrap disabled and verified.`
+9. Open the power menu and either power off or restart to the PS2 Browser.
 
-Do not reset or remove power while the HDD update is in progress.
+Do not reset or remove power while an HDD write or verification is in progress.
+
+## Installing a bootstrap payload
+
+This is intended for a manual FHDB or HDD-OSD setup whose required partitions and files already exist.
+
+1. Make sure the current HDD bootstrap pointer is disabled. If it is enabled, back it up and disable it first.
+2. Put the correct stock `MBR.XLF` in the root of `mc0:`, `mc1:`, or `mass:`.
+3. Select that storage device with `SELECT`.
+4. Press `CIRCLE`.
+5. If using `mass:`, select the PS2 memory card used for MagicGate signing.
+6. Review the source, backup, target sector, byte size, and sector count.
+7. Hold `L1 + R1` and press `CIRCLE`.
+8. Wait until both the payload and pointer report successful verification.
+9. Restart only after confirming that the expected HDD environment is complete.
 
 ## Controls
 
-| Input | Action |
-|---|---|
-| `X` | Back up the active header and prepare to disable the bootstrap |
-| `L1 + R1 + X` | Confirm disabling the bootstrap |
-| `Square` | Load a matching backup when the bootstrap is disabled |
-| `L1 + R1 + Square` | Confirm restoring the saved pointer |
-| `Triangle` | Cancel or shut down without further changes |
+| Context | Input | Action |
+|---|---|---|
+| Main menu | `SELECT` | Choose `mc0`, `mc1`, or `mass` |
+| Enabled bootstrap | `X` | Back up and prepare to disable |
+| Disable confirmation | `L1 + R1 + X` | Clear the active pointer |
+| Disabled bootstrap | `SQUARE` | Load a matching backup |
+| Restore confirmation | `L1 + R1 + SQUARE` | Restore the saved pointer |
+| Disabled bootstrap | `CIRCLE` | Load, sign, and prepare to install `MBR.XLF` |
+| Install confirmation | `L1 + R1 + CIRCLE` | Write, verify, and enable the payload |
+| Main menu | `TRIANGLE` | Open the power/restart menu |
+| Confirmation screens | `TRIANGLE` | Cancel without the pending write |
 
-## Backups and restoration
+## Backups
 
-The first available matching path is used:
+New backups use the first available path on the selected device:
 
 ```text
-mc0:/FHDBMBR.BIN
-mc0:/FHDBMBR2.BIN
-mc1:/FHDBMBR.BIN
-mc1:/FHDBMBR2.BIN
+<device>:/HDDMBR.BIN
+<device>:/HDDMBR2.BIN
 ```
 
-Existing unrelated backups are not overwritten. A restoration backup must:
+Existing unrelated files are not overwritten. Diagnostic value `999998` means a slot was occupied and deliberately preserved.
 
-- be exactly 1024 bytes;
-- contain a valid standard APA master header;
-- have a valid checksum;
-- contain non-zero bootstrap fields;
-- match the currently connected disk, ignoring only the checksum and the two fields being restored.
+Restoration also searches the old version `0.1.x` names on the selected device:
 
-Keep a second copy of the backup on a PC. The program preserves the original pointer, but it does not preserve files that another tool, a dying disk, or an unusually determined user deletes later.
+```text
+<device>:/FHDBMBR.BIN
+<device>:/FHDBMBR2.BIN
+```
 
-## Technical operation
+A restoration backup must be exactly 1024 bytes, contain a valid standard APA master header, contain non-zero bootstrap fields, and match the currently connected disk except for the checksum and mutable pointer fields.
 
-The program embeds the required PS2SDK IOP modules and uses:
+Keep another copy on a PC. The manager can preserve a header; it cannot negotiate with a dying drive, an incorrect payload, or a user who has decided that backups are a form of pessimism.
 
-- `HDIOC_READSECTOR` (`0x6836`) to read sectors 0 and 1;
-- `HDIOC_SETOSDMBR` (`0x6833`) to set `osdStart` and `osdSize`;
-- `HDIOC_FLUSH` (`0x4804`) to flush the device cache.
+## Technical details
 
-Disabling sends `{ start = 0, size = 0 }` to `HDIOC_SETOSDMBR`. The standard `ps2hdd` driver updates the fields through its APA cache and recalculates the header checksum when the dirty header is written.
+The manager embeds its PS2SDK IOP dependencies, including the fileXio stack, free memory-card drivers, `secrman`/`secrsif`, BDM/FatFs USB mass storage, poweroff, DEV9, ATA, and APA HDD drivers.
 
-No raw-sector write command is used.
+The primary device calls are:
+
+- `HDIOC_READSECTOR` (`0x6836`) for the APA header and payload read-back;
+- `HDIOC_WRITESECTOR` (`0x6837`) only for the reserved payload area at sector `0x2000` and above;
+- `HDIOC_SETOSDMBR` (`0x6833`) for `osdStart` and `osdSize`;
+- `HDIOC_FLUSH` (`0x4804`) before verification;
+- `SecrDownloadFile()` through `secrman`/`secrsif` for console-side KELF signing;
+- `ExecOSD("BootBrowser")` for the restart option.
+
+The payload-write order follows the Free McBoot installer design: sign the KELF, write sector-aligned chunks into the reserved area, and record the final start and size in the APA header. This implementation adds a mandatory backup, size/bounds checks, a disabled-pointer prerequisite, a full post-flush payload comparison, and pointer-last activation.
+
+## Hardware validation
+
+The original `0.1.1` disable workflow successfully removed a real post-uninstall FHDB boot loop on:
+
+- PlayStation 2 FAT `SCPH-50000` (Japanese model);
+- MechaPWN-enabled console;
+- cross-model Free McBoot memory card;
+- standard non-GPT APA HDD.
+
+The console subsequently cold-booted with the HDD connected. The new `0.2.0-rc1` features await hardware results; reports should include the console model, adapter, storage device, selected path, exact on-screen message, and whether the HDD environment was FHDB or HDD-OSD.
 
 ## Building
 
@@ -116,12 +198,12 @@ export PATH="$PATH:$PS2DEV/bin:$PS2DEV/ee/bin:$PS2DEV/iop/bin:$PS2SDK/bin"
 make release
 ```
 
-The resulting file is `FHDB_BOOTSTRAP_MANAGER.ELF`. Release 0.1.1 was built with the official PS2DEV v2.0.0 prebuilt toolchain.
+The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Release candidate `0.2.0-rc1` was built with the official PS2DEV v2.0.0 prebuilt toolchain.
 
-## Version 0.1.1 checksum
+SHA-256:
 
 ```text
-SHA-256  bba8de49d535adc7a91fd1ff08ee7eacbdad0c297273e963e76610d022f28e59
+db288182e60386afc56e76a6bebcc24ac28a0f3f8869d6419163d9e8a22690b6
 ```
 
 ## License
@@ -130,6 +212,6 @@ The application source is released under the MIT License. Embedded PS2SDK module
 
 ## Acknowledgements
 
-- PS2DEV and PS2SDK contributors for documenting and implementing the APA HDD interfaces.
-- The Free McBoot/FHDB community for keeping the PS2 useful long after its warranty stopped being emotionally relevant.
-- PunishedSnake for reproducing the failure, testing both builds on real hardware, preserving the original header, and confirming the successful cold boot.
+- PS2DEV and PS2SDK contributors for the APA, USB, security, and console services.
+- Free McBoot/FHDB contributors for the original signing and MBR installation workflow.
+- PunishedSnake for reproducing the failure, preserving the disk header, testing on real hardware, and proving that two fields can indeed defeat a problem that survived for years.
