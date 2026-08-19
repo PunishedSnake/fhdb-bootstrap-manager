@@ -2,6 +2,37 @@
 
 All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
+## [0.3.0-rc1] - 2026-08-20
+
+### Added
+
+- Added versioned `HDDRESCUE.BIN` / `HDDRESCUE2.BIN` capsules containing the complete APA master header and exact active bootstrap sectors.
+- Added SHA-256 verification for both the embedded header and sector-aligned payload image, plus a separate fingerprint of the unpadded KELF.
+- Added full rescue restoration that writes and compares the payload before enabling its saved pointer.
+- Added a read-only boot-chain inspector available with `R1`.
+- Added probable FHDB, PSBBN/OSDMenu, HOSDMenu/HDD-OSD, custom OSDMenu, invalid-KELF, and unknown-payload classification with explicit confidence labels.
+- Added ROMVER and regional FMCB-folder detection.
+- Added scans for `OSDSYS_Skip_HDD`/legacy `Skip_HDD` and exact `hddload.irx`, `dev9.irx`, and `atad.irx` locations across both memory cards and all known regional folders.
+- Added read-only inspection of `__sysconf`, `__system`, OSDMenu `boot_auto`, downstream executables, and characteristic PSBBN partitions.
+- Added a separate `BOOTCHAIN.TXT` report and append-only `HDDMAN.LOG` on the selected `mc0:`, `mc1:`, or `mass:` device.
+- Added automatic storage selection from the ELF launch path and a USB-mount retry window for reports, logs, and rescue files.
+- Added portable host tests for SHA-256 and the endian-stable capsule format.
+- Added `RESCUE_FORMAT.md` as the format specification for external inspection and future compatibility.
+
+### Safety
+
+- Full capsules are accepted only after metadata, length, flags, APA structure, both SHA-256 digests, same-disk identity, KELF structure, and current `__mbr` bounds checks pass.
+- A damaged or wrong-disk rescue capsule blocks silent fallback to a pointer-only restore.
+- Legacy pointer-only restoration now validates the target range and creates a fresh current-state safety backup before changing the pointer.
+- An explicit OSDMenu `boot_auto` target takes precedence over stale partition evidence during classification.
+- Rescue restoration and installation both retain pointer-last activation.
+
+### Validation status
+
+- Cross-compiles cleanly with `-Wall -Wextra -Werror` using the official PS2DEV v2.0.0 toolchain.
+- Portable SHA-256 and capsule-format tests pass on the host.
+- New full-rescue and diagnostic paths are released as a candidate pending real-console testing; the underlying `0.2.0` workflows remain hardware-validated.
+
 ## [0.2.0] - 2026-08-19
 
 ### Changed

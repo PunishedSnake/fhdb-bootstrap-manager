@@ -1,31 +1,49 @@
-# PS2 HDD Bootstrap Manager 0.2.0
+# PS2 HDD Bootstrap Manager 0.3.0-rc1
 
-The small FHDB boot-loop repair tool has grown into a general PS2 HDD bootstrap manager, because apparently once you safely clear two fields you become responsible for the entire lifecycle of those fields.
+The bootstrap manager can now preserve the program behind the pointer, not merely the pointer and a firm belief that its sectors will remain fine forever.
 
-The release candidates survived the console, the disk survived the release candidates, and the backup manager now contains a standalone backup action. This first full release provides selectable `mc0:`, `mc1:`, and `mass:` storage, controlled shutdown or restart, legacy-backup restoration, and guarded installation of a stock `MBR.XLF` for manual FHDB/HDD-OSD setups.
+This release candidate adds a complete rescue capsule, full payload restoration, a read-only boot-chain inspector, and persistent diagnostics on `mass:`, `mc0:`, or `mc1:`. It attempts to distinguish FHDB, PSBBN/OSDMenu, HOSDMenu/HDD-OSD, custom OSDMenu, and unknown payloads from KELF structure plus downstream filesystem evidence.
 
 ## Highlights
 
-- Select the working storage device instead of letting the program guess.
-- Press `START` to save and verify the current APA master header without modifying the HDD, regardless of whether the bootstrap pointer is enabled or disabled.
-- Save and verify backups as `HDDMBR.BIN` or `HDDMBR2.BIN` on memory card or USB.
-- Restore compatible `FHDBMBR*.BIN` files created by version 0.1.x.
-- Restart directly to the PS2 Browser or power off cleanly.
-- Validate a stock `MBR.XLF` and reject plain or malformed files.
-- Sign the KELF through the console security hardware and a genuine PS2 memory card.
-- Write only to the reserved `__mbr` payload area at sector `0x2000` and above.
-- Flush and compare the complete signed payload before enabling its APA pointer.
-- Require a verified header backup and `L1 + R1 + CIRCLE` before installation.
+- `START` saves both the traditional 1024-byte APA header backup and a versioned `HDDRESCUE*.BIN` capsule.
+- An enabled bootstrap capsule includes every referenced payload sector, the unpadded KELF length, metadata, and SHA-256 digests.
+- `SQUARE` prefers a valid same-disk full capsule and restores the payload before enabling its pointer.
+- A corrupt or wrong-disk capsule is reported instead of silently falling through to an older pointer-only restore.
+- `R1` scans the boot chain and writes a standalone `BOOTCHAIN.TXT` report.
+- `HDDMAN.LOG` records ordered session diagnostics and write results.
+- The selected destination is inferred from the ELF launch path and can still be changed with `SELECT`.
+- The inspector checks ROMVER, all regional FMCB folders, `OSDSYS_Skip_HDD`, external HDD modules, OSDMenu configuration, PFS next-stage files, and characteristic PSBBN partitions.
+- Explicit OSDMenu `boot_auto` configuration wins over stale partition evidence.
+- Portable SHA-256 and capsule-format tests are included in the source tree.
 
-## Important limitation
+## Files written to the selected device
 
-The installation option installs only the MBR bootstrap program. It does not format the disk, create APA partitions, install FHDB/HDD-OSD files, or repair an incomplete environment. Use the `MBR.XLF` that belongs to the setup already present on the HDD.
+```text
+HDDMBR.BIN / HDDMBR2.BIN          1024-byte APA header backups
+HDDRESCUE.BIN / HDDRESCUE2.BIN    versioned header + payload capsules
+HDDMAN.LOG                         append-only session diagnostics
+BOOTCHAIN.TXT                      latest complete boot-chain report
+```
+
+Existing differing backup and capsule files are preserved. A session log at or above 128 KiB is replaced at the next flush; `BOOTCHAIN.TXT` always represents the latest scan.
+
+## Identification limits
+
+The manager does not pretend encrypted KELFs contain convenient plaintext name tags. Family names are probable classifications derived from structural validation and observable downstream files. The report includes confidence and the exact evidence, allowing a human to disagree with the machine in an informed manner—a feature apparently considered optional by several generations of boot tools.
+
+## Safety changes
+
+- Capsule metadata, size relationships, flags, APA header, same-disk identity, KELF structure, payload bounds, and SHA-256 digests must all validate before full restoration.
+- Payload sectors are written, flushed, and compared before the APA pointer is enabled.
+- Legacy pointer-only restoration now validates the saved range and creates a fresh safety backup first.
+- Raw writes remain confined to the reserved `__mbr` payload area; sectors 0 and 1 are never raw-written.
 
 ## Validation status
 
-The completed `0.2.0` manager was exercised successfully on real PlayStation 2 hardware. The original disable workflow eliminated a real FHDB post-uninstall boot loop on an SCPH-50000, and the final storage-selection and standalone-backup workflow was verified with `mass:` without modifying HDD data. Hifu Himejima reports the complete manager working as intended.
+The source cross-compiles cleanly with `-Wall -Wextra -Werror`, and the portable SHA-256/capsule tests pass. The underlying `0.2.0` workflows are hardware-validated; the new full-rescue and diagnostic paths are release-candidate functionality awaiting real-console testing by Hifu Himejima.
 
-Read `README.md` before using the install option and keep a copy of the generated header backup on another machine.
+Read `README.md` and `RESCUE_FORMAT.md` before testing. Keep copies of generated backups on another machine.
 
 ## Included asset
 
@@ -34,5 +52,5 @@ Read `README.md` before using the install option and keep a copy of the generate
 SHA-256:
 
 ```text
-9f41f9cfc647e1f21db0a02b39c2fe04a4842f5d052bfba7c93da45a77d9ae48
+b86acd338883418561b97c006d8cc2715336425490f931168f617eea8adc3c05
 ```

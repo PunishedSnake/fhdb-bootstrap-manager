@@ -2,11 +2,15 @@
 *.o
 *_irx.c
 *.ELF
+/tests/test_formats
 
 # Local release archives and recovered disk headers
 *.zip
 FHDBMBR*.BIN
 HDDMBR*.BIN
+HDDRESCUE*.BIN
+HDDMAN.LOG
+BOOTCHAIN.TXT
 
 # Editor and operating-system noise
 .DS_Store

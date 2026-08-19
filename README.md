@@ -2,9 +2,9 @@
 
 PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, backing up, disabling, restoring, and installing the HDD OSD bootstrap stored in the APA `__mbr` partition.
 
-It began as FHDB Bootstrap Manager after a real console got trapped in a post-uninstall boot loop: FHDB was gone, but the HDD bootstrap pointer was still enabled, so the PS2 kept trying to launch software that no longer existed. Apparently uninstalling a program and persuading the machine to stop booting it were separate premium features.
+It began after a real console got trapped in a post-uninstall FHDB boot loop: FHDB was gone, but the bootstrap pointer was still enabled, so the machine faithfully rebooted into software that no longer existed. Apparently uninstalling a program and persuading the console to stop launching it were separate premium features.
 
-Version `0.2.0` broadens the tool into a general bootstrap manager. It can independently back up the current APA master header, select `mc0:`, `mc1:`, or `mass:` for storage, restore compatible old backups, return to the PS2 Browser or power off, and prepare and install a stock `MBR.XLF` for manual FHDB or HDD-OSD setups.
+Version `0.3.0-rc1` adds two larger pieces that the old PS2 HDD tool pile somehow never put in one place: a complete, verifiable backup of the active MBR payload and a read-only boot-chain inspector. It also writes a session log and a separate boot-chain report to `mass:`, `mc0:`, or `mc1:`—because diagnosing a twenty-year-old encrypted boot path exclusively from photographs of a CRT was becoming a little too authentic.
 
 ## Why this exists
 
@@ -13,72 +13,78 @@ The PS2 ROM decides whether to launch an HDD update from two fields in the APA m
 - `osdStart`: the starting sector of the signed HDD bootstrap program;
 - `osdSize`: the program size in sectors.
 
-If removal software deletes FHDB but leaves those fields populated, the ROM still sees an enabled update, attempts to execute a missing or unusable payload, resets, and repeats. The traditional recovery method is to disconnect the HDD, change a setting, or reach for increasingly archaeological utilities. Naturally, the difficult part turned out to be clearing two 32-bit values without treating the rest of the disk as acceptable collateral damage.
+If removal software deletes FHDB but leaves those fields populated, the ROM still sees an enabled update, attempts to execute a missing or unusable payload, resets, and repeats. The traditional recovery method is to disconnect the HDD, change a setting, or reach for increasingly archaeological utilities. The difficult part, naturally, was clearing two 32-bit values without treating the rest of the disk as acceptable collateral damage.
 
-Manual installation has the opposite problem. Copying an MBR program to a disk is not enough: the KELF/XLF must be signed through the PS2 security hardware, written into the reserved `__mbr` payload area, verified, and only then exposed to the ROM through the pointer. That procedure is perfectly reasonable if your preferred user interface is a collection of half-documented sector operations from different decades.
+A 1024-byte header backup preserves the pointer, but it does not preserve the program to which that pointer refers. Version `0.3.0-rc1` therefore adds a rescue capsule containing the APA master header, the exact sector-aligned active payload, metadata, and SHA-256 digests. Restoration writes and verifies the payload first and exposes it to the ROM only after that verification succeeds.
 
-This manager turns both jobs into explicit, guarded operations in one ELF.
+Manual installation has the opposite problem. Copying an MBR program to a disk is not enough: the KELF/XLF must be signed through the PS2 security hardware, written into the reserved `__mbr` payload area, verified, and only then exposed through the APA pointer. This manager turns those jobs into explicit guarded operations in one ELF.
 
 ## Release status
 
-The original disable workflow eliminated a real FHDB boot loop, and the completed `0.2.0` manager has now been exercised successfully on real PlayStation 2 hardware. Storage selection, standalone verified backups, USB mass storage, restart and shutdown handling, restoration, MagicGate signing, and guarded payload installation were reported working as intended.
+`0.3.0-rc1` is a release candidate. The complete `0.2.0` manager—including selectable USB storage, standalone header backup, disable, restore, restart, shutdown, MagicGate signing, and guarded installation—was exercised successfully on real PlayStation 2 hardware.
 
-This is the first full release. Keep important backups on another machine anyway, because passing a hardware test does not make twenty-year-old disks immortal or user-selected payloads clairvoyant.
+The new full-payload rescue and boot-chain inspection paths compile cleanly with warnings treated as errors and their portable SHA-256/capsule code passes host-side tests. They still need the same real-console validation that promoted `0.2.0` from archaeology experiment to working archaeology experiment. Keep irreplaceable data copied elsewhere.
 
 ## Features
 
 - Validates the complete 1024-byte APA `__mbr` header and checksum.
 - Rejects hybrid APA/GPT layouts.
 - Shows the current `osdStart` and `osdSize` values.
-- Lets the user select `mc0:`, `mc1:`, or `mass:` as the working storage device.
-- Provides a dedicated `START` action that saves and verifies the current 1024-byte APA master header without modifying the HDD.
-- Creates and reads back a byte-for-byte header backup before any HDD-changing operation.
+- Selects `mc0:`, `mc1:`, or `mass:` for backups, payloads, logs, and reports.
+- Automatically selects the launch device when `argv[0]` begins with `mc0:`, `mc1:`, or `mass:`.
+- Creates and verifies a legacy-compatible 1024-byte header backup without modifying the HDD.
+- Creates a versioned full rescue capsule containing the header and exact active payload sectors.
+- Protects both capsule parts with SHA-256 and verifies the saved file by reading it back.
+- Restores a full capsule payload first, verifies every sector, and enables its pointer last.
 - Disables only the bootstrap pointer through `HDIOC_SETOSDMBR`.
-- Restores a non-zero pointer only from a valid backup matched to the same disk.
-- Accepts legacy `FHDBMBR.BIN` and `FHDBMBR2.BIN` backups made by version `0.1.x`.
+- Restores compatible `HDDMBR*.BIN` and old `FHDBMBR*.BIN` pointer backups.
 - Structurally validates and MagicGate-signs a stock `MBR.XLF`.
-- Writes the signed payload only to the reserved `__mbr` area beginning at sector `0x2000`.
-- Flushes and compares every written payload sector before enabling its pointer.
-- Offers both a controlled power-off and a restart to the PS2 Browser.
+- Writes signed payloads only inside the reserved `__mbr` payload area.
+- Produces `HDDMAN.LOG` and a separate `BOOTCHAIN.TXT` report.
+- Fingerprints both the sector image and unpadded KELF with SHA-256.
+- Inspects FMCB `OSDSYS_Skip_HDD` (and the legacy `Skip_HDD` spelling), regional memory-card HDD modules, `__sysconf`, `__system`, OSDMenu configuration, and characteristic PSBBN partitions.
+- Distinguishes probable FHDB, PSBBN/OSDMenu, HDD-OSD/HOSDMenu, custom OSDMenu, invalid, and unknown boot chains where the observable evidence permits it.
+- Offers controlled power-off and restart to the PS2 Browser.
 
 ## What it deliberately does not do
 
-The manager does not format a disk, create APA partitions, install the FHDB or HDD-OSD file tree, copy applications, configure OSDSYS, or decide which third-party distribution you should trust this week.
+The manager does not format a disk, create APA partitions, install the FHDB, PSBBN, or HDD-OSD file tree, copy applications, repair PFS filesystems, or decide which third-party distribution you should trust this week.
 
-The `MBR.XLF` installation option installs only the signed MBR bootstrap program. The partitions and files expected by that program must already exist. Installing the bootstrap without its corresponding environment will merely give the ROM a beautifully verified way to launch something incomplete.
+The `MBR.XLF` installation option installs only the signed MBR bootstrap program. The partitions and files expected by that program must already exist. Installing the bootstrap without its corresponding environment merely gives the ROM a beautifully verified way to launch something incomplete.
+
+The family detector is evidence-based, not clairvoyant. Signed KELFs are encrypted; the manager validates their structure and correlates them with downstream files and configuration. `BOOTCHAIN.TXT` labels the result as probable and records the evidence used instead of inventing certainty from encrypted bytes.
 
 ## Safety model
 
 The manager refuses an HDD-changing operation unless the relevant safety checks pass.
 
-For every operation:
+For every write path:
 
 1. `hdd0:` must report a valid APA disk.
 2. The master header must contain the `APA`, `__mbr`, and Sony MBR signatures.
 3. The APA checksum must be valid.
 4. Hybrid APA/GPT layouts are rejected.
-5. A complete 1024-byte header backup must be saved to the selected device.
-6. The backup must be read back and compared byte for byte.
-7. The operation requires a distinct `L1 + R1 + action` confirmation chord.
-8. The final APA pointer is read back and verified.
+5. A complete 1024-byte current header backup must be saved and read back before the write.
+6. The operation requires a distinct `L1 + R1 + action` confirmation chord.
+7. The final APA pointer is read back and verified.
 
-The installation path adds these checks:
+Full rescue restoration adds these rules:
 
-1. Installation is available only while the current pointer is disabled.
-2. `MBR.XLF` must pass bounded KELF structure validation and be no larger than 4 MiB.
-3. The `__mbr` partition must report enough reserved capacity after sector `0x2000`.
-4. The payload must be signed successfully through a PS2 memory card and the console security hardware.
-5. The signed payload is written in two-sector chunks.
-6. The HDD cache is flushed and every written sector is compared with the signed buffer.
-7. `osdStart` and `osdSize` are set only after the payload passes read-back verification.
+1. The capsule metadata, size, flags, header digest, and payload digest must validate.
+2. Its APA header must match the currently connected disk, excluding checksum and mutable pointer fields.
+3. The payload range must fit the current `__mbr` partition.
+4. The complete payload is written and compared before `osdStart`/`osdSize` are enabled.
+5. A damaged or wrong-disk capsule blocks silent fallback to a pointer-only restore.
 
-No raw write is ever issued to sectors 0 or 1. Raw writes are used only for the reserved bootstrap payload area; the APA header itself is updated by the standard `ps2hdd` driver so its checksum is recalculated normally.
+Installation additionally requires a structurally valid KELF no larger than 4 MiB, sufficient reserved capacity, successful console-side MagicGate signing, a full post-flush payload comparison, and pointer-last activation.
+
+No raw write is issued to sectors 0 or 1. Raw writes are confined to the reserved bootstrap payload area; the APA header is updated by the standard `ps2hdd` driver so its checksum is recalculated normally.
 
 ## Preparing the files
 
-Copy `PS2_HDD_BOOTSTRAP_MANAGER.ELF` somewhere your existing launcher can run it.
+Copy `PS2_HDD_BOOTSTRAP_MANAGER.ELF` somewhere your existing launcher can run it. Launching it from USB automatically selects `mass:`; launching it from a memory card automatically selects that card. You can change the destination later with `SELECT`.
 
-For bootstrap installation, also copy the stock, unsigned `MBR.XLF` supplied with the matching FHDB/HDD-OSD installer to the root of the device you intend to select:
+For bootstrap installation, also copy the stock unsigned `MBR.XLF` supplied with the matching FHDB/HDD-OSD installer to the root of the selected device:
 
 ```text
 mc0:/MBR.XLF
@@ -86,21 +92,19 @@ mc1:/MBR.XLF
 mass:/MBR.XLF
 ```
 
-Do not rename an ordinary ELF to `MBR.XLF`; the manager checks the KELF container and rejects plain ELF files. Use a payload from the installation package that matches the environment already present on the HDD.
-
-A genuine PS2 memory card is required for MagicGate signing. When `mc0:` or `mc1:` is selected, that card is used automatically. When `mass:` is selected, the manager asks whether `mc0` or `mc1` should perform the signing.
+Do not rename an ordinary ELF to `MBR.XLF`; the manager checks the KELF container and rejects plain ELF files. A genuine PS2 memory card is required for MagicGate signing. If `mass:` is selected, the manager asks whether `mc0` or `mc1` should perform the signing.
 
 ## Recovering from an FHDB boot loop
 
-If the HDD bootstrap prevents a normal boot, first enable this option in Free McBoot Configurator:
+First enable this option in Free McBoot Configurator:
 
 ```text
 Configure OSDSYS Options -> Skip HDD Update Check = ON
 ```
 
-On some Free McBoot configurations, that option alone does not stop the console from loading the HDD. If the PS2 still attempts to boot from the HDD, the active FMCB memory card may be loading its HDD support modules from `BIEXEC-SYSTEM` before or independently of the OSDSYS setting.
+On some Free McBoot configurations, that option alone does not stop HDD loading. If the console still attempts to boot from the disk, the active FMCB card may load HDD support modules from its regional system folder before or independently of the OSDSYS setting.
 
-With the HDD disconnected if necessary, use wLaunchELF to back up and then remove these files from `BIEXEC-SYSTEM` on the memory card containing FMCB:
+With the HDD disconnected if necessary, use wLaunchELF to back up and then remove these files from the active FMCB folder:
 
 ```text
 mc0:/BIEXEC-SYSTEM/hddload.irx
@@ -108,104 +112,125 @@ mc0:/BIEXEC-SYSTEM/dev9.irx
 mc0:/BIEXEC-SYSTEM/atad.irx
 ```
 
-If FMCB is installed on the card in slot 2, use the equivalent `mc1:/BIEXEC-SYSTEM/` paths. These are files on the memory card, not files on the HDD. Keep a copy so they can be restored later if required.
+Use `mc1:` for a card in slot 2. Cross-model cards may instead use `BAEXEC-SYSTEM`, `BEEXEC-SYSTEM`, or `BCEXEC-SYSTEM`; `BOOTCHAIN.TXT` checks every known regional folder and lists each module it finds. These are memory-card files, not HDD files. Keep copies so they can be restored later.
 
-After removing the modules, power the console off completely, reconnect the HDD, boot through FMCB, and launch the manager. This workaround is necessary only when `Skip HDD Update Check = ON` does not actually prevent HDD loading.
+Then cold-boot with the HDD attached, launch the manager, confirm that the APA header is valid, select a backup destination, press `X`, review the paths, and confirm with `L1 + R1 + X`. Do not reset or remove power while a write or verification is in progress.
 
-Then:
+## Inspecting the boot chain
 
-1. Boot with the HDD and FMCB memory card connected.
-2. Launch `PS2_HDD_BOOTSTRAP_MANAGER.ELF` through wLaunchELF or an FMCB entry.
-3. Confirm that `APA header: valid` is shown with non-zero pointer values.
-4. Press `SELECT`, choose the backup device, and confirm with `X`.
-5. Press `X` on the main screen.
-6. Confirm that the displayed backup path is correct.
-7. Hold `L1 + R1` and press `X`.
-8. Wait for `Bootstrap disabled and verified.`
-9. Open the power menu and either power off or restart to the PS2 Browser.
+Press `R1` from the main menu. The scan is read-only and saves two files to the selected device:
 
-Do not reset or remove power while an HDD write or verification is in progress.
+```text
+<device>:/HDDMAN.LOG
+<device>:/BOOTCHAIN.TXT
+```
 
-## Installing a bootstrap payload
+`BOOTCHAIN.TXT` is replaced with the latest complete scan. It records:
 
-This is intended for a manual FHDB or HDD-OSD setup whose required partitions and files already exist.
+- ROMVER and the expected regional FMCB folder;
+- APA pointer state and bounds-check results;
+- sector-image and unpadded-KELF SHA-256 fingerprints;
+- KELF structural validation;
+- the probable bootstrap family, confidence, and next stage;
+- `OSDSYS_Skip_HDD`/`Skip_HDD` values found on `mc0:`, `mc1:`, and `mass:`;
+- exact `hddload.irx`, `dev9.irx`, and `atad.irx` locations;
+- FHDB, OSDMenu, PSBBN, HOSDMenu, HDD-OSD, and legacy downstream evidence.
 
-1. Make sure the current HDD bootstrap pointer is disabled. If it is enabled, back it up and disable it first.
-2. Put the correct stock `MBR.XLF` in the root of `mc0:`, `mc1:`, or `mass:`.
-3. Select that storage device with `SELECT`.
-4. Press `CIRCLE`.
-5. If using `mass:`, select the PS2 memory card used for MagicGate signing.
-6. Review the source, backup, target sector, byte size, and sector count.
-7. Hold `L1 + R1` and press `CIRCLE`.
-8. Wait until both the payload and pointer report successful verification.
-9. Restart only after confirming that the expected HDD environment is complete.
+`HDDMAN.LOG` is an ordered session log for initialization, scans, backups, validation failures, and write results. New entries are appended; a log at or above 128 KiB is replaced on the next flush. USB writes receive a short retry window while `mass:` finishes mounting.
 
-## Controls
+## Backups and rescue capsules
 
-| Context | Input | Action |
-|---|---|---|
-| Main menu | `START` | Save and verify the current MBR header without changing the HDD |
-| Main menu | `SELECT` | Choose `mc0`, `mc1`, or `mass` |
-| Enabled bootstrap | `X` | Back up and prepare to disable |
-| Disable confirmation | `L1 + R1 + X` | Clear the active pointer |
-| Disabled bootstrap | `SQUARE` | Load a matching backup |
-| Restore confirmation | `L1 + R1 + SQUARE` | Restore the saved pointer |
-| Disabled bootstrap | `CIRCLE` | Load, sign, and prepare to install `MBR.XLF` |
-| Install confirmation | `L1 + R1 + CIRCLE` | Write, verify, and enable the payload |
-| Main menu | `TRIANGLE` | Open the power/restart menu |
-| Confirmation screens | `TRIANGLE` | Cancel without the pending write |
+Press `START` at any time. No HDD data is modified.
 
-## Backups
-
-Press `START` on the main menu to make a standalone backup at any time, regardless of whether the bootstrap pointer is enabled or disabled. This reads the current 1024-byte APA master header, saves it to the selected storage device, reads it back, and compares every byte. It does not write to the HDD.
-
-New backups use the first available path on the selected device:
+The manager first saves the current APA master header under the first available name:
 
 ```text
 <device>:/HDDMBR.BIN
 <device>:/HDDMBR2.BIN
 ```
 
-Existing unrelated files are not overwritten. Diagnostic value `999998` means a slot was occupied and deliberately preserved.
-
-Restoration also searches the old version `0.1.x` names on the selected device:
+It then saves a versioned rescue capsule under the first available name:
 
 ```text
-<device>:/FHDBMBR.BIN
-<device>:/FHDBMBR2.BIN
+<device>:/HDDRESCUE.BIN
+<device>:/HDDRESCUE2.BIN
 ```
 
-A restoration backup must be exactly 1024 bytes, contain a valid standard APA master header, contain non-zero bootstrap fields, and match the currently connected disk except for the checksum and mutable pointer fields.
+When the pointer is enabled, the capsule includes the exact sector-aligned active payload. When it is disabled, the capsule is header-only and documents that state. Existing differing files are preserved rather than overwritten. Keep another copy on a PC; the manager can preserve bytes, but it cannot negotiate with a dying disk or a USB stick that has embraced entropy.
 
-Keep another copy on a PC. The manager can preserve a header; it cannot negotiate with a dying drive, an incorrect payload, or a user who has decided that backups are a form of pessimism.
+The on-disk capsule format is documented in [`RESCUE_FORMAT.md`](RESCUE_FORMAT.md).
+
+## Restoring a bootstrap
+
+Restoration is available while the current pointer is disabled.
+
+Press `SQUARE`. The manager searches `HDDRESCUE.BIN` and `HDDRESCUE2.BIN` first. A valid same-disk full capsule restores and verifies the payload before enabling its saved pointer. If no usable full capsule exists, the manager can fall back to a compatible pointer-only header backup:
+
+```text
+HDDMBR.BIN
+HDDMBR2.BIN
+FHDBMBR.BIN
+FHDBMBR2.BIN
+```
+
+The legacy fallback cannot prove that the referenced payload sectors still contain the original program, so it checks the saved range, creates a fresh safety backup, and states clearly that only the pointer is being restored. A corrupted or wrong-disk rescue capsule is reported instead of being quietly ignored.
+
+## Installing a bootstrap payload
+
+This is intended for a manual FHDB or HDD-OSD setup whose required partitions and files already exist.
+
+1. Ensure the current pointer is disabled.
+2. Put the correct stock `MBR.XLF` at the root of the selected device.
+3. Press `CIRCLE`.
+4. Select a signing memory card if the source is `mass:`.
+5. Review the source, backup, target sector, byte size, and sector count.
+6. Hold `L1 + R1` and press `CIRCLE`.
+7. Wait until the payload and pointer both report successful verification.
+
+After a successful installation the manager refreshes the boot-chain report and attempts to create a full rescue capsule of the newly installed state.
+
+## Controls
+
+| Context | Input | Action |
+|---|---|---|
+| Main menu | `START` | Save and verify the current header and rescue capsule without changing the HDD |
+| Main menu | `R1` | Run the read-only boot-chain scan and save both report files |
+| Main menu | `SELECT` | Choose `mc0`, `mc1`, or `mass` |
+| Enabled bootstrap | `X` | Back up and prepare to disable |
+| Disable confirmation | `L1 + R1 + X` | Clear the active pointer |
+| Disabled bootstrap | `SQUARE` | Load a full rescue capsule or legacy pointer backup |
+| Restore confirmation | `L1 + R1 + SQUARE` | Restore payload/pointer according to the selected backup type |
+| Disabled bootstrap | `CIRCLE` | Load, sign, and prepare to install `MBR.XLF` |
+| Install confirmation | `L1 + R1 + CIRCLE` | Write, verify, and enable the payload |
+| Main menu | `TRIANGLE` | Open the power/restart menu |
+| Confirmation screens | `TRIANGLE` | Cancel without the pending write |
 
 ## Technical details
 
-The manager embeds its PS2SDK IOP dependencies, including the fileXio stack, free memory-card drivers, `secrman`/`secrsif`, BDM/FatFs USB mass storage, poweroff, DEV9, ATA, and APA HDD drivers.
+The ELF embeds its PS2SDK IOP dependencies, including fileXio, free memory-card drivers, `secrman`/`secrsif`, BDM/FatFs USB storage, poweroff, DEV9, ATA, APA HDD, and read-only PFS support.
 
 The primary device calls are:
 
-- `HDIOC_READSECTOR` (`0x6836`) for the APA header and payload read-back;
-- `HDIOC_WRITESECTOR` (`0x6837`) only for the reserved payload area at sector `0x2000` and above;
+- `HDIOC_READSECTOR` (`0x6836`) for the APA header and payload reads;
+- `HDIOC_WRITESECTOR` (`0x6837`) only for the reserved payload area;
 - `HDIOC_SETOSDMBR` (`0x6833`) for `osdStart` and `osdSize`;
 - `HDIOC_FLUSH` (`0x4804`) before verification;
-- `SecrDownloadFile()` through `secrman`/`secrsif` for console-side KELF signing;
-- `ExecOSD("BootBrowser")` for the restart option.
-
-The payload-write order follows the Free McBoot installer design: sign the KELF, write sector-aligned chunks into the reserved area, and record the final start and size in the APA header. This implementation adds a mandatory backup, size/bounds checks, a disabled-pointer prerequisite, a full post-flush payload comparison, and pointer-last activation.
+- `SecrDownloadFile()` through `secrman`/`secrsif` for KELF signing;
+- read-only `pfs0:` mounts of `__sysconf` and `__system` for diagnostics;
+- `ExecOSD("BootBrowser")` for restart.
 
 ## Hardware validation
 
-The original `0.1.1` disable workflow successfully removed a real post-uninstall FHDB boot loop on:
+The original disable workflow eliminated a real post-uninstall FHDB boot loop on:
 
 - PlayStation 2 FAT `SCPH-50000` (Japanese model);
 - MechaPWN-enabled console;
 - cross-model Free McBoot memory card;
 - standard non-GPT APA HDD.
 
-The console subsequently cold-booted with the HDD connected. The final `0.2.0` workflow was then reported working on the same hardware, including selectable `mass:` storage and a standalone byte-for-byte backup that completed verification without modifying HDD data.
+The console subsequently cold-booted with the HDD connected. The final `0.2.0` workflow was also reported working on the same hardware, including selectable `mass:` storage and standalone byte-for-byte backup. The full rescue capsule and expanded boot-chain inspector are new in `0.3.0-rc1` and remain candidate functionality pending real-console testing.
 
-## Building
+## Building and testing
 
 Install an up-to-date PS2DEV/PS2SDK environment, then run:
 
@@ -213,15 +238,16 @@ Install an up-to-date PS2DEV/PS2SDK environment, then run:
 export PS2DEV=/opt/ps2dev
 export PS2SDK="$PS2DEV/ps2sdk"
 export PATH="$PATH:$PS2DEV/bin:$PS2DEV/ee/bin:$PS2DEV/iop/bin:$PS2SDK/bin"
+make test-host
 make release
 ```
 
-The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Release `0.2.0` was built with the official PS2DEV v2.0.0 prebuilt toolchain.
+The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Release candidate `0.3.0-rc1` was built with the official PS2DEV v2.0.0 prebuilt toolchain.
 
 SHA-256:
 
 ```text
-9f41f9cfc647e1f21db0a02b39c2fe04a4842f5d052bfba7c93da45a77d9ae48
+b86acd338883418561b97c006d8cc2715336425490f931168f617eea8adc3c05
 ```
 
 ## License
@@ -230,6 +256,7 @@ The application source is released under the MIT License. Embedded PS2SDK module
 
 ## Acknowledgements
 
-- PS2DEV and PS2SDK contributors for the APA, USB, security, and console services.
+- PS2DEV and PS2SDK contributors for the APA, PFS, USB, security, and console services.
 - Free McBoot/FHDB contributors for the original signing and MBR installation workflow.
+- OSDMenu, HDD-OSD, and PSBBN preservation contributors whose documented layouts make evidence-based identification possible.
 - Hifu Himejima for reproducing the failure, preserving the disk header, testing on real hardware, and being that one gloriously unhinged developer who decided to correct this great injustice.
