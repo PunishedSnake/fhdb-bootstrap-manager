@@ -98,6 +98,20 @@ If the HDD bootstrap prevents a normal boot, first enable this option in Free Mc
 Configure OSDSYS Options -> Skip HDD Update Check = ON
 ```
 
+On some Free McBoot configurations, that option alone does not stop the console from loading the HDD. If the PS2 still attempts to boot from the HDD, the active FMCB memory card may be loading its HDD support modules from `BIEXEC-SYSTEM` before or independently of the OSDSYS setting.
+
+With the HDD disconnected if necessary, use wLaunchELF to back up and then remove these files from `BIEXEC-SYSTEM` on the memory card containing FMCB:
+
+```text
+mc0:/BIEXEC-SYSTEM/hddload.irx
+mc0:/BIEXEC-SYSTEM/dev9.irx
+mc0:/BIEXEC-SYSTEM/atad.irx
+```
+
+If FMCB is installed on the card in slot 2, use the equivalent `mc1:/BIEXEC-SYSTEM/` paths. These are files on the memory card, not files on the HDD. Keep a copy so they can be restored later if required.
+
+After removing the modules, power the console off completely, reconnect the HDD, boot through FMCB, and launch the manager. This workaround is necessary only when `Skip HDD Update Check = ON` does not actually prevent HDD loading.
+
 Then:
 
 1. Boot with the HDD and FMCB memory card connected.
