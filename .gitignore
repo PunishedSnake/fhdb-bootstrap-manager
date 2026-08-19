@@ -1,0 +1,13 @@
+# PS2SDK build products
+*.o
+*_irx.c
+*.ELF
+
+# Local release archives and recovered disk headers
+*.zip
+FHDBMBR*.BIN
+
+# Editor and operating-system noise
+.DS_Store
+Thumbs.db
+*.swp
