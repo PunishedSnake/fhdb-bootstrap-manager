@@ -1,8 +1,8 @@
-# PS2 HDD Bootstrap Manager 0.2.0-rc2
+# PS2 HDD Bootstrap Manager 0.2.0
 
 The small FHDB boot-loop repair tool has grown into a general PS2 HDD bootstrap manager, because apparently once you safely clear two fields you become responsible for the entire lifecycle of those fields.
 
-This release candidate adds the standalone backup action that release candidate 1 somehow managed to omit from a backup manager. It also retains selectable `mc0:`, `mc1:`, and `mass:` storage, controlled shutdown or restart, legacy-backup restoration, and guarded installation of a stock `MBR.XLF` for manual FHDB/HDD-OSD setups.
+The release candidates survived the console, the disk survived the release candidates, and the backup manager now contains a standalone backup action. This first full release provides selectable `mc0:`, `mc1:`, and `mass:` storage, controlled shutdown or restart, legacy-backup restoration, and guarded installation of a stock `MBR.XLF` for manual FHDB/HDD-OSD setups.
 
 ## Highlights
 
@@ -23,7 +23,7 @@ The installation option installs only the MBR bootstrap program. It does not for
 
 ## Validation status
 
-The original disable workflow is hardware-validated and eliminated a real FHDB post-uninstall boot loop on an SCPH-50000. The new USB, restart, MagicGate-signing, and payload-installation paths are not yet hardware-validated, so this build is intentionally published as a release candidate.
+The completed `0.2.0` manager was exercised successfully on real PlayStation 2 hardware. The original disable workflow eliminated a real FHDB post-uninstall boot loop on an SCPH-50000, and the final storage-selection and standalone-backup workflow was verified with `mass:` without modifying HDD data. Hifu Himejima reports the complete manager working as intended.
 
 Read `README.md` before using the install option and keep a copy of the generated header backup on another machine.
 
@@ -34,5 +34,5 @@ Read `README.md` before using the install option and keep a copy of the generate
 SHA-256:
 
 ```text
-843cd4f2e47f1faf3be6e63184f8643560771f97d669507a98241a3f13ec2164
+9f41f9cfc647e1f21db0a02b39c2fe04a4842f5d052bfba7c93da45a77d9ae48
 ```

@@ -2,6 +2,18 @@
 
 All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
+## [0.2.0] - 2026-08-19
+
+### Changed
+
+- Promoted the hardware-tested `0.2.0-rc2` code to the first full PS2 HDD Bootstrap Manager release.
+- Removed the release-candidate label from the application and documentation.
+
+### Hardware validation
+
+- Confirmed the completed manager on real PlayStation 2 hardware after the standalone `mass:` backup was saved, read back, and verified without modifying HDD data.
+- The complete `0.2.0` workflow was reported working as intended by Hifu Himejima.
+
 ## [0.2.0-rc2] - 2026-08-19
 
 ### Added

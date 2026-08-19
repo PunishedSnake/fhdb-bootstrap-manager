@@ -35,7 +35,7 @@
 
 /* Application identity and offsets within the 1024-byte APA master header. */
 #define APP_NAME "PS2 HDD Bootstrap Manager"
-#define APP_VERSION "0.2.0-rc2"
+#define APP_VERSION "0.2.0"
 #define APA_HEADER_SIZE 1024
 #define APA_MAGIC_OFFSET 0x004
 #define APA_ID_OFFSET 0x010

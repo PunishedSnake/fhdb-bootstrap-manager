@@ -4,7 +4,7 @@ PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, back
 
 It began as FHDB Bootstrap Manager after a real console got trapped in a post-uninstall boot loop: FHDB was gone, but the HDD bootstrap pointer was still enabled, so the PS2 kept trying to launch software that no longer existed. Apparently uninstalling a program and persuading the machine to stop booting it were separate premium features.
 
-Version `0.2.0-rc2` broadens the tool into a general bootstrap manager. It can independently back up the current APA master header, select `mc0:`, `mc1:`, or `mass:` for storage, restore compatible old backups, return to the PS2 Browser or power off, and prepare and install a stock `MBR.XLF` for manual FHDB or HDD-OSD setups.
+Version `0.2.0` broadens the tool into a general bootstrap manager. It can independently back up the current APA master header, select `mc0:`, `mc1:`, or `mass:` for storage, restore compatible old backups, return to the PS2 Browser or power off, and prepare and install a stock `MBR.XLF` for manual FHDB or HDD-OSD setups.
 
 ## Why this exists
 
@@ -19,11 +19,11 @@ Manual installation has the opposite problem. Copying an MBR program to a disk i
 
 This manager turns both jobs into explicit, guarded operations in one ELF.
 
-## Release-candidate status
+## Release status
 
-The original disable workflow was successfully tested on real hardware and eliminated an FHDB boot loop. The new `0.2.0-rc2` storage-selection, standalone-backup, USB, restart, MagicGate-signing, and payload-installation paths build cleanly and follow the official installer algorithm, but still require hardware validation.
+The original disable workflow eliminated a real FHDB boot loop, and the completed `0.2.0` manager has now been exercised successfully on real PlayStation 2 hardware. Storage selection, standalone verified backups, USB mass storage, restart and shutdown handling, restoration, MagicGate signing, and guarded payload installation were reported working as intended.
 
-Treat this release as a test build. Keep backups on another machine and do not use the installation function on a disk whose contents you cannot replace.
+This is the first full release. Keep important backups on another machine anyway, because passing a hardware test does not make twenty-year-old disks immortal or user-selected payloads clairvoyant.
 
 ## Features
 
@@ -189,7 +189,7 @@ The original `0.1.1` disable workflow successfully removed a real post-uninstall
 - cross-model Free McBoot memory card;
 - standard non-GPT APA HDD.
 
-The console subsequently cold-booted with the HDD connected. The new `0.2.0-rc2` features await hardware results; reports should include the console model, adapter, storage device, selected path, exact on-screen message, and whether the HDD environment was FHDB or HDD-OSD.
+The console subsequently cold-booted with the HDD connected. The final `0.2.0` workflow was then reported working on the same hardware, including selectable `mass:` storage and a standalone byte-for-byte backup that completed verification without modifying HDD data.
 
 ## Building
 
@@ -202,12 +202,12 @@ export PATH="$PATH:$PS2DEV/bin:$PS2DEV/ee/bin:$PS2DEV/iop/bin:$PS2SDK/bin"
 make release
 ```
 
-The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Release candidate `0.2.0-rc2` was built with the official PS2DEV v2.0.0 prebuilt toolchain.
+The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Release `0.2.0` was built with the official PS2DEV v2.0.0 prebuilt toolchain.
 
 SHA-256:
 
 ```text
-843cd4f2e47f1faf3be6e63184f8643560771f97d669507a98241a3f13ec2164
+9f41f9cfc647e1f21db0a02b39c2fe04a4842f5d052bfba7c93da45a77d9ae48
 ```
 
 ## License
