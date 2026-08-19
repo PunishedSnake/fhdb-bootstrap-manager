@@ -2,6 +2,17 @@
 
 All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
+## [0.2.0-rc2] - 2026-08-19
+
+### Added
+
+- Added a dedicated `START` action that saves and verifies the current 1024-byte APA master header without changing any HDD data.
+- Made standalone backups available regardless of whether the HDD bootstrap pointer is enabled or disabled.
+
+### Changed
+
+- Updated the project credit from PunishedSnake to Hifu Himejima, the one gloriously unhinged developer who decided to correct this great injustice.
+
 ## [0.2.0-rc1] - 2026-08-19
 
 ### Changed

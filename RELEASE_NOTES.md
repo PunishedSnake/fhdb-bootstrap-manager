@@ -1,12 +1,13 @@
-# PS2 HDD Bootstrap Manager 0.2.0-rc1
+# PS2 HDD Bootstrap Manager 0.2.0-rc2
 
 The small FHDB boot-loop repair tool has grown into a general PS2 HDD bootstrap manager, because apparently once you safely clear two fields you become responsible for the entire lifecycle of those fields.
 
-This release candidate adds selectable `mc0:`, `mc1:`, and `mass:` storage, controlled shutdown or restart, legacy-backup restoration, and guarded installation of a stock `MBR.XLF` for manual FHDB/HDD-OSD setups.
+This release candidate adds the standalone backup action that release candidate 1 somehow managed to omit from a backup manager. It also retains selectable `mc0:`, `mc1:`, and `mass:` storage, controlled shutdown or restart, legacy-backup restoration, and guarded installation of a stock `MBR.XLF` for manual FHDB/HDD-OSD setups.
 
 ## Highlights
 
 - Select the working storage device instead of letting the program guess.
+- Press `START` to save and verify the current APA master header without modifying the HDD, regardless of whether the bootstrap pointer is enabled or disabled.
 - Save and verify backups as `HDDMBR.BIN` or `HDDMBR2.BIN` on memory card or USB.
 - Restore compatible `FHDBMBR*.BIN` files created by version 0.1.x.
 - Restart directly to the PS2 Browser or power off cleanly.
@@ -33,5 +34,5 @@ Read `README.md` before using the install option and keep a copy of the generate
 SHA-256:
 
 ```text
-db288182e60386afc56e76a6bebcc24ac28a0f3f8869d6419163d9e8a22690b6
+843cd4f2e47f1faf3be6e63184f8643560771f97d669507a98241a3f13ec2164
 ```

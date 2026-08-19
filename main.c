@@ -2,7 +2,8 @@
  * PS2 HDD Bootstrap Manager
  *
  * Manages the PlayStation 2 HDD bootstrap stored in the APA __mbr partition.
- * The tool can back up, disable, restore, sign, install, and verify the MBR
+ * The tool can independently back up the current APA master header, disable
+ * or restore its bootstrap pointer, and sign, install, and verify an MBR
  * bootstrap without formatting the disk or manually rewriting sector zero.
  *
  * Every HDD-changing path follows the same deliberately conservative pattern:
@@ -34,7 +35,7 @@
 
 /* Application identity and offsets within the 1024-byte APA master header. */
 #define APP_NAME "PS2 HDD Bootstrap Manager"
-#define APP_VERSION "0.2.0-rc1"
+#define APP_VERSION "0.2.0-rc2"
 #define APA_HEADER_SIZE 1024
 #define APA_MAGIC_OFFSET 0x004
 #define APA_ID_OFFSET 0x010
@@ -700,7 +701,7 @@ static void backup_path_for_slot(char *path, unsigned int capacity,
                  slot == 0 ? "HDDMBR.BIN" : "HDDMBR2.BIN");
 }
 
-/* Save and read back the current header before any operation may touch the HDD. */
+/* Save and read back the current header for standalone use or a write safety gate. */
 static const char *save_backup(void)
 {
     unsigned int i;
@@ -788,8 +789,25 @@ static void backup_error_screen(void)
 }
 
 /* ------------------------------------------------------------------------- */
-/* User operations: disable, restore, and install                            */
+/* User operations: back up, disable, restore, and install                   */
 /* ------------------------------------------------------------------------- */
+
+/* Save the current APA master header without changing any HDD data. */
+static void backup_current_header(void)
+{
+    const char *backup_path = save_backup();
+
+    if (backup_path == NULL) {
+        backup_error_screen();
+        return;
+    }
+
+    scr_clear();
+    scr_printf("Current MBR header backup is available and verified.\n\n");
+    scr_printf("Backup: %s\n\n", backup_path);
+    scr_printf("No HDD data was modified.\n");
+    wait_to_return();
+}
 
 /* Back up the active pointer, clear it, and verify the resulting header. */
 static void disable_bootstrap(void)
@@ -1063,10 +1081,15 @@ int main(void)
             scr_printf("SQUARE   Restore pointer from backup\n");
             scr_printf("CIRCLE   Sign and install MBR.XLF\n");
         }
+        scr_printf("START    Back up current MBR header\n");
         scr_printf("SELECT   Change storage device\n");
         scr_printf("TRIANGLE Power / restart menu\n");
 
         pressed = wait_for_press();
+        if (pressed & PAD_START) {
+            backup_current_header();
+            continue;
+        }
         if (pressed & PAD_SELECT) {
             choose_storage();
             continue;

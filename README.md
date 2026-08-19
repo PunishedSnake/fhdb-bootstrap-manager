@@ -4,7 +4,7 @@ PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, back
 
 It began as FHDB Bootstrap Manager after a real console got trapped in a post-uninstall boot loop: FHDB was gone, but the HDD bootstrap pointer was still enabled, so the PS2 kept trying to launch software that no longer existed. Apparently uninstalling a program and persuading the machine to stop booting it were separate premium features.
 
-Version `0.2.0-rc1` broadens the tool into a general bootstrap manager. It can select `mc0:`, `mc1:`, or `mass:` for backups, restore compatible old backups, return to the PS2 Browser or power off, and prepare and install a stock `MBR.XLF` for manual FHDB or HDD-OSD setups.
+Version `0.2.0-rc2` broadens the tool into a general bootstrap manager. It can independently back up the current APA master header, select `mc0:`, `mc1:`, or `mass:` for storage, restore compatible old backups, return to the PS2 Browser or power off, and prepare and install a stock `MBR.XLF` for manual FHDB or HDD-OSD setups.
 
 ## Why this exists
 
@@ -21,7 +21,7 @@ This manager turns both jobs into explicit, guarded operations in one ELF.
 
 ## Release-candidate status
 
-The original disable workflow was successfully tested on real hardware and eliminated an FHDB boot loop. The new `0.2.0-rc1` storage-selection, USB, restart, MagicGate-signing, and payload-installation paths build cleanly and follow the official installer algorithm, but still require hardware validation.
+The original disable workflow was successfully tested on real hardware and eliminated an FHDB boot loop. The new `0.2.0-rc2` storage-selection, standalone-backup, USB, restart, MagicGate-signing, and payload-installation paths build cleanly and follow the official installer algorithm, but still require hardware validation.
 
 Treat this release as a test build. Keep backups on another machine and do not use the installation function on a disk whose contents you cannot replace.
 
@@ -31,6 +31,7 @@ Treat this release as a test build. Keep backups on another machine and do not u
 - Rejects hybrid APA/GPT layouts.
 - Shows the current `osdStart` and `osdSize` values.
 - Lets the user select `mc0:`, `mc1:`, or `mass:` as the working storage device.
+- Provides a dedicated `START` action that saves and verifies the current 1024-byte APA master header without modifying the HDD.
 - Creates and reads back a byte-for-byte header backup before any HDD-changing operation.
 - Disables only the bootstrap pointer through `HDIOC_SETOSDMBR`.
 - Restores a non-zero pointer only from a valid backup matched to the same disk.
@@ -129,6 +130,7 @@ This is intended for a manual FHDB or HDD-OSD setup whose required partitions an
 
 | Context | Input | Action |
 |---|---|---|
+| Main menu | `START` | Save and verify the current MBR header without changing the HDD |
 | Main menu | `SELECT` | Choose `mc0`, `mc1`, or `mass` |
 | Enabled bootstrap | `X` | Back up and prepare to disable |
 | Disable confirmation | `L1 + R1 + X` | Clear the active pointer |
@@ -140,6 +142,8 @@ This is intended for a manual FHDB or HDD-OSD setup whose required partitions an
 | Confirmation screens | `TRIANGLE` | Cancel without the pending write |
 
 ## Backups
+
+Press `START` on the main menu to make a standalone backup at any time, regardless of whether the bootstrap pointer is enabled or disabled. This reads the current 1024-byte APA master header, saves it to the selected storage device, reads it back, and compares every byte. It does not write to the HDD.
 
 New backups use the first available path on the selected device:
 
@@ -185,7 +189,7 @@ The original `0.1.1` disable workflow successfully removed a real post-uninstall
 - cross-model Free McBoot memory card;
 - standard non-GPT APA HDD.
 
-The console subsequently cold-booted with the HDD connected. The new `0.2.0-rc1` features await hardware results; reports should include the console model, adapter, storage device, selected path, exact on-screen message, and whether the HDD environment was FHDB or HDD-OSD.
+The console subsequently cold-booted with the HDD connected. The new `0.2.0-rc2` features await hardware results; reports should include the console model, adapter, storage device, selected path, exact on-screen message, and whether the HDD environment was FHDB or HDD-OSD.
 
 ## Building
 
@@ -198,12 +202,12 @@ export PATH="$PATH:$PS2DEV/bin:$PS2DEV/ee/bin:$PS2DEV/iop/bin:$PS2SDK/bin"
 make release
 ```
 
-The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Release candidate `0.2.0-rc1` was built with the official PS2DEV v2.0.0 prebuilt toolchain.
+The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Release candidate `0.2.0-rc2` was built with the official PS2DEV v2.0.0 prebuilt toolchain.
 
 SHA-256:
 
 ```text
-db288182e60386afc56e76a6bebcc24ac28a0f3f8869d6419163d9e8a22690b6
+843cd4f2e47f1faf3be6e63184f8643560771f97d669507a98241a3f13ec2164
 ```
 
 ## License
@@ -214,4 +218,4 @@ The application source is released under the MIT License. Embedded PS2SDK module
 
 - PS2DEV and PS2SDK contributors for the APA, USB, security, and console services.
 - Free McBoot/FHDB contributors for the original signing and MBR installation workflow.
-- PunishedSnake for reproducing the failure, preserving the disk header, testing on real hardware, and proving that two fields can indeed defeat a problem that survived for years.
+- Hifu Himejima for reproducing the failure, preserving the disk header, testing on real hardware, and being that one gloriously unhinged developer who decided to correct this great injustice.
