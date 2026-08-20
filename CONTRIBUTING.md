@@ -14,8 +14,10 @@ Build the stripped PS2 ELF with the pinned toolchain used by CI:
 
 ```sh
 docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
-  sh -lc 'make clean && make release'
+  sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
 ```
+
+The released PS2DEV container intentionally keeps its runtime layer small, so the command installs `make` into the disposable container before building. Do not use a login shell (`sh -l`) here: it can replace the image-provided `PATH` that points at the R5900 toolchain.
 
 CI performs both checks automatically.
 
