@@ -1,8 +1,8 @@
-# PS2 HDD Bootstrap Manager 0.3.0-rc1
+# PS2 HDD Bootstrap Manager 0.3.0 — Torii
 
 The bootstrap manager can now preserve the program behind the pointer, not merely the pointer and a firm belief that its sectors will remain fine forever.
 
-This release candidate adds a complete rescue capsule, full payload restoration, a read-only boot-chain inspector, and persistent diagnostics on `mass:`, `mc0:`, or `mc1:`. It attempts to distinguish FHDB, PSBBN/OSDMenu, HOSDMenu/HDD-OSD, custom OSDMenu, and unknown payloads from KELF structure plus downstream filesystem evidence.
+This stable release adds a complete rescue capsule, full payload restoration, a read-only boot-chain inspector, and persistent diagnostics on `mass:`, `mc0:`, or `mc1:`. It attempts to distinguish FHDB, PSBBN/OSDMenu, HOSDMenu/HDD-OSD, custom OSDMenu, and unknown payloads from KELF structure plus downstream filesystem evidence.
 
 ## Highlights
 
@@ -15,7 +15,9 @@ This release candidate adds a complete rescue capsule, full payload restoration,
 - The selected destination is inferred from the ELF launch path and can still be changed with `SELECT`.
 - The inspector checks ROMVER, all regional FMCB folders, `OSDSYS_Skip_HDD`, external HDD modules, OSDMenu configuration, PFS next-stage files, and characteristic PSBBN partitions.
 - Explicit OSDMenu `boot_auto` configuration wins over stale partition evidence.
-- Portable SHA-256 and capsule-format tests are included in the source tree.
+- SHA-256 uses a smaller 16-word rolling schedule and hashes complete input blocks without an unnecessary intermediate copy.
+- Portable SHA-256 and capsule-format tests are included in the source tree and run independently of PS2SDK.
+- Source, headers, documentation, CI, and release artifacts now have distinct homes instead of sharing the repository root like a very small student flat.
 
 ## Files written to the selected device
 
@@ -36,21 +38,23 @@ The manager does not pretend encrypted KELFs contain convenient plaintext name t
 
 - Capsule metadata, size relationships, flags, APA header, same-disk identity, KELF structure, payload bounds, and SHA-256 digests must all validate before full restoration.
 - Payload sectors are written, flushed, and compared before the APA pointer is enabled.
-- Legacy pointer-only restoration now validates the saved range and creates a fresh safety backup first.
+- Legacy pointer-only restoration validates the saved range and creates a fresh safety backup first.
 - Raw writes remain confined to the reserved `__mbr` payload area; sectors 0 and 1 are never raw-written.
+- The proven two-sector raw transfer size is unchanged; Torii does not trade disk safety for an unmeasured micro-benchmark victory.
 
 ## Validation status
 
-The source cross-compiles cleanly with `-Wall -Wextra -Werror`, and the portable SHA-256/capsule tests pass. The underlying `0.2.0` workflows are hardware-validated; the new full-rescue and diagnostic paths are release-candidate functionality awaiting real-console testing by Hifu Himejima.
+The release source is built with `-Wall -Wextra -Werror` using the pinned PS2DEV v2.0.0 toolchain. Portable SHA-256/capsule tests cover streaming, direct full-block hashing, split block boundaries, capsule serialization, and rejection cases. The underlying `0.2.0` write workflows are hardware-validated; Torii promotes the rescue and diagnostic paths to stable while retaining the same pointer-last safety rules. Additional real-console, adapter, and HDD combinations remain welcome validation coverage.
 
-Read `README.md` and `RESCUE_FORMAT.md` before testing. Keep copies of generated backups on another machine.
+Read `README.md`, `docs/ARCHITECTURE.md`, and `docs/RESCUE_FORMAT.md` before testing. Keep copies of generated backups on another machine.
 
-## Included asset
+## Release assets
 
-`PS2_HDD_BOOTSTRAP_MANAGER.ELF`
-
-SHA-256:
+The stable GitHub release publishes:
 
 ```text
-b86acd338883418561b97c006d8cc2715336425490f931168f617eea8adc3c05
+PS2_HDD_BOOTSTRAP_MANAGER-0.3.0.ELF
+SHA256SUMS.txt
 ```
+
+The checksum is generated from the final CI-built ELF at publication time rather than copied from an earlier candidate binary.
