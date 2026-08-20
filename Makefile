@@ -29,16 +29,17 @@ test-host:
 clean:
 	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TEST)
 
-# Keep PS2 objects at the repository root. This preserves the stock PS2SDK
-# linking/bin2c conventions while human-maintained sources live under src/.
+# Keep PS2 objects at the repository root. The legacy PS2SDK sample rules keep
+# SDK include directories in EE_INCS, so custom rules for src/ must pass both
+# EE_CFLAGS and EE_INCS just like the stock compilation rule does.
 main.o: src/main.c
-	$(EE_CC) $(EE_CFLAGS) -c $< -o $@
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 sha256.o: src/sha256.c
-	$(EE_CC) $(EE_CFLAGS) -c $< -o $@
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 capsule_format.o: src/capsule_format.c
-	$(EE_CC) $(EE_CFLAGS) -c $< -o $@
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 %_irx.c:
 	$(PS2SDK)/bin/bin2c $(PS2SDK)/iop/irx/$*.irx $@ $*_irx
