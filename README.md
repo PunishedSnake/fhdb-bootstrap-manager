@@ -4,7 +4,7 @@ PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, back
 
 It began after a real console got trapped in a post-uninstall FHDB boot loop: FHDB was gone, but the bootstrap pointer was still enabled, so the machine faithfully rebooted into software that no longer existed. Apparently uninstalling a program and persuading the console to stop launching it were separate premium features.
 
-Version `0.3.0-rc1` adds two larger pieces that the old PS2 HDD tool pile somehow never put in one place: a complete, verifiable backup of the active MBR payload and a read-only boot-chain inspector. It also writes a session log and a separate boot-chain report to `mass:`, `mc0:`, or `mc1:`—because diagnosing a twenty-year-old encrypted boot path exclusively from photographs of a CRT was becoming a little too authentic.
+Version `0.3.0` **Torii** adds two larger pieces that the old PS2 HDD tool pile somehow never put in one place: a complete, verifiable backup of the active MBR payload and a read-only boot-chain inspector. It also writes a session log and a separate boot-chain report to `mass:`, `mc0:`, or `mc1:`—because diagnosing a twenty-year-old encrypted boot path exclusively from photographs of a CRT was becoming a little too authentic.
 
 ## Why this exists
 
@@ -15,15 +15,15 @@ The PS2 ROM decides whether to launch an HDD update from two fields in the APA m
 
 If removal software deletes FHDB but leaves those fields populated, the ROM still sees an enabled update, attempts to execute a missing or unusable payload, resets, and repeats. The traditional recovery method is to disconnect the HDD, change a setting, or reach for increasingly archaeological utilities. The difficult part, naturally, was clearing two 32-bit values without treating the rest of the disk as acceptable collateral damage.
 
-A 1024-byte header backup preserves the pointer, but it does not preserve the program to which that pointer refers. Version `0.3.0-rc1` therefore adds a rescue capsule containing the APA master header, the exact sector-aligned active payload, metadata, and SHA-256 digests. Restoration writes and verifies the payload first and exposes it to the ROM only after that verification succeeds.
+A 1024-byte header backup preserves the pointer, but it does not preserve the program to which that pointer refers. Version `0.3.0` therefore adds a rescue capsule containing the APA master header, the exact sector-aligned active payload, metadata, and SHA-256 digests. Restoration writes and verifies the payload first and exposes it to the ROM only after that verification succeeds.
 
 Manual installation has the opposite problem. Copying an MBR program to a disk is not enough: the KELF/XLF must be signed through the PS2 security hardware, written into the reserved `__mbr` payload area, verified, and only then exposed through the APA pointer. This manager turns those jobs into explicit guarded operations in one ELF.
 
 ## Release status
 
-`0.3.0-rc1` is a release candidate. The complete `0.2.0` manager—including selectable USB storage, standalone header backup, disable, restore, restart, shutdown, MagicGate signing, and guarded installation—was exercised successfully on real PlayStation 2 hardware.
+`0.3.0` **Torii** is the stable release line. The complete `0.2.0` manager—including selectable USB storage, standalone header backup, disable, restore, restart, shutdown, MagicGate signing, and guarded installation—was exercised successfully on real PlayStation 2 hardware.
 
-The new full-payload rescue and boot-chain inspection paths compile cleanly with warnings treated as errors and their portable SHA-256/capsule code passes host-side tests. They still need the same real-console validation that promoted `0.2.0` from archaeology experiment to working archaeology experiment. Keep irreplaceable data copied elsewhere.
+Torii promotes the full-payload rescue and boot-chain inspection work to stable while keeping the write-safety model unchanged. Portable SHA-256/capsule logic is covered by host-side tests and release builds are cross-compiled with the pinned PS2DEV v2.0.0 toolchain. Broader real-console coverage is still welcome; stable means the release gates are satisfied, not that twenty-year-old disks have suddenly become immortal. Keep irreplaceable data copied elsewhere.
 
 ## Features
 
@@ -158,7 +158,7 @@ It then saves a versioned rescue capsule under the first available name:
 
 When the pointer is enabled, the capsule includes the exact sector-aligned active payload. When it is disabled, the capsule is header-only and documents that state. Existing differing files are preserved rather than overwritten. Keep another copy on a PC; the manager can preserve bytes, but it cannot negotiate with a dying disk or a USB stick that has embraced entropy.
 
-The on-disk capsule format is documented in [`RESCUE_FORMAT.md`](RESCUE_FORMAT.md).
+The on-disk capsule format is documented in [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md).
 
 ## Restoring a bootstrap
 
@@ -219,6 +219,8 @@ The primary device calls are:
 - read-only `pfs0:` mounts of `__sysconf` and `__system` for diagnostics;
 - `ExecOSD("BootBrowser")` for restart.
 
+The source layout and write-order invariants are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). In particular, the conservative two-sector raw HDD transfer size is intentional and must not be increased without measuring and testing the fileXio/IOP path on hardware.
+
 ## Hardware validation
 
 The original disable workflow eliminated a real post-uninstall FHDB boot loop on:
@@ -228,27 +230,31 @@ The original disable workflow eliminated a real post-uninstall FHDB boot loop on
 - cross-model Free McBoot memory card;
 - standard non-GPT APA HDD.
 
-The console subsequently cold-booted with the HDD connected. The final `0.2.0` workflow was also reported working on the same hardware, including selectable `mass:` storage and standalone byte-for-byte backup. The full rescue capsule and expanded boot-chain inspector are new in `0.3.0-rc1` and remain candidate functionality pending real-console testing.
+The console subsequently cold-booted with the HDD connected. The final `0.2.0` workflow was also reported working on the same hardware, including selectable `mass:` storage and standalone byte-for-byte backup. The full rescue capsule and expanded boot-chain inspector are stable in `0.3.0` Torii; additional console, adapter, and HDD combinations remain useful validation coverage.
 
 ## Building and testing
 
-Install an up-to-date PS2DEV/PS2SDK environment, then run:
+Portable format and SHA-256 tests do not require PS2SDK:
 
 ```sh
-export PS2DEV=/opt/ps2dev
-export PS2SDK="$PS2DEV/ps2sdk"
-export PATH="$PATH:$PS2DEV/bin:$PS2DEV/ee/bin:$PS2DEV/iop/bin:$PS2SDK/bin"
 make test-host
-make release
 ```
 
-The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Release candidate `0.3.0-rc1` was built with the official PS2DEV v2.0.0 prebuilt toolchain.
+For the PS2 ELF, use PS2DEV/PS2SDK or the same pinned container as CI:
 
-SHA-256:
-
-```text
-b86acd338883418561b97c006d8cc2715336425490f931168f617eea8adc3c05
+```sh
+docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
+  sh -lc 'make clean && make release'
 ```
+
+The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Stable `0.3.0` releases are built with the pinned PS2DEV v2.0.0 container. GitHub release assets include the ELF and `SHA256SUMS.txt`; generated binaries are deliberately not tracked in the source tree.
+
+## Project documentation
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — safety invariants, EE/IOP boundaries, and optimization policy.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames and planned engineering work.
+- [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — stable on-disk rescue capsule format.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, test, and review rules for changes that can touch an HDD.
 
 ## License
 
