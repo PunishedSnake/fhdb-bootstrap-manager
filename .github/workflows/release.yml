@@ -1,0 +1,74 @@
+name: Publish versioned release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read release identity
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^#define APP_VERSION "\([^"]*\)"/\1/p' include/version.h)"
+          codename="$(sed -n 's/^#define APP_CODENAME "\([^"]*\)"/\1/p' include/version.h)"
+          test -n "$version"
+          test -n "$codename"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "codename=$codename" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether release already exists
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run portable tests
+        if: steps.existing.outputs.exists != 'true'
+        run: make test-host
+
+      - name: Build release ELF
+        if: steps.existing.outputs.exists != 'true'
+        run: >-
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Package release assets
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mv PS2_HDD_BOOTSTRAP_MANAGER.ELF "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF"
+          sha256sum "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" > SHA256SUMS.txt
+
+      - name: Publish stable GitHub release
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          CODENAME: ${{ steps.version.outputs.codename }}
+        run: |
+          gh release create "$TAG" \
+            "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "PS2 HDD Bootstrap Manager ${VERSION} — ${CODENAME}" \
+            --notes-file RELEASE_NOTES.md

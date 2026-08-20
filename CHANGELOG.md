@@ -2,7 +2,9 @@
 
 All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
-## [0.3.0-rc1] - 2026-08-20
+## [0.3.0] - 2026-08-21
+
+**Codename: Torii (鳥居)**
 
 ### Added
 
@@ -17,21 +19,32 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - Added a separate `BOOTCHAIN.TXT` report and append-only `HDDMAN.LOG` on the selected `mc0:`, `mc1:`, or `mass:` device.
 - Added automatic storage selection from the ELF launch path and a USB-mount retry window for reports, logs, and rescue files.
 - Added portable host tests for SHA-256 and the endian-stable capsule format.
-- Added `RESCUE_FORMAT.md` as the format specification for external inspection and future compatibility.
+- Added `docs/RESCUE_FORMAT.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, and contribution rules for storage-sensitive changes.
+- Added reproducible CI and stable release automation around the pinned PS2DEV v2.0.0 toolchain.
+
+### Changed
+
+- Promoted the full-rescue and diagnostic feature set from release candidate to the stable `0.3.0` Torii line.
+- Reorganized maintained C sources under `src/`, headers under `include/`, and technical documentation under `docs/`.
+- Centralized the application version and release codename in `include/version.h`.
+- Stopped tracking a prebuilt ELF in the source tree; release binaries and checksums are produced as build/release artifacts instead.
+- Optimized SHA-256 for the R5900 by replacing the 64-word message schedule with a 16-word rolling schedule and hashing complete caller-owned blocks directly instead of copying each one first.
+- Made `make test-host` independent of an installed PS2SDK environment.
 
 ### Safety
 
 - Full capsules are accepted only after metadata, length, flags, APA structure, both SHA-256 digests, same-disk identity, KELF structure, and current `__mbr` bounds checks pass.
 - A damaged or wrong-disk rescue capsule blocks silent fallback to a pointer-only restore.
-- Legacy pointer-only restoration now validates the target range and creates a fresh current-state safety backup before changing the pointer.
+- Legacy pointer-only restoration validates the target range and creates a fresh current-state safety backup before changing the pointer.
 - An explicit OSDMenu `boot_auto` target takes precedence over stale partition evidence during classification.
 - Rescue restoration and installation both retain pointer-last activation.
+- The conservative two-sector raw fileXio transfer size is unchanged in Torii; larger transfers require explicit measurement and real-hardware validation.
 
 ### Validation status
 
-- Cross-compiles cleanly with `-Wall -Wextra -Werror` using the official PS2DEV v2.0.0 toolchain.
-- Portable SHA-256 and capsule-format tests pass on the host.
-- New full-rescue and diagnostic paths are released as a candidate pending real-console testing; the underlying `0.2.0` workflows remain hardware-validated.
+- Release source is built with `-Wall -Wextra -Werror` using the pinned PS2DEV v2.0.0 toolchain.
+- Portable SHA-256 and capsule-format tests cover streaming, complete-block, split-block, serialization, and rejection paths.
+- The underlying `0.2.0` write workflows remain hardware-validated. Additional console, adapter, and HDD coverage for Torii remains welcome.
 
 ## [0.2.0] - 2026-08-19
 

@@ -37,10 +37,10 @@
 
 #include "capsule_format.h"
 #include "sha256.h"
+#include "version.h"
 
 /* Application identity and offsets within the 1024-byte APA master header. */
 #define APP_NAME "PS2 HDD Bootstrap Manager"
-#define APP_VERSION "0.3.0-rc1"
 #define APA_HEADER_SIZE 1024
 #define APA_MAGIC_OFFSET 0x004
 #define APA_ID_OFFSET 0x010
@@ -497,7 +497,6 @@ static void restart_to_browser(void)
     fileXioDevctl("hdd0:", HDIOC_DEV9OFF, NULL, 0, NULL, 0);
     ExecOSD(1, browser_args);
 }
-
 /* Offer both requested exit modes from one reusable screen. */
 static void power_menu(void)
 {
@@ -1497,7 +1496,6 @@ static void analyze_boot_chain(boot_chain_info_t *info)
     classify_boot_chain(info, start, sectors);
     free(payload);
 }
-
 /* Render all direct observations and clearly label heuristic inferences. */
 static void render_boot_chain_report(const boot_chain_info_t *info)
 {

@@ -53,7 +53,12 @@ static void write_be32(unsigned char *destination, uint32_t value)
 static void sha256_transform(sha256_context_t *context,
                              const unsigned char block[64])
 {
-    uint32_t schedule[64];
+    /*
+     * SHA-256 needs only the previous 16 message words to derive the next one.
+     * A rolling schedule cuts transform-local storage from 256 to 64 bytes,
+     * which is friendlier to the R5900 stack/cache without changing the hash.
+     */
+    uint32_t schedule[16];
     uint32_t a;
     uint32_t b;
     uint32_t c;
@@ -63,18 +68,6 @@ static void sha256_transform(sha256_context_t *context,
     uint32_t g;
     uint32_t h;
     unsigned int i;
-
-    for (i = 0; i < 16; i++)
-        schedule[i] = read_be32(block + (i * 4));
-    for (i = 16; i < 64; i++) {
-        uint32_t s0 = rotate_right(schedule[i - 15], 7) ^
-                      rotate_right(schedule[i - 15], 18) ^
-                      (schedule[i - 15] >> 3);
-        uint32_t s1 = rotate_right(schedule[i - 2], 17) ^
-                      rotate_right(schedule[i - 2], 19) ^
-                      (schedule[i - 2] >> 10);
-        schedule[i] = schedule[i - 16] + s0 + schedule[i - 7] + s1;
-    }
 
     a = context->state[0];
     b = context->state[1];
@@ -86,15 +79,35 @@ static void sha256_transform(sha256_context_t *context,
     h = context->state[7];
 
     for (i = 0; i < 64; i++) {
-        uint32_t sum1 = rotate_right(e, 6) ^ rotate_right(e, 11) ^
-                        rotate_right(e, 25);
-        uint32_t choose = (e & f) ^ ((~e) & g);
-        uint32_t temporary1 = h + sum1 + choose +
-                              round_constants[i] + schedule[i];
-        uint32_t sum0 = rotate_right(a, 2) ^ rotate_right(a, 13) ^
-                        rotate_right(a, 22);
-        uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
-        uint32_t temporary2 = sum0 + majority;
+        uint32_t word;
+        uint32_t sum1;
+        uint32_t choose;
+        uint32_t temporary1;
+        uint32_t sum0;
+        uint32_t majority;
+        uint32_t temporary2;
+
+        if (i < 16) {
+            word = read_be32(block + (i * 4));
+            schedule[i] = word;
+        } else {
+            uint32_t w15 = schedule[(i - 15) & 15];
+            uint32_t w2 = schedule[(i - 2) & 15];
+            uint32_t s0 = rotate_right(w15, 7) ^ rotate_right(w15, 18) ^
+                          (w15 >> 3);
+            uint32_t s1 = rotate_right(w2, 17) ^ rotate_right(w2, 19) ^
+                          (w2 >> 10);
+
+            word = schedule[i & 15] + s0 + schedule[(i - 7) & 15] + s1;
+            schedule[i & 15] = word;
+        }
+
+        sum1 = rotate_right(e, 6) ^ rotate_right(e, 11) ^ rotate_right(e, 25);
+        choose = (e & f) ^ ((~e) & g);
+        temporary1 = h + sum1 + choose + round_constants[i] + word;
+        sum0 = rotate_right(a, 2) ^ rotate_right(a, 13) ^ rotate_right(a, 22);
+        majority = (a & b) ^ (a & c) ^ (b & c);
+        temporary2 = sum0 + majority;
 
         h = g;
         g = f;
@@ -134,7 +147,9 @@ void sha256_update(sha256_context_t *context, const void *data, size_t size)
     const unsigned char *source = (const unsigned char *)data;
 
     context->total_bytes += size;
-    while (size > 0) {
+
+    /* Finish a partial buffered block first. */
+    if (context->block_used != 0 && size != 0) {
         size_t available = sizeof(context->block) - context->block_used;
         size_t chunk = size < available ? size : available;
 
@@ -146,6 +161,22 @@ void sha256_update(sha256_context_t *context, const void *data, size_t size)
             sha256_transform(context, context->block);
             context->block_used = 0;
         }
+    }
+
+    /*
+     * Hash complete caller-owned blocks in place. read_be32() consumes bytes,
+     * so this remains safe for unaligned EE addresses and avoids a 64-byte
+     * memcpy for every full block of a multi-megabyte rescue payload.
+     */
+    while (context->block_used == 0 && size >= sizeof(context->block)) {
+        sha256_transform(context, source);
+        source += sizeof(context->block);
+        size -= sizeof(context->block);
+    }
+
+    if (size != 0) {
+        memcpy(context->block, source, size);
+        context->block_used = size;
     }
 }
 

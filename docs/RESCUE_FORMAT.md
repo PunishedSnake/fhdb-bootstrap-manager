@@ -67,4 +67,4 @@ SHA-256 provides corruption detection, not authorship or authenticity. Keep caps
 
 Readers must reject unsupported versions instead of guessing. Future format revisions may use the reserved metadata area or define a new version while retaining the same magic. Version 1 writers leave every reserved byte at zero.
 
-The serialization and validation implementation is in `capsule_format.c`; portable tests are in `tests/test_formats.c`.
+The serialization and validation implementation is in `src/capsule_format.c`; portable tests are in `tests/test_formats.c`.
