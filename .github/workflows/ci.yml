@@ -23,7 +23,7 @@ jobs:
       - name: Build stripped PS2 ELF with PS2DEV v2.0.0
         run: >-
           docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
-          sh -lc 'make clean && make release'
+          sh -lc 'apk add --no-cache make >/dev/null && make clean && make release'
       - name: Record artifact checksum
         run: sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
       - uses: actions/upload-artifact@v4
