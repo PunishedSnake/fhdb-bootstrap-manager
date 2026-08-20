@@ -48,7 +48,7 @@ jobs:
         if: steps.existing.outputs.exists != 'true'
         run: >-
           docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
-          sh -lc 'apk add --no-cache make >/dev/null && make clean && make release'
+          sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
 
       - name: Package release assets
         if: steps.existing.outputs.exists != 'true'
