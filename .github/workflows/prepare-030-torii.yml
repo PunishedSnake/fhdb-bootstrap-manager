@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - release/0.3.0-torii
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -17,6 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Reorganize sources and documentation
         shell: bash
@@ -37,7 +41,6 @@ jobs:
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
-          import re
 
           main = Path('src/main.c')
           text = main.read_text()
@@ -252,7 +255,7 @@ jobs:
           # Filesystem, MagicGate, USB mass-storage, power, and APA HDD services are
           # embedded so the manager does not depend on whichever IOP modules launched it.
           IRX_FILES = iomanX.irx fileXio.irx secrman.irx freesio2.irx freepad.irx \
-          	mcman.irx mcserv.irx secrsif.irx poweroff.irx bdm.irx \
+          	mcman.irx mcserv.irx secrsif.irx poweroff_irx bdm.irx \
           	bdmfs_fatfs.irx usbd.irx usbmass_bd.irx ps2dev9.irx ps2atad.irx \
           	ps2hdd.irx ps2fs.irx
           EE_OBJS += $(IRX_FILES:.irx=_irx.o)
