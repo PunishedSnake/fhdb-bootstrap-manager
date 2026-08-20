@@ -39,6 +39,30 @@ static int test_sha256(void)
                "b00361a396177a9cb410ff61f20015ad") != 0)
         return 0;
 
+    /* Exercise the direct full-block path used for HDD rescue payloads. */
+    {
+        unsigned char block[128];
+
+        memset(block, 'a', sizeof(block));
+        sha256_buffer(block, 64, digest);
+        sha256_hex(digest, hex);
+        if (strcmp(hex,
+                   "ffe054fe7ae0cb6dc65c3af9b61d5209"
+                   "f439851db43d0ba5997337df154668eb") != 0)
+            return 0;
+
+        /* Cross a block boundary after beginning with a partial update. */
+        sha256_init(&context);
+        sha256_update(&context, block, 13);
+        sha256_update(&context, block + 13, sizeof(block) - 13);
+        sha256_final(&context, digest);
+        sha256_hex(digest, hex);
+        if (strcmp(hex,
+                   "6836cf13bac400e9105071cd6af47084d"
+                   "facad4e5e302c94bfed24e013afb73e") != 0)
+            return 0;
+    }
+
     sha256_buffer("abcdbcdecdefdefgefghfghighijhijk"
                   "ijkljklmklmnlmnomnopnopq", 56, digest);
     sha256_hex(digest, hex);
