@@ -1,0 +1,568 @@
+name: Prepare 0.3.0 Torii
+
+on:
+  push:
+    branches:
+      - release/0.3.0-torii
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out stabilization branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reorganize sources and documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src include docs .github/workflows
+          git mv main.c src/main.c
+          git mv sha256.c src/sha256.c
+          git mv sha256.h include/sha256.h
+          git mv capsule_format.c src/capsule_format.c
+          git mv capsule_format.h include/capsule_format.h
+          git mv RESCUE_FORMAT.md docs/RESCUE_FORMAT.md
+          git rm -f dist/PS2_HDD_BOOTSTRAP_MANAGER.ELF
+
+      - name: Apply stable version, MIPS-safe optimization, and documentation updates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          main = Path('src/main.c')
+          text = main.read_text()
+          old = '#include "capsule_format.h"\n#include "sha256.h"\n'
+          assert old in text
+          text = text.replace(old, old + '#include "version.h"\n', 1)
+          old_version = '#define APP_VERSION "0.3.0-rc1"\n'
+          assert old_version in text
+          text = text.replace(old_version, '', 1)
+          main.write_text(text)
+
+          sha = Path('src/sha256.c')
+          text = sha.read_text()
+          start = text.index('static void sha256_transform')
+          end = text.index('\nvoid sha256_init', start)
+          transform = r'''static void sha256_transform(sha256_context_t *context,
+                             const unsigned char block[64])
+{
+    /*
+     * Keep only the 16 message words that SHA-256 actually needs at once.
+     * On the R5900 this cuts the transform's schedule storage from 256 to
+     * 64 bytes, reducing stack pressure and keeping the hot working set small.
+     */
+    uint32_t schedule[16];
+    uint32_t a;
+    uint32_t b;
+    uint32_t c;
+    uint32_t d;
+    uint32_t e;
+    uint32_t f;
+    uint32_t g;
+    uint32_t h;
+    unsigned int i;
+
+    a = context->state[0];
+    b = context->state[1];
+    c = context->state[2];
+    d = context->state[3];
+    e = context->state[4];
+    f = context->state[5];
+    g = context->state[6];
+    h = context->state[7];
+
+    for (i = 0; i < 64; i++) {
+        uint32_t word;
+        uint32_t sum1;
+        uint32_t choose;
+        uint32_t temporary1;
+        uint32_t sum0;
+        uint32_t majority;
+        uint32_t temporary2;
+
+        if (i < 16) {
+            word = read_be32(block + (i * 4));
+            schedule[i] = word;
+        } else {
+            uint32_t w15 = schedule[(i - 15) & 15];
+            uint32_t w2 = schedule[(i - 2) & 15];
+            uint32_t s0 = rotate_right(w15, 7) ^ rotate_right(w15, 18) ^
+                          (w15 >> 3);
+            uint32_t s1 = rotate_right(w2, 17) ^ rotate_right(w2, 19) ^
+                          (w2 >> 10);
+
+            word = schedule[i & 15] + s0 + schedule[(i - 7) & 15] + s1;
+            schedule[i & 15] = word;
+        }
+
+        sum1 = rotate_right(e, 6) ^ rotate_right(e, 11) ^ rotate_right(e, 25);
+        choose = (e & f) ^ ((~e) & g);
+        temporary1 = h + sum1 + choose + round_constants[i] + word;
+        sum0 = rotate_right(a, 2) ^ rotate_right(a, 13) ^ rotate_right(a, 22);
+        majority = (a & b) ^ (a & c) ^ (b & c);
+        temporary2 = sum0 + majority;
+
+        h = g;
+        g = f;
+        f = e;
+        e = d + temporary1;
+        d = c;
+        c = b;
+        b = a;
+        a = temporary1 + temporary2;
+    }
+
+    context->state[0] += a;
+    context->state[1] += b;
+    context->state[2] += c;
+    context->state[3] += d;
+    context->state[4] += e;
+    context->state[5] += f;
+    context->state[6] += g;
+    context->state[7] += h;
+}
+'''
+          text = text[:start] + transform + text[end:]
+
+          start = text.index('void sha256_update')
+          end = text.index('\nvoid sha256_final', start)
+          update = r'''void sha256_update(sha256_context_t *context, const void *data, size_t size)
+{
+    const unsigned char *source = (const unsigned char *)data;
+
+    context->total_bytes += size;
+
+    /* Finish a partial buffered block first. */
+    if (context->block_used != 0 && size != 0) {
+        size_t available = sizeof(context->block) - context->block_used;
+        size_t chunk = size < available ? size : available;
+
+        memcpy(context->block + context->block_used, source, chunk);
+        context->block_used += chunk;
+        source += chunk;
+        size -= chunk;
+        if (context->block_used == sizeof(context->block)) {
+            sha256_transform(context, context->block);
+            context->block_used = 0;
+        }
+    }
+
+    /*
+     * Hash complete caller-owned blocks in place. read_be32() is byte based,
+     * so this is safe for unaligned EE addresses and avoids a 64-byte memcpy
+     * for every full block of a multi-megabyte rescue payload.
+     */
+    while (context->block_used == 0 && size >= sizeof(context->block)) {
+        sha256_transform(context, source);
+        source += sizeof(context->block);
+        size -= sizeof(context->block);
+    }
+
+    if (size != 0) {
+        memcpy(context->block, source, size);
+        context->block_used = size;
+    }
+}
+'''
+          text = text[:start] + update + text[end:]
+          sha.write_text(text)
+
+          test = Path('tests/test_formats.c')
+          text = test.read_text()
+          needle = '''    sha256_buffer("abc", 3, digest);\n    sha256_hex(digest, hex);\n    if (strcmp(hex,\n               "ba7816bf8f01cfea414140de5dae2223"\n               "b00361a396177a9cb410ff61f20015ad") != 0)\n        return 0;\n\n'''
+          assert needle in text
+          extra = needle + '''    /* Exercise the direct full-block path used for HDD payloads. */\n    {\n        unsigned char block[128];\n\n        memset(block, 'a', sizeof(block));\n        sha256_buffer(block, 64, digest);\n        sha256_hex(digest, hex);\n        if (strcmp(hex,\n                   "ffe054fe7ae0cb6dc65c3af9b61d5209"\n                   "f439851db43d0ba5997337df154668eb") != 0)\n            return 0;\n\n        sha256_init(&context);\n        sha256_update(&context, block, 13);\n        sha256_update(&context, block + 13, sizeof(block) - 13);\n        sha256_final(&context, digest);\n        sha256_hex(digest, hex);\n        if (strcmp(hex,\n                   "6836cf13bac400e9105071cd6af47084d"\n                   "facad4e5e302c94bfed24e013afb73e") != 0)\n            return 0;\n    }\n\n'''
+          text = text.replace(needle, extra, 1)
+          test.write_text(text)
+
+          for name in ('README.md', 'CHANGELOG.md', 'RELEASE_NOTES.md'):
+              path = Path(name)
+              text = path.read_text().replace('0.3.0-rc1', '0.3.0')
+              path.write_text(text)
+
+          readme = Path('README.md')
+          text = readme.read_text()
+          text = text.replace(
+              'Version `0.3.0` adds two larger pieces',
+              'Version `0.3.0` **Torii** adds two larger pieces', 1)
+          text = text.replace(
+              '`0.3.0` is a release candidate. The complete `0.2.0` manager—including selectable USB storage, standalone header backup, disable, restore, restart, shutdown, MagicGate signing, and guarded installation—was exercised successfully on real PlayStation 2 hardware.\n\nThe new full-payload rescue and boot-chain inspection paths compile cleanly with warnings treated as errors and their portable SHA-256/capsule code passes host-side tests. They still need the same real-console validation that promoted `0.2.0` from archaeology experiment to working archaeology experiment. Keep irreplaceable data copied elsewhere.',
+              '`0.3.0` **Torii** is the stable release line. The complete `0.2.0` manager—including selectable USB storage, standalone header backup, disable, restore, restart, shutdown, MagicGate signing, and guarded installation—was exercised successfully on real PlayStation 2 hardware.\n\nTorii promotes the full-payload rescue and boot-chain inspection work to stable while keeping the safety model unchanged. The portable SHA-256/capsule code is covered by host-side tests and every release is cross-built with the pinned PS2DEV toolchain. Broader real-console coverage is still welcome; stable means the release gates are satisfied, not that twenty-year-old disks have suddenly become immortal.', 1)
+          text = text.replace(
+              'The full rescue capsule and expanded boot-chain inspector are new in `0.3.0` and remain candidate functionality pending real-console testing.',
+              'The full rescue capsule and expanded boot-chain inspector are stable in `0.3.0` Torii; additional console and HDD combinations remain useful validation coverage.', 1)
+          text = text.replace(
+              'Release candidate `0.3.0` was built with the official PS2DEV v2.0.0 prebuilt toolchain.',
+              'Stable release `0.3.0` is built with the pinned official PS2DEV v2.0.0 container for reproducibility.', 1)
+          text = text.replace('[`RESCUE_FORMAT.md`](RESCUE_FORMAT.md)', '[`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md)')
+          marker = '## License\n'
+          assert marker in text
+          docs = '''## Project documentation\n\n- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — safety invariants, EE/IOP boundaries, and optimization policy.\n- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames and planned work.\n- [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — stable on-disk rescue capsule format.\n- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, test, and review rules for changes that can touch an HDD.\n\n'''
+          text = text.replace(marker, docs + marker, 1)
+          readme.write_text(text)
+
+          changelog = Path('CHANGELOG.md')
+          text = changelog.read_text()
+          text = text.replace('## [0.3.0] - 2026-08-20', '## [0.3.0] - 2026-08-21', 1)
+          text = text.replace('## [0.3.0] - 2026-08-21\n', '## [0.3.0] - 2026-08-21\n\n**Codename: Torii**\n', 1)
+          text = text.replace(
+              '- New full-rescue and diagnostic paths are released as a candidate pending real-console testing; the underlying `0.2.0` workflows remain hardware-validated.',
+              '- Promoted the full-rescue and diagnostic paths from release candidate to the stable `0.3.0` Torii line.\n- The underlying `0.2.0` write workflows remain hardware-validated; additional hardware coverage for Torii remains welcome.\n- Reorganized source, headers, and technical documentation into dedicated directories.\n- Added reproducible CI/release automation and removed the stale tracked ELF from the source tree.\n- Optimized SHA-256 for the R5900 by using a 16-word rolling schedule and direct hashing of complete input blocks.', 1)
+          changelog.write_text(text)
+
+          notes = Path('RELEASE_NOTES.md')
+          text = notes.read_text()
+          text = text.replace('# PS2 HDD Bootstrap Manager 0.3.0', '# PS2 HDD Bootstrap Manager 0.3.0 — Torii', 1)
+          text = text.replace('This release candidate adds', 'This stable release adds', 1)
+          text = text.replace(
+              'The source cross-compiles cleanly with `-Wall -Wextra -Werror`, and the portable SHA-256/capsule tests pass. The underlying `0.2.0` workflows are hardware-validated; the new full-rescue and diagnostic paths are release-candidate functionality awaiting real-console testing by Hifu Himejima.',
+              'The source cross-compiles with `-Wall -Wextra -Werror`, and the portable SHA-256/capsule tests cover both streaming and full-block hashing plus capsule serialization checks. The underlying `0.2.0` write workflows are hardware-validated; Torii promotes the rescue and diagnostic paths to stable while retaining the same pointer-last safety rules. Additional console and HDD coverage remains welcome.', 1)
+          text = text.replace('Read `README.md` and `RESCUE_FORMAT.md` before testing.', 'Read `README.md` and `docs/RESCUE_FORMAT.md` before testing.', 1)
+          notes.write_text(text)
+          PY
+
+          cat > include/version.h <<'EOF'
+          #ifndef PS2_HDD_BOOTSTRAP_MANAGER_VERSION_H
+          #define PS2_HDD_BOOTSTRAP_MANAGER_VERSION_H
+
+          /* Release identity is centralized here for the ELF and release automation. */
+          #define APP_VERSION "0.3.0"
+          #define APP_CODENAME "Torii"
+
+          #endif
+          EOF
+
+          cat > Makefile <<'EOF'
+          EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
+          EE_OBJS = main.o sha256.o capsule_format.o
+          EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
+          EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
+          EE_LDFLAGS = -Wl,--gc-sections
+
+          # Filesystem, MagicGate, USB mass-storage, power, and APA HDD services are
+          # embedded so the manager does not depend on whichever IOP modules launched it.
+          IRX_FILES = iomanX.irx fileXio.irx secrman.irx freesio2.irx freepad.irx \
+          	mcman.irx mcserv.irx secrsif.irx poweroff.irx bdm.irx \
+          	bdmfs_fatfs.irx usbd.irx usbmass_bd.irx ps2dev9.irx ps2atad.irx \
+          	ps2hdd.irx ps2fs.irx
+          EE_OBJS += $(IRX_FILES:.irx=_irx.o)
+
+          HOST_CC ?= cc
+          HOST_TEST = tests/test_formats
+
+          all: $(EE_BIN)
+
+          release: $(EE_BIN)
+          	$(EE_STRIP) --strip-all $(EE_BIN)
+
+          test-host:
+          	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+          		tests/test_formats.c src/sha256.c src/capsule_format.c -o $(HOST_TEST)
+          	./$(HOST_TEST)
+
+          clean:
+          	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TEST)
+
+          # Keep PS2 objects at the repository root so the stock PS2SDK sample rules
+          # and bin2c IRX rules remain simple even though human-maintained C lives in src/.
+          main.o: src/main.c
+          	$(EE_CC) $(EE_CFLAGS) -c $< -o $@
+
+          sha256.o: src/sha256.c
+          	$(EE_CC) $(EE_CFLAGS) -c $< -o $@
+
+          capsule_format.o: src/capsule_format.c
+          	$(EE_CC) $(EE_CFLAGS) -c $< -o $@
+
+          %_irx.c:
+          	$(PS2SDK)/bin/bin2c $(PS2SDK)/iop/irx/$*.irx $@ $*_irx
+
+          # Host-only goals intentionally do not require PS2DEV/PS2SDK to be installed.
+          PS2_GOALS := $(filter-out test-host clean,$(MAKECMDGOALS))
+          ifeq ($(MAKECMDGOALS),)
+          include $(PS2SDK)/samples/Makefile.pref
+          include $(PS2SDK)/samples/Makefile.eeglobal
+          else ifneq ($(PS2_GOALS),)
+          include $(PS2SDK)/samples/Makefile.pref
+          include $(PS2SDK)/samples/Makefile.eeglobal
+          endif
+
+          .PHONY: all release test-host clean
+          EOF
+
+          cat > docs/ARCHITECTURE.md <<'EOF'
+          # Architecture and safety invariants
+
+          PS2 HDD Bootstrap Manager is intentionally conservative: it is allowed to be slower than a desktop disk utility, but it is not allowed to be casual about a real APA disk. The EE application owns policy and user interaction; PS2SDK IOP modules own device access, PFS mounting, MagicGate services, and the APA driver interface.
+
+          ## Repository layout
+
+          - `src/main.c` — EE application state machine, storage helpers, APA validation, boot-chain inspection, and guarded write operations.
+          - `src/sha256.c` — portable SHA-256 used for rescue integrity and payload fingerprints.
+          - `src/capsule_format.c` — endian-stable rescue capsule serialization.
+          - `include/` — public/internal headers shared by the EE build and host tests.
+          - `tests/` — code that runs on an ordinary host and verifies portable format/crypto logic.
+          - `docs/` — format, architecture, and roadmap documentation.
+
+          `src/main.c` remains a single translation unit in 0.3.0 on purpose. Moving functions into files is easy; proving that no initialization, DMA-buffer, mount, or write-order assumption changed is the expensive part. The logical sections are already isolated and will become physical modules after the stable Torii release has a broader regression baseline.
+
+          ## Non-negotiable write invariants
+
+          Every HDD-changing path must preserve these rules:
+
+          1. Validate the APA master header, checksum, and non-hybrid layout first.
+          2. Save and read back a current 1024-byte header backup before the write.
+          3. Require an explicit multi-button confirmation chord.
+          4. Restrict raw writes to the reserved `__mbr` payload area; never raw-write sectors 0 or 1.
+          5. Flush and compare payload bytes before exposing a new payload through `osdStart`/`osdSize`.
+          6. Change the APA pointer through `ps2hdd`, then re-read and verify it.
+          7. Treat a damaged or wrong-disk full rescue capsule as an error, not as permission to silently fall back to a weaker restore.
+
+          Any optimization that changes these semantics is a behavior change, not a cleanup.
+
+          ## EE / IOP boundary
+
+          Raw HDD operations use `fileXioDevctl()` and DMA-safe aligned buffers. The current two-sector transfer size deliberately stays below fileXio's fixed devctl packet limits and has existing behavior behind it. Larger raw batches should be benchmarked and hardware-tested before they replace the conservative path.
+
+          PFS partitions are mounted read-only for boot-chain evidence. Configuration scanning and family classification are advisory diagnostics; encrypted KELFs are structurally validated and fingerprinted, not identified from imaginary plaintext signatures.
+
+          ## R5900 optimization policy
+
+          The release build uses `-O2 -G0` plus section garbage collection, matching the conservative optimization level used by PS2SDK. Torii adds two targeted SHA-256 improvements that are easy to verify on a host:
+
+          - a 16-word rolling message schedule instead of a 64-word stack array;
+          - direct transformation of complete 64-byte caller blocks instead of copying every block into the context buffer first.
+
+          This reduces stack pressure and unnecessary memory traffic when hashing multi-megabyte rescue payloads while preserving byte-for-byte output. `-O3`, speculative MIPS flags, LTO, or larger HDD devctl batches should only be adopted after size/speed measurement and real-console regression testing.
+
+          ## Commenting rule
+
+          Comments should explain hardware constraints, safety ordering, format contracts, and non-obvious PS2 behavior. They should not narrate trivial C syntax. Error codes and unusual constants need either a named macro or a nearby explanation that lets a future maintainer understand why changing them could be dangerous.
+          EOF
+
+          cat > docs/ROADMAP.md <<'EOF'
+          # Roadmap and release codenames
+
+          Release codenames use Japanese words connected with thresholds, passage, bridges, and wayfinding. The theme fits a tool whose entire job is deciding what the PS2 crosses into after ROM boot, while keeping the normal semantic version as the authoritative machine-readable version.
+
+          ## Release line
+
+          | Version | Codename | Meaning | Milestone |
+          |---|---|---|---|
+          | `0.1.x` | **Kagi** (鍵) | key | Emergency APA pointer backup/disable/restore and the first hardware recovery. |
+          | `0.2.0` | **Mon** (門) | gate | General HDD bootstrap management, selectable storage, MagicGate signing, and guarded installation. |
+          | `0.3.0` | **Torii** (鳥居) | gateway | Stable full rescue capsules, payload restoration, boot-chain inspection, persistent diagnostics, CI, and targeted R5900 hashing optimizations. |
+          | `0.4.x` | **Michishirube** (道標) | signpost | Internal modularization and stronger diagnostic/test infrastructure. |
+          | `0.5.x` | **Kakehashi** (架け橋) | bridge | Broader interoperability and portable tooling around rescue/inspection data. |
+          | `1.0.0` | **Kaidō** (街道) | main road | Frozen rescue-format contract, reproducible release process, and a broad real-hardware validation matrix. |
+
+          ## 0.4.x — Michishirube
+
+          Planned engineering work:
+
+          - split `src/main.c` along its existing logical boundaries (`platform`, `storage`, `apa`, `boot_chain`, `rescue`, `ui`) without changing write ordering;
+          - replace magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly;
+          - expand host tests for configuration parsing, same-disk header matching, KELF length validation, and boot-chain classification using synthetic fixtures;
+          - add a build-size report and keep performance changes measurable rather than flag-driven;
+          - establish a hardware validation table covering multiple FAT models, adapters/HDDs, memory-card layouts, and launch devices;
+          - make classification evidence tables more data-driven so adding a known environment does not require threading another special case through the UI.
+
+          ## 0.5.x — Kakehashi
+
+          Candidate work after the internal split is proven:
+
+          - a small host-side capsule inspector/extractor that never needs a PS2 to verify `HDDRESCUE*.BIN` integrity;
+          - import/export conveniences for reports and rescue metadata without weakening same-disk restore checks;
+          - richer compatibility evidence for FHDB, OSDMenu, PSBBN, HDD-OSD/HOSDMenu, and custom chains;
+          - optional machine-readable diagnostic output alongside the human-readable report.
+
+          ## 1.0.0 — Kaidō
+
+          1.0 is not a feature-count target. It requires a stable rescue format, reproducible tagged builds, no known safety-critical write-path defects, documented recovery behavior for interrupted operations, and enough independent hardware validation that the project is no longer relying on one console as its entire quality-assurance department.
+          EOF
+
+          cat > CONTRIBUTING.md <<'EOF'
+          # Contributing
+
+          Changes are welcome, but this program can write to a real PlayStation 2 HDD. Review standards are intentionally stricter around storage code than around text, diagnostics, or UI.
+
+          ## Before opening a pull request
+
+          Run the portable tests on a normal host:
+
+          ```sh
+          make test-host
+          ```
+
+          Build the PS2 release with the pinned toolchain used by CI:
+
+          ```sh
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
+            sh -lc 'make clean && make release'
+          ```
+
+          CI performs both checks automatically.
+
+          ## Storage-code rules
+
+          - Do not bypass the mandatory current-state backup.
+          - Do not raw-write APA header sectors 0 or 1.
+          - Keep payload verification before pointer activation.
+          - Keep full-capsule same-disk checks and bounds checks fail-closed.
+          - Do not increase raw devctl transfer sizes just because a larger buffer appears to fit; document the PS2SDK/fileXio limit and provide hardware validation.
+          - A performance change needs a correctness test first and a benchmark second.
+
+          ## Source style
+
+          Use English comments and diagnostics. Prefer comments that explain a PS2-specific constraint or a safety invariant over comments that merely restate the next line of C. Keep portable code free of PS2-only headers when practical so it can be exercised by `make test-host`.
+          EOF
+
+          cat > .github/workflows/ci.yml <<'EOF'
+          name: CI
+
+          on:
+            push:
+              branches: [main]
+            pull_request:
+
+          permissions:
+            contents: read
+
+          jobs:
+            host-tests:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                - name: Run portable tests
+                  run: make test-host
+
+            ps2-build:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                - name: Build stripped PS2 ELF with PS2DEV v2.0.0
+                  run: >-
+                    docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+                    sh -lc 'make clean && make release'
+                - name: Record artifact checksum
+                  run: sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+                - uses: actions/upload-artifact@v4
+                  with:
+                    name: PS2-HDD-Bootstrap-Manager
+                    path: |
+                      PS2_HDD_BOOTSTRAP_MANAGER.ELF
+                      PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+          EOF
+
+          cat > .github/workflows/release.yml <<'EOF'
+          name: Publish versioned release
+
+          on:
+            push:
+              branches: [main]
+
+          permissions:
+            contents: write
+
+          jobs:
+            publish:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                  with:
+                    fetch-depth: 0
+
+                - name: Read release identity
+                  id: version
+                  shell: bash
+                  run: |
+                    set -euo pipefail
+                    version="$(sed -n 's/^#define APP_VERSION "\([^"]*\)"/\1/p' include/version.h)"
+                    codename="$(sed -n 's/^#define APP_CODENAME "\([^"]*\)"/\1/p' include/version.h)"
+                    test -n "$version"
+                    test -n "$codename"
+                    echo "version=$version" >> "$GITHUB_OUTPUT"
+                    echo "codename=$codename" >> "$GITHUB_OUTPUT"
+                    echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+                - name: Check whether release already exists
+                  id: existing
+                  env:
+                    GH_TOKEN: ${{ github.token }}
+                    TAG: ${{ steps.version.outputs.tag }}
+                  run: |
+                    if gh release view "$TAG" >/dev/null 2>&1; then
+                      echo "exists=true" >> "$GITHUB_OUTPUT"
+                    else
+                      echo "exists=false" >> "$GITHUB_OUTPUT"
+                    fi
+
+                - name: Run portable tests
+                  if: steps.existing.outputs.exists != 'true'
+                  run: make test-host
+
+                - name: Build release ELF
+                  if: steps.existing.outputs.exists != 'true'
+                  run: >-
+                    docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+                    sh -lc 'make clean && make release'
+
+                - name: Package release assets
+                  if: steps.existing.outputs.exists != 'true'
+                  env:
+                    VERSION: ${{ steps.version.outputs.version }}
+                  run: |
+                    set -euo pipefail
+                    mv PS2_HDD_BOOTSTRAP_MANAGER.ELF "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF"
+                    sha256sum "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" > SHA256SUMS.txt
+
+                - name: Publish stable GitHub release
+                  if: steps.existing.outputs.exists != 'true'
+                  env:
+                    GH_TOKEN: ${{ github.token }}
+                    TAG: ${{ steps.version.outputs.tag }}
+                    VERSION: ${{ steps.version.outputs.version }}
+                    CODENAME: ${{ steps.version.outputs.codename }}
+                  run: |
+                    gh release create "$TAG" \
+                      "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" SHA256SUMS.txt \
+                      --target "$GITHUB_SHA" \
+                      --title "PS2 HDD Bootstrap Manager ${VERSION} — ${CODENAME}" \
+                      --notes-file RELEASE_NOTES.md
+          EOF
+
+      - name: Run host tests
+        run: make test-host
+
+      - name: Cross-build with pinned PS2DEV toolchain
+        run: >-
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -lc 'make clean && make release'
+
+      - name: Remove generated build output and temporary preparation workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f PS2_HDD_BOOTSTRAP_MANAGER.ELF tests/test_formats
+          rm -f .github/workflows/prepare-030-torii.yml
+
+      - name: Commit verified stabilization changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- .github/workflows/ci.yml .github/workflows/release.yml CONTRIBUTING.md Makefile README.md CHANGELOG.md RELEASE_NOTES.md docs include src tests/test_formats.c
+          git add -u -- main.c sha256.c sha256.h capsule_format.c capsule_format.h RESCUE_FORMAT.md dist/PS2_HDD_BOOTSTRAP_MANAGER.ELF .github/workflows/prepare-030-torii.yml
+          git commit -m "Stabilize 0.3.0 Torii and reorganize repository"
+          git push origin HEAD:release/0.3.0-torii
