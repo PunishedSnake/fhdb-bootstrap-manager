@@ -9,7 +9,7 @@ Release codenames use Japanese words connected with thresholds, passage, bridges
 | `0.1.x` | **Kagi** (鍵) | key | Emergency APA pointer backup/disable/restore and first hardware recovery. |
 | `0.2.0` | **Mon** (門) | gate | General HDD bootstrap management, selectable storage, MagicGate signing, guarded installation. |
 | `0.3.x` | **Torii** (鳥居) | gateway | Stable rescue capsules, payload restoration, boot-chain diagnostics, CI, compatible MBR.XIN/XLF handling. |
-| `0.4.x` | **Michishirube** (道標) | signpost | Modular architecture, regression laboratory, guarded metadata recovery, forensic APA reconstruction, scalable UI. |
+| `0.4.x` | **Michishirube** (道標) | signpost | Modular architecture, regression laboratory, guarded metadata recovery, forensic APA reconstruction, scalable and observable UI. |
 | `0.5.x` | **Kakehashi** (架け橋) | bridge | Versioned recovery interchange and cross-tool interoperability contracts. |
 | `0.6.x` | **Watari** (渡り) | crossing | Host-assisted repair-plan round trip with PS2-side revalidation and final write authority. |
 | `0.7.x` | **Sekisho** (関所) | checkpoint | Transaction journal, interruption recovery, rollback discipline and write-contract hardening. |
@@ -78,8 +78,10 @@ Michishirube is now under **feature freeze** except for fixes or narrowly scoped
 - [x] `diagnostics_controller_ps2` — diagnostics workflow outside `main.c`.
 - [x] `repair_controller_ps2` — deterministic startup/health repair UI outside portable policy.
 - [x] `forensic_controller_ps2` — raw scan, shadow-map browsing, report/snapshot/write authorization.
-- [x] `app_ui_ps2` — shared presentation/lifecycle helpers.
+- [x] `app_ui_ps2` — shared presentation/lifecycle helpers and contextual error presentation.
 - [x] `manager_menu_ps2` — hierarchical dashboard replacing global one-button-per-feature shortcuts.
+- [x] `disk_status_ps2` — throttled live HDD/LBA/action status fed by real transport/write stages.
+- [x] `app_error` — domain/stage-aware symbolic error catalog while preserving original numeric return codes.
 - [x] `main.c` composition root — startup/admission then hand-off to the dashboard; heavy boot-chain evidence collection is lazy.
 
 ### Recovery implementation
@@ -103,18 +105,22 @@ Michishirube is now under **feature freeze** except for fixes or narrowly scoped
 - [x] guarded host fault injector for reproducible one-bit master and one/two-bit topology corruption on images/physical test disks;
 - [ ] physical-HDD validation of exceptional raw metadata write paths.
 
-### UI / startup
+### UI / startup / observability
 
 - [x] hierarchical sections: Bootstrap, Diagnostics, Recovery, Backup & Storage, System;
 - [x] standard `UP/DOWN`, `X`, `TRIANGLE` navigation;
 - [x] unavailable actions remain visible with a reason;
 - [x] destructive confirmation chords remain separate from navigation;
 - [x] forensic candidate-map and patch inspection;
-- [x] on-screen progress for raw scan/write operations;
 - [x] best-effort steady ANALOG-lamp activity indication;
 - [x] defer full PFS/MC boot-chain diagnostics until requested rather than blocking dashboard startup;
 - [x] log startup timing for IOP reset, modules, services, pad, HDD status, header read and total pre-dashboard time;
-- [ ] validate fast-start timing and ANALOG-lamp behavior on hardware.
+- [x] live HDD monitor with current operation, phase, raw LBA/range, physical-disk position and progress bar;
+- [x] immediate live redraw for destructive WRITE/FLUSH/VERIFY/pointer stages and throttled ordinary read/scan redraw;
+- [x] forensic repair display of source-stability checks, interior-header writes, master-last LBA-0 commit and final touched-set verification;
+- [x] contextual errors showing symbolic ID, stage, summary, reason, recommended next step and preserved raw code;
+- [x] raw IOP failures are described from operation context instead of guessing the meaning of a small negative integer alone;
+- [ ] validate fast-start timing, live-monitor readability/performance, contextual error screens and ANALOG-lamp behavior on hardware.
 
 ## Current regression coverage
 
@@ -129,7 +135,8 @@ Portable CI covers:
 - **9 sparse 512 MiB forensic raw-HDD E2E fixtures** through production `apa_forensic_scan()`;
 - one-bit and exact two-bit stale-checksum topology recovery;
 - overlap/conflict/missing-master write gates;
-- guarded hardware fault-injector image self-test for probe/mutation/read-back/restoration.
+- guarded hardware fault-injector image self-test for probe/mutation/read-back/restoration;
+- contextual error-catalog mapping and record/consume lifecycle tests.
 
 ## Hardware evidence already collected for 0.4
 
@@ -150,17 +157,20 @@ The same pass exposed an approximately **1–2 minute pre-dashboard initializati
 ## Remaining 0.4 engineering work
 
 1. **Fast-start measurement** — collect the new `Startup timing ms:` line and identify any remaining module/DEV9/pad bottleneck.
-2. **Physical forensic baseline** — compare read-only Michishirube topology with DriveForge's known-good view of the same test HDD.
-3. **One-bit deterministic master fault** — use the guarded fault injector and validate `HDDRAW` + sectors 0-1 repair/restart.
-4. **One-bit topology fault** — validate shadow-map reconstruction, `HDDMETA`, exact patch and restart.
-5. **Exact two-bit topology fault** — require bit distance 2 plus stale-checksum corroboration on hardware.
-6. **Multi-header topology repair** — only after the single-header tests pass.
-7. **Storage matrix** — `mc0`, `mc1`, USB, pre-existing slots, slow/full media.
-8. **Controller matrix** — original DualShock 2 plus representative third-party pads.
-9. **Power-loss experiments** — only after ordinary destructive tests are reproducible and externally restorable.
+2. **Live-monitor baseline** — validate current operation/action/LBA/range/progress readability and measure whether redraw throttling materially changes forensic scan time.
+3. **Contextual error UX** — deliberately trigger missing MBR source and representative snapshot/bounds/recovery failures; confirm symbolic explanation and recommendation match the actual failing stage.
+4. **Physical forensic baseline** — compare read-only Michishirube topology with DriveForge's independently known view of the sacrificial test HDD.
+5. **One-bit deterministic master fault** — use the guarded fault injector and validate `HDDRAW` + sectors 0-1 repair/restart.
+6. **One-bit topology fault** — validate shadow-map reconstruction, `HDDMETA`, exact patch and restart.
+7. **Exact two-bit topology fault** — require bit distance 2 plus stale-checksum corroboration on hardware.
+8. **Multi-header topology repair** — only after the single-header tests pass.
+9. **Storage/controller/power-loss matrix** — `mc0`, `mc1`, USB, slow/full media, original/third-party pads, then controlled interruption boundaries.
 10. **Regression capture** — every hardware discrepancy becomes a host fixture/test before its fix is accepted.
 
+The HDD previously used for DriveForge testing and the HDD currently installed in the physical PS2 are distinct devices. The DriveForge test HDD can therefore be treated as the sacrificial fault-injection target while the console HDD remains a known-good baseline.
+
 Controlled physical corruption procedure: [`HARDWARE_FAULT_INJECTION.md`](HARDWARE_FAULT_INJECTION.md).
+Live-status/error behavior: [`STATUS_AND_ERRORS.md`](STATUS_AND_ERRORS.md).
 
 ## 0.5.x — Kakehashi
 
@@ -226,8 +236,6 @@ Requirements:
 - stale plans fail closed;
 - report which parts of a host proposal were accepted, rejected, or changed by console-side policy.
 
-This is the natural interoperability milestone with DriveForge. DriveForge may have better CPU/RAM/UI for analysis; the console retains final knowledge of the attached HDD and final mutation authority.
-
 ## 0.7.x — Sekisho
 
 **One purpose: make interrupted recovery a first-class recoverable state.**
@@ -243,20 +251,9 @@ Potential scope after hardware evidence justifies it:
 - fault-injection matrix at every transition;
 - no assumption that flush equals power-loss durability until real hardware supports that conclusion.
 
-Sekisho is deliberately later than Watari: first stabilize what a repair plan means, then stabilize interrupted execution of that plan.
-
 ## 0.8.x — intentionally unassigned
 
-Do not manufacture a feature train solely because `0.8` is numerically available.
-
-Possible future candidates may emerge from:
-
-- real adapter-specific recovery problems;
-- a coherent filesystem-rescue need that genuinely must execute on the PS2;
-- new HDD-OSD/bootstrap families requiring a distinct compatibility layer;
-- lessons from Kakehashi/Watari that warrant a separate security/identity milestone.
-
-If none of those becomes a coherent release theme, development can proceed from Sekisho to Tōge without forcing a 0.8 feature release.
+Do not manufacture a feature train solely because `0.8` is numerically available. Assign it only if hardware/interoperability work exposes a coherent milestone not naturally belonging to Kakehashi, Watari, Sekisho or Tōge.
 
 ## 0.9.x — Tōge
 
