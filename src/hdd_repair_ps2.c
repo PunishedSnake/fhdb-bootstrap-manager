@@ -1,4 +1,17 @@
-/* Explicit PS2-only raw writer for narrowly planned APA master repairs. */
+/*
+ * Explicit PS2-only writer for the exceptional APA master recovery path.
+ *
+ * Normal manager operations never raw-write sectors 0-1: payload replacement
+ * stays in the reserved __mbr program area and pointer changes go through
+ * HDIOC_SETOSDMBR. This module exists only for a planner-approved damaged
+ * master that cannot pass normal ps2hdd admission. The controller must save an
+ * exact HDDRAW*.BIN snapshot before calling this function.
+ *
+ * Even here the writer owns mechanics, not authorization: the supplied 1024
+ * bytes must already be a complete valid canonical APA master, GPT/protective
+ * layouts are refused, the write is flushed, and both sectors are read back
+ * and compared exactly before success is reported.
+ */
 
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
@@ -31,8 +44,8 @@ int hdd_repair_write_master_header_verified(
     if (repaired == NULL || readback == NULL)
         return HDD_REPAIR_INVALID_ARGUMENT;
 
-    /* Never use this raw path to erase a GPT/protective-MBR signal or to write
-       a header that does not already satisfy our complete repaired contract. */
+    /* Never use this exceptional path to erase a GPT/protective-MBR signal or
+       to write a buffer that is not already a complete repaired APA master. */
     if (!is_standard_apa_header(repaired) || is_hybrid_gpt(repaired) ||
         read_le32(repaired + APA_START_OFFSET) != 0 ||
         read_le16(repaired + APA_TYPE_OFFSET) != APA_MASTER_TYPE_VALUE ||
