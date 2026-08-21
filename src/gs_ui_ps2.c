@@ -2,11 +2,13 @@
  * Application-wide 2D frontend rendered through the PlayStation 2 GS.
  *
  * Physical testing proved the existing PS2SDK/libdebug CRT bootstrap on the
- * target console, while a standalone graph_initialize(640x448) path produced a
- * black screen. The bootstrap therefore remains responsible only for CRT/read-
- * circuit setup. This module owns every application pixel afterward, using the
- * proven framebuffer at VRAM 0, a resident ASCII atlas, GS primitives and GIF
- * DMA. A virtual 640x448 UI is mapped onto the 640x224 field coordinate space.
+ * target console. It establishes the interlaced FIELD output, read circuit and
+ * framebuffer at VRAM 0. This module owns every application pixel afterward.
+ *
+ * IMPORTANT: the hardware-proven drawing space is 640x224. Earlier Michishirube
+ * builds designed a 640x448 UI and divided Y by two at submission time. That
+ * fractional transformation damaged the 8x8 font raster on real hardware.
+ * Everything below is now authored directly in native 640x224 coordinates.
  */
 
 #include <kernel.h>
@@ -24,16 +26,17 @@
 
 #include "app_identity.h"
 #include "gs_ui_ps2.h"
+#include "ui_theme_ps2.h"
 #include "version.h"
 
 #define GS_UI_WIDTH 640
-#define GS_UI_HEIGHT 448
-#define GS_UI_FIELD_HEIGHT 224
-#define GS_UI_Y_SCALE 0.5f
+#define GS_UI_HEIGHT 224
+#define GS_UI_RESERVED_FRAME_HEIGHT 448
 #define GS_UI_FONT_SRC_W 8
 #define GS_UI_FONT_SRC_H 8
 #define GS_UI_GLYPH_W 8
-#define GS_UI_GLYPH_H 12
+#define GS_UI_GLYPH_H 8
+#define GS_UI_LINE_STEP 10
 #define GS_UI_ATLAS_W 128
 #define GS_UI_ATLAS_H 64
 #define GS_UI_PACKET_QWORDS 16384
@@ -57,59 +60,49 @@ static char console_buffer[GS_UI_CONSOLE_BYTES];
 static unsigned int console_used;
 static int renderer_ready;
 
-static float field_y(float virtual_y)
+static void set_color(color_t *color, ui_rgb_t rgb)
 {
-    return virtual_y * GS_UI_Y_SCALE;
-}
-
-static void set_color(color_t *color, unsigned int r, unsigned int g,
-                      unsigned int b, unsigned int a)
-{
-    color->r = (u8)r;
-    color->g = (u8)g;
-    color->b = (u8)b;
-    color->a = (u8)a;
+    color->r = rgb.r;
+    color->g = rgb.g;
+    color->b = rgb.b;
+    color->a = 0x80;
     color->q = 1.0f;
 }
 
-static qword_t *filled_rect(qword_t *q, float x0, float y0,
-                            float x1, float y1,
-                            unsigned int r, unsigned int g,
-                            unsigned int b)
+static qword_t *filled_rect_rgb(qword_t *q, float x0, float y0,
+                                float x1, float y1, ui_rgb_t rgb)
 {
     rect_t rect;
 
     rect.v0.x = x0;
-    rect.v0.y = field_y(y0);
+    rect.v0.y = y0;
     rect.v0.z = 1;
     rect.v1.x = x1;
-    rect.v1.y = field_y(y1);
+    rect.v1.y = y1;
     rect.v1.z = 1;
-    set_color(&rect.color, r, g, b, 0x80);
+    set_color(&rect.color, rgb);
     draw_disable_blending();
     return draw_rect_filled(q, GS_UI_CONTEXT, &rect);
 }
 
-static qword_t *outline_rect(qword_t *q, float x0, float y0,
-                             float x1, float y1,
-                             unsigned int r, unsigned int g,
-                             unsigned int b)
+static qword_t *outline_rect_rgb(qword_t *q, float x0, float y0,
+                                 float x1, float y1, ui_rgb_t rgb)
 {
     rect_t rect;
 
     rect.v0.x = x0;
-    rect.v0.y = field_y(y0);
+    rect.v0.y = y0;
     rect.v0.z = 1;
     rect.v1.x = x1;
-    rect.v1.y = field_y(y1);
+    rect.v1.y = y1;
     rect.v1.z = 1;
-    set_color(&rect.color, r, g, b, 0x80);
+    set_color(&rect.color, rgb);
     draw_disable_blending();
     return draw_rect_outline(q, GS_UI_CONTEXT, &rect);
 }
 
 static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
-                          unsigned int r, unsigned int g, unsigned int b)
+                          ui_rgb_t rgb)
 {
     texrect_t glyph;
     unsigned int glyph_x;
@@ -121,16 +114,16 @@ static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
     glyph_y = ((unsigned int)ch >> 4) * GS_UI_FONT_SRC_H;
 
     glyph.v0.x = x;
-    glyph.v0.y = field_y(y);
+    glyph.v0.y = y;
     glyph.v0.z = 2;
     glyph.v1.x = x + GS_UI_GLYPH_W;
-    glyph.v1.y = field_y(y + GS_UI_GLYPH_H);
+    glyph.v1.y = y + GS_UI_GLYPH_H;
     glyph.v1.z = 2;
     glyph.t0.u = (float)glyph_x;
     glyph.t0.v = (float)glyph_y;
     glyph.t1.u = (float)(glyph_x + GS_UI_FONT_SRC_W);
     glyph.t1.v = (float)(glyph_y + GS_UI_FONT_SRC_H);
-    set_color(&glyph.color, r, g, b, 0x80);
+    set_color(&glyph.color, rgb);
 
     draw_enable_blending();
     return draw_rect_textured(q, GS_UI_CONTEXT, &glyph);
@@ -138,9 +131,7 @@ static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
 
 static qword_t *text_string_box(qword_t *q, float x, float y,
                                 float max_x, float max_y,
-                                const char *text,
-                                unsigned int r, unsigned int g,
-                                unsigned int b)
+                                const char *text, ui_rgb_t rgb)
 {
     float cursor_x = x;
     float cursor_y = y;
@@ -154,26 +145,26 @@ static qword_t *text_string_box(qword_t *q, float x, float y,
             continue;
         if (ch == '\n') {
             cursor_x = x;
-            cursor_y += GS_UI_GLYPH_H + 2;
+            cursor_y += GS_UI_LINE_STEP;
             continue;
         }
         if (cursor_x + GS_UI_GLYPH_W > max_x) {
             cursor_x = x;
-            cursor_y += GS_UI_GLYPH_H + 2;
+            cursor_y += GS_UI_LINE_STEP;
             if (cursor_y + GS_UI_GLYPH_H > max_y)
                 break;
         }
-        q = text_char(q, cursor_x, cursor_y, ch, r, g, b);
+        q = text_char(q, cursor_x, cursor_y, ch, rgb);
         cursor_x += GS_UI_GLYPH_W;
     }
     return q;
 }
 
-static qword_t *text_string(qword_t *q, float x, float y, const char *text,
-                            unsigned int r, unsigned int g, unsigned int b)
+static qword_t *text_string(qword_t *q, float x, float y,
+                            const char *text, ui_rgb_t rgb)
 {
-    return text_string_box(q, x, y, GS_UI_WIDTH - 18.0f,
-                           GS_UI_HEIGHT - 18.0f, text, r, g, b);
+    return text_string_box(q, x, y, GS_UI_WIDTH - 14.0f,
+                           GS_UI_HEIGHT - 4.0f, text, rgb);
 }
 
 static void build_font_atlas(void)
@@ -210,12 +201,13 @@ static int setup_environment(void)
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
 
-    /* init_scr() has already configured the physical display to read from VRAM
-       address 0. Reset only the allocator bookkeeping, reserve exactly that
-       framebuffer footprint so later textures cannot overlap it, then allocate
-       the atlas after it. No CRT/read-circuit registers are changed here. */
+    /* init_scr() already configured VRAM 0 as the visible framebuffer. Keep a
+       deliberately conservative 640x448 allocator reservation so emergency
+       real-libdebug output cannot overlap our font atlas even though normal
+       application drawing is clipped to the native 640x224 field. */
     graph_vram_clear();
-    reserved_frame = graph_vram_allocate(GS_UI_WIDTH, GS_UI_HEIGHT,
+    reserved_frame = graph_vram_allocate(GS_UI_WIDTH,
+                                         GS_UI_RESERVED_FRAME_HEIGHT,
                                          GS_PSM_32, GRAPH_ALIGN_PAGE);
     if (reserved_frame != 0)
         return -1;
@@ -244,12 +236,10 @@ static int setup_environment(void)
         return -3;
     q = packet->data;
     q = draw_setup_environment(q, GS_UI_CONTEXT, &frame, &zbuffer);
-    /* libdraw's draw2d primitives already add +2048. The previous hardware-
-       visible HUD additionally used XYOFFSET 1728/1936, which displaced it by
-       exactly +320/+112. Keep the proven video mode but correct that offset. */
+    /* libdraw draw2d primitives add the GS +2048 bias themselves. */
     q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
     q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
-                          0, GS_UI_FIELD_HEIGHT - 1);
+                          0, GS_UI_HEIGHT - 1);
     q = draw_finish(q);
     dma_wait_fast();
     dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
@@ -337,7 +327,7 @@ static qword_t *begin_frame(packet_t **packet_out)
     q = draw_framebuffer(q, GS_UI_CONTEXT, &frame);
     q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
     q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
-                          0, GS_UI_FIELD_HEIGHT - 1);
+                          0, GS_UI_HEIGHT - 1);
     q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
     q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
     q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
@@ -354,40 +344,32 @@ static void end_frame(packet_t *packet, qword_t *q)
     render_packet_index ^= 1u;
 }
 
-static void tone_rgb(gs_ui_tone_t tone,
-                     unsigned int *r, unsigned int *g, unsigned int *b)
+static ui_rgb_t tone_color(gs_ui_tone_t tone,
+                           const ui_theme_palette_t *theme)
 {
     switch (tone) {
-        case GS_UI_TONE_SUCCESS:
-            *r = 74u; *g = 190u; *b = 132u;
-            break;
-        case GS_UI_TONE_WARNING:
-            *r = 224u; *g = 170u; *b = 72u;
-            break;
-        case GS_UI_TONE_DANGER:
-            *r = 226u; *g = 92u; *b = 92u;
-            break;
+        case GS_UI_TONE_SUCCESS: return theme->success;
+        case GS_UI_TONE_WARNING: return theme->warning;
+        case GS_UI_TONE_DANGER: return theme->danger;
         case GS_UI_TONE_INFO:
-        default:
-            *r = 74u; *g = 184u; *b = 224u;
-            break;
+        default: return theme->accent;
     }
 }
 
 static qword_t *draw_shell(qword_t *q, const char *section,
                            gs_ui_tone_t tone)
 {
-    unsigned int r, g, b;
+    const ui_theme_palette_t *theme = ui_theme_current();
+    ui_rgb_t accent = tone_color(tone, theme);
 
-    tone_rgb(tone, &r, &g, &b);
-    q = filled_rect(q, 0, 0, GS_UI_WIDTH, GS_UI_HEIGHT, 8, 11, 18);
-    q = filled_rect(q, 0, 0, GS_UI_WIDTH, 7, r, g, b);
-    q = filled_rect(q, 18, 18, 622, 58, 16, 22, 32);
-    q = outline_rect(q, 18, 18, 622, 58, 44, 58, 76);
-    q = text_string(q, 30, 29, APP_NAME "  v" APP_VERSION,
-                    230, 235, 242);
+    q = filled_rect_rgb(q, 0, 0, GS_UI_WIDTH, GS_UI_HEIGHT,
+                        theme->background);
+    q = filled_rect_rgb(q, 0, 0, GS_UI_WIDTH, 4, accent);
+    q = filled_rect_rgb(q, 12, 8, 628, 29, theme->panel);
+    q = outline_rect_rgb(q, 12, 8, 628, 29, theme->border);
+    q = text_string(q, 22, 14, APP_NAME "  v" APP_VERSION, theme->text);
     if (section != NULL && section[0] != '\0')
-        q = text_string_box(q, 360, 29, 610, 52, section, r, g, b);
+        q = text_string_box(q, 500, 14, 618, 23, section, accent);
     return q;
 }
 
@@ -411,7 +393,8 @@ int gs_ui_initialize(void)
     console_used = 0;
     render_packet_index = 0;
     renderer_ready = 1;
-    gs_ui_render_message("Starting", "Graphics Synthesizer frontend ready.",
+    gs_ui_render_message("Starting",
+                         "Graphics Synthesizer frontend ready.",
                          NULL, GS_UI_TONE_INFO);
     return 0;
 }
@@ -429,10 +412,12 @@ void gs_ui_render_menu(const char *title,
                        unsigned int item_count,
                        unsigned int selected)
 {
+    const ui_theme_palette_t *theme = ui_theme_current();
     packet_t *packet;
     qword_t *q;
     unsigned int i;
     float content_y;
+    float available;
     float row_height;
 
     if (!renderer_ready && gs_ui_initialize() < 0)
@@ -442,59 +427,95 @@ void gs_ui_render_menu(const char *title,
 
     q = begin_frame(&packet);
     q = draw_shell(q, "MANAGER", GS_UI_TONE_INFO);
-    q = text_string_box(q, 28, 72, 612, 94,
-                        title != NULL ? title : "Menu",
-                        236, 240, 246);
+    q = text_string_box(q, 20, 35, 620, 44,
+                        title != NULL ? title : "Menu", theme->text);
 
     if (status != NULL && status[0] != '\0') {
-        q = filled_rect(q, 24, 100, 616, 137, 13, 19, 29);
-        q = outline_rect(q, 24, 100, 616, 137, 37, 52, 70);
-        q = text_string_box(q, 34, 111, 606, 131, status,
-                            146, 164, 187);
-        content_y = 149.0f;
+        q = filled_rect_rgb(q, 16, 48, 624, 66, theme->panel);
+        q = outline_rect_rgb(q, 16, 48, 624, 66, theme->border);
+        q = text_string_box(q, 26, 53, 614, 62, status, theme->muted);
+        content_y = 70.0f;
     } else {
-        content_y = 106.0f;
+        content_y = 50.0f;
     }
 
-    row_height = item_count <= 5u ? 52.0f : 38.0f;
+    available = 203.0f - content_y;
+    row_height = item_count != 0u ? available / (float)item_count : available;
+    if (row_height > 32.0f)
+        row_height = 32.0f;
+    if (row_height < 11.0f)
+        row_height = 11.0f;
+
     for (i = 0; i < item_count; i++) {
         float y0 = content_y + (float)i * row_height;
-        float y1 = y0 + row_height - 5.0f;
+        float y1 = y0 + row_height - 2.0f;
         int is_enabled = enabled == NULL || enabled[i] != 0u;
         int is_selected = i == selected;
+        ui_rgb_t row_bg;
+        ui_rgb_t border;
+        ui_rgb_t bar;
+        ui_rgb_t label_color;
+        ui_rgb_t hint_color;
 
-        if (y1 > 407.0f)
+        if (y1 > 202.0f)
             break;
-        if (is_selected) {
-            q = filled_rect(q, 24, y0, 616, y1, 22, 34, 49);
-            q = filled_rect(q, 24, y0, 30, y1,
-                            is_enabled ? 74u : 95u,
-                            is_enabled ? 184u : 103u,
-                            is_enabled ? 224u : 112u);
-            q = outline_rect(q, 24, y0, 616, y1, 54, 76, 98);
+
+        if (!is_enabled) {
+            row_bg = theme->disabled_bg;
+            border = theme->disabled_border;
+            bar = theme->warning;
+            label_color = theme->disabled_text;
+            hint_color = theme->disabled_text;
+        } else if (is_selected) {
+            row_bg = theme->panel_alt;
+            border = theme->border;
+            bar = theme->accent;
+            label_color = theme->text;
+            hint_color = theme->muted;
         } else {
-            q = filled_rect(q, 28, y0, 612, y1, 12, 17, 25);
+            row_bg = theme->panel;
+            border = theme->panel;
+            bar = theme->panel;
+            label_color = theme->text;
+            hint_color = theme->muted;
         }
 
-        q = text_string_box(q, 43, y0 + 8.0f, 600, y0 + 23.0f,
-                            labels != NULL && labels[i] != NULL
-                                ? labels[i] : "(unnamed)",
-                            is_enabled ? 231u : 112u,
-                            is_enabled ? 236u : 120u,
-                            is_enabled ? 243u : 132u);
-        if (hints != NULL && hints[i] != NULL && row_height >= 48.0f) {
-            q = text_string_box(q, 43, y0 + 27.0f, 600, y1 - 3.0f,
-                                hints[i],
-                                is_enabled ? 139u : 92u,
-                                is_enabled ? 158u : 100u,
-                                is_enabled ? 182u : 110u);
+        q = filled_rect_rgb(q, 18, y0, 622, y1, row_bg);
+        if (is_selected || !is_enabled)
+            q = outline_rect_rgb(q, 18, y0, 622, y1, border);
+        q = filled_rect_rgb(q, 18, y0, 23, y1, bar);
+
+        if (row_height >= 23.0f) {
+            q = text_string_box(q, 34, y0 + 3.0f,
+                                is_enabled ? 610.0f : 528.0f,
+                                y0 + 12.0f,
+                                labels != NULL && labels[i] != NULL
+                                    ? labels[i] : "(unnamed)",
+                                label_color);
+            if (!is_enabled)
+                q = text_string_box(q, 545, y0 + 3.0f, 610, y0 + 12.0f,
+                                    "LOCKED", theme->warning);
+            if (hints != NULL && hints[i] != NULL)
+                q = text_string_box(q, 34, y0 + 13.0f, 610, y1 - 1.0f,
+                                    hints[i], hint_color);
+        } else {
+            q = text_string_box(q, 34, y0 + 2.0f,
+                                is_enabled ? 610.0f : 528.0f,
+                                y1 - 1.0f,
+                                labels != NULL && labels[i] != NULL
+                                    ? labels[i] : "(unnamed)",
+                                label_color);
+            if (!is_enabled)
+                q = text_string_box(q, 545, y0 + 2.0f, 610, y1 - 1.0f,
+                                    "LOCKED", theme->warning);
         }
     }
 
-    q = filled_rect(q, 0, 414, GS_UI_WIDTH, GS_UI_HEIGHT, 11, 15, 23);
-    q = text_string_box(q, 28, 425, 612, 444,
-                        "UP/DOWN  Select        X  Open        TRIANGLE  Back",
-                        139, 158, 182);
+    q = filled_rect_rgb(q, 0, 205, GS_UI_WIDTH, GS_UI_HEIGHT,
+                        theme->panel_alt);
+    q = text_string_box(q, 20, 211, 620, 220,
+                        "UP/DOWN Select       X Open       TRIANGLE Back",
+                        theme->muted);
     end_frame(packet, q);
 }
 
@@ -503,27 +524,29 @@ void gs_ui_render_message(const char *title,
                           const char *footer,
                           gs_ui_tone_t tone)
 {
+    const ui_theme_palette_t *theme = ui_theme_current();
     packet_t *packet;
     qword_t *q;
-    unsigned int r, g, b;
+    ui_rgb_t accent;
+    float body_bottom = footer != NULL && footer[0] != '\0' ? 194.0f : 211.0f;
 
     if (!renderer_ready && gs_ui_initialize() < 0)
         return;
-    tone_rgb(tone, &r, &g, &b);
+    accent = tone_color(tone, theme);
 
     q = begin_frame(&packet);
     q = draw_shell(q, "STATUS", tone);
-    q = text_string_box(q, 30, 76, 610, 99,
-                        title != NULL ? title : "Information",
-                        r, g, b);
-    q = filled_rect(q, 24, 108, 616, 397, 13, 18, 27);
-    q = outline_rect(q, 24, 108, 616, 397, 38, 52, 69);
-    q = text_string_box(q, 38, 124, 602, 382,
-                        body != NULL ? body : "",
-                        222, 229, 238);
-    if (footer != NULL && footer[0] != '\0')
-        q = text_string_box(q, 28, 420, 612, 444, footer,
-                            139, 158, 182);
+    q = text_string_box(q, 20, 36, 620, 45,
+                        title != NULL ? title : "Information", accent);
+    q = filled_rect_rgb(q, 16, 49, 624, body_bottom, theme->panel);
+    q = outline_rect_rgb(q, 16, 49, 624, body_bottom, theme->border);
+    q = text_string_box(q, 28, 58, 612, body_bottom - 7.0f,
+                        body != NULL ? body : "", theme->text);
+    if (footer != NULL && footer[0] != '\0') {
+        q = filled_rect_rgb(q, 0, 201, GS_UI_WIDTH, GS_UI_HEIGHT,
+                            theme->panel_alt);
+        q = text_string_box(q, 20, 209, 620, 219, footer, theme->muted);
+    }
     end_frame(packet, q);
 }
 
@@ -601,6 +624,7 @@ void gs_ui_console_printf(const char *format, ...)
 
 void gs_ui_render_disk_status(const char *operation,
                               const char *phase,
+                              const char *location,
                               const char *io_kind,
                               unsigned int percent,
                               unsigned int progress_current,
@@ -609,13 +633,12 @@ void gs_ui_render_disk_status(const char *operation,
                               unsigned int sectors,
                               int write_sensitive)
 {
+    const ui_theme_palette_t *theme = ui_theme_current();
     packet_t *packet;
     qword_t *q;
     char line[160];
     float progress_width;
-    unsigned int accent_r = write_sensitive ? 226u : 74u;
-    unsigned int accent_g = write_sensitive ? 124u : 184u;
-    unsigned int accent_b = write_sensitive ? 72u : 224u;
+    ui_rgb_t accent = write_sensitive ? theme->warning : theme->accent;
 
     if (!renderer_ready && gs_ui_initialize() < 0)
         return;
@@ -626,34 +649,36 @@ void gs_ui_render_disk_status(const char *operation,
     q = draw_shell(q, "LIVE HDD", write_sensitive
                                   ? GS_UI_TONE_WARNING : GS_UI_TONE_INFO);
 
-    q = filled_rect(q, 24, 76, 616, 185, 13, 18, 27);
-    q = outline_rect(q, 24, 76, 616, 185, 38, 52, 69);
-    q = text_string(q, 38, 92, "OPERATION", 126, 145, 170);
-    q = text_string_box(q, 142, 92, 600, 108,
+    q = filled_rect_rgb(q, 16, 35, 624, 96, theme->panel);
+    q = outline_rect_rgb(q, 16, 35, 624, 96, theme->border);
+    q = text_string(q, 28, 42, "OPERATION", theme->muted);
+    q = text_string_box(q, 124, 42, 612, 51,
                         operation != NULL ? operation : "HDD activity",
-                        232, 237, 244);
-    q = text_string(q, 38, 124, "ACTION", 126, 145, 170);
-    q = text_string_box(q, 142, 124, 600, 140,
+                        theme->text);
+    q = text_string(q, 28, 56, "ACTION", theme->muted);
+    q = text_string_box(q, 124, 56, 612, 65,
                         phase != NULL && phase[0] != '\0'
                             ? phase : io_kind,
-                        232, 237, 244);
-    q = text_string(q, 38, 156, "I/O", 126, 145, 170);
-    q = text_string_box(q, 142, 156, 600, 172,
-                        io_kind != NULL ? io_kind : "HDD I/O",
-                        accent_r, accent_g, accent_b);
+                        theme->text);
+    q = text_string(q, 28, 70, "LOCATION", theme->muted);
+    q = text_string_box(q, 124, 70, 612, 79,
+                        location != NULL ? location : "HDD",
+                        theme->text);
+    q = text_string(q, 28, 84, "I/O", theme->muted);
+    q = text_string_box(q, 124, 84, 612, 93,
+                        io_kind != NULL ? io_kind : "HDD I/O", accent);
 
-    q = filled_rect(q, 24, 203, 616, 257, 13, 18, 27);
-    q = outline_rect(q, 24, 203, 616, 257, 38, 52, 69);
-    q = filled_rect(q, 38, 220, 548, 238, 31, 40, 54);
-    progress_width = 510.0f * ((float)percent / 100.0f);
+    q = filled_rect_rgb(q, 16, 102, 624, 128, theme->panel);
+    q = outline_rect_rgb(q, 16, 102, 624, 128, theme->border);
+    q = filled_rect_rgb(q, 28, 111, 546, 119, theme->panel_alt);
+    progress_width = 518.0f * ((float)percent / 100.0f);
     if (progress_width > 0.0f)
-        q = filled_rect(q, 38, 220, 38.0f + progress_width, 238,
-                        accent_r, accent_g, accent_b);
+        q = filled_rect_rgb(q, 28, 111, 28.0f + progress_width, 119, accent);
     snprintf(line, sizeof(line), "%3u%%", percent);
-    q = text_string(q, 561, 222, line, 236, 240, 246);
+    q = text_string(q, 563, 111, line, theme->text);
 
-    q = filled_rect(q, 24, 275, 616, 389, 13, 18, 27);
-    q = outline_rect(q, 24, 275, 616, 389, 38, 52, 69);
+    q = filled_rect_rgb(q, 16, 134, 624, 199, theme->panel);
+    q = outline_rect_rgb(q, 16, 134, 624, 199, theme->border);
     if (progress_total != 0u) {
         snprintf(line, sizeof(line),
                  "POSITION  0x%08x / 0x%08x sectors",
@@ -661,7 +686,7 @@ void gs_ui_render_disk_status(const char *operation,
     } else {
         snprintf(line, sizeof(line), "POSITION  disk size unavailable");
     }
-    q = text_string_box(q, 38, 293, 600, 312, line, 193, 205, 221);
+    q = text_string_box(q, 28, 143, 612, 152, line, theme->muted);
 
     if (sectors != 0u) {
         if (sectors > 1u)
@@ -671,24 +696,28 @@ void gs_ui_render_disk_status(const char *operation,
         else
             snprintf(line, sizeof(line),
                      "SECTOR    0x%08x   (1 sector)", lba);
-        q = text_string_box(q, 38, 326, 600, 345, line, 230, 236, 244);
     } else {
-        q = text_string_box(q, 38, 326, 600, 345,
-                            "SECTOR    waiting for next HDD command",
-                            153, 171, 194);
+        snprintf(line, sizeof(line),
+                 "SECTOR    no raw sector command in this phase");
+    }
+    q = text_string_box(q, 28, 157, 612, 166, line, theme->text);
+
+    if (progress_total != 0u) {
+        snprintf(line, sizeof(line), "STEP      %u / %u",
+                 progress_current, progress_total);
+        q = text_string_box(q, 28, 171, 612, 180, line, theme->muted);
     }
 
-    q = text_string_box(q, 38, 359, 600, 379,
+    q = text_string_box(q, 28, 185, 612, 195,
                         write_sensitive
                             ? "WRITE PATH ACTIVE - do not reset or remove power"
-                            : "Read-only activity - every published event is rendered",
-                        write_sensitive ? 244u : 151u,
-                        write_sensitive ? 174u : 198u,
-                        write_sensitive ? 92u : 214u);
+                            : "Read-only activity - live event monitoring",
+                        write_sensitive ? theme->warning : theme->success);
 
-    q = filled_rect(q, 0, 414, GS_UI_WIDTH, GS_UI_HEIGHT, 11, 15, 23);
-    q = text_string_box(q, 28, 425, 612, 444,
-                        "GS / GIF DMA frontend - full-screen field renderer",
-                        126, 145, 170);
+    q = filled_rect_rgb(q, 0, 205, GS_UI_WIDTH, GS_UI_HEIGHT,
+                        theme->panel_alt);
+    q = text_string_box(q, 20, 211, 620, 220,
+                        "GS live monitor - operation / location / LBA / phase",
+                        theme->muted);
     end_frame(packet, q);
 }
