@@ -83,6 +83,13 @@ def make_valid_kelf_sector():
     return payload
 
 
+def make_partial_kelf_sector():
+    old_sector = bytearray([0xA5] * SECTOR_SIZE)
+    valid = make_valid_kelf_sector()
+    old_sector[:20] = valid[:20]
+    return old_sector
+
+
 def make_protective_mbr():
     sector = bytearray(SECTOR_SIZE)
     entry = 446
@@ -122,11 +129,13 @@ def main():
     add("valid_enabled", make_apa_header(PAYLOAD_LBA, 1),
         [(PAYLOAD_LBA * SECTOR_SIZE, make_valid_kelf_sector())],
         standard=True, hybrid=False, gpt=False, start=PAYLOAD_LBA, sectors=1,
-        bounds=0, kelf=0, mbr_size=DEFAULT_MBR_SECTORS)
+        bounds=0, kelf=0, payload_lba=PAYLOAD_LBA,
+        mbr_size=DEFAULT_MBR_SECTORS)
     add("garbage_payload", make_apa_header(PAYLOAD_LBA, 1),
         [(PAYLOAD_LBA * SECTOR_SIZE, b"garbage" + bytes(SECTOR_SIZE - 7))],
         standard=True, hybrid=False, gpt=False, start=PAYLOAD_LBA, sectors=1,
-        bounds=0, kelf=-152, mbr_size=DEFAULT_MBR_SECTORS)
+        bounds=0, kelf=-3, payload_lba=PAYLOAD_LBA,
+        mbr_size=DEFAULT_MBR_SECTORS)
 
     header = make_apa_header(PAYLOAD_LBA, 1)
     header[0x220] ^= 1
@@ -165,7 +174,8 @@ def main():
         make_apa_header(PAYLOAD_LBA, 1, pc_signature=True, gpt_header=True),
         [(PAYLOAD_LBA * SECTOR_SIZE, make_valid_kelf_sector())],
         standard=True, hybrid=True, gpt=True, start=PAYLOAD_LBA, sectors=1,
-        bounds=0, kelf=0, mbr_size=DEFAULT_MBR_SECTORS)
+        bounds=0, kelf=0, payload_lba=PAYLOAD_LBA,
+        mbr_size=DEFAULT_MBR_SECTORS)
 
     add("gpt_only", make_protective_mbr(),
         [(SECTOR_SIZE, make_gpt_header(1, IMAGE_SECTORS - 1, IMAGE_SECTORS))],
@@ -179,6 +189,36 @@ def main():
         garbage[index] = (state >> 16) & 0xFF
     add("deterministic_garbage", garbage, standard=False, hybrid=False,
         gpt=False)
+
+    # Power-loss / interrupted-transaction states. These are disk states, not
+    # simulated IOP failures: the portable test suite classifies the bytes that
+    # would remain if execution stopped at the named point.
+    add("interrupted_payload_written_pointer_zero", make_apa_header(),
+        [(PAYLOAD_LBA * SECTOR_SIZE, make_valid_kelf_sector())],
+        standard=True, hybrid=False, gpt=False, start=0, sectors=0,
+        bounds=-170, kelf=0, payload_lba=PAYLOAD_LBA,
+        mbr_size=DEFAULT_MBR_SECTORS)
+    add("interrupted_partial_payload_pointer_zero", make_apa_header(),
+        [(PAYLOAD_LBA * SECTOR_SIZE, make_partial_kelf_sector())],
+        standard=True, hybrid=False, gpt=False, start=0, sectors=0,
+        bounds=-170, kelf=-2, payload_lba=PAYLOAD_LBA,
+        mbr_size=DEFAULT_MBR_SECTORS)
+    add("enabled_zeroed_payload", make_apa_header(PAYLOAD_LBA, 1),
+        standard=True, hybrid=False, gpt=False, start=PAYLOAD_LBA, sectors=1,
+        bounds=0, kelf=-3, payload_lba=PAYLOAD_LBA,
+        mbr_size=DEFAULT_MBR_SECTORS)
+    add("enabled_partial_overwrite", make_apa_header(PAYLOAD_LBA, 1),
+        [(PAYLOAD_LBA * SECTOR_SIZE, make_partial_kelf_sector())],
+        standard=True, hybrid=False, gpt=False, start=PAYLOAD_LBA, sectors=1,
+        bounds=0, kelf=-2, payload_lba=PAYLOAD_LBA,
+        mbr_size=DEFAULT_MBR_SECTORS)
+
+    torn = make_apa_header(PAYLOAD_LBA, 1)
+    write_le32(torn, APA_OSD_START_OFFSET, 0)
+    write_le32(torn, APA_OSD_SIZE_OFFSET, 0)
+    add("torn_disable_stale_checksum", torn,
+        standard=False, hybrid=False, gpt=False, start=0, sectors=0,
+        bounds=-170, mbr_size=DEFAULT_MBR_SECTORS)
 
     with open(os.path.join(args.output, "manifest.json"), "w", encoding="utf-8") as manifest:
         json.dump({"sector_size": SECTOR_SIZE,
