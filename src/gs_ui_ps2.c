@@ -58,7 +58,20 @@ static u32 font_atlas[GS_UI_ATLAS_W * GS_UI_ATLAS_H]
     __attribute__((aligned(64)));
 static char console_buffer[GS_UI_CONSOLE_BYTES];
 static unsigned int console_used;
+static int console_dirty;
 static int renderer_ready;
+static int blending_enabled = -1;
+
+static void select_blending(int enabled)
+{
+    if (blending_enabled == enabled)
+        return;
+    if (enabled)
+        draw_enable_blending();
+    else
+        draw_disable_blending();
+    blending_enabled = enabled;
+}
 
 static void set_color(color_t *color, ui_rgb_t rgb)
 {
@@ -81,7 +94,7 @@ static qword_t *filled_rect_rgb(qword_t *q, float x0, float y0,
     rect.v1.y = y1;
     rect.v1.z = 1;
     set_color(&rect.color, rgb);
-    draw_disable_blending();
+    select_blending(0);
     return draw_rect_filled(q, GS_UI_CONTEXT, &rect);
 }
 
@@ -97,12 +110,12 @@ static qword_t *outline_rect_rgb(qword_t *q, float x0, float y0,
     rect.v1.y = y1;
     rect.v1.z = 1;
     set_color(&rect.color, rgb);
-    draw_disable_blending();
+    select_blending(0);
     return draw_rect_outline(q, GS_UI_CONTEXT, &rect);
 }
 
 static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
-                          ui_rgb_t rgb)
+                          const color_t *color)
 {
     texrect_t glyph;
     unsigned int glyph_x;
@@ -123,9 +136,9 @@ static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
     glyph.t0.v = (float)glyph_y;
     glyph.t1.u = (float)(glyph_x + GS_UI_FONT_SRC_W);
     glyph.t1.v = (float)(glyph_y + GS_UI_FONT_SRC_H);
-    set_color(&glyph.color, rgb);
+    glyph.color = *color;
 
-    draw_enable_blending();
+    select_blending(1);
     return draw_rect_textured(q, GS_UI_CONTEXT, &glyph);
 }
 
@@ -135,9 +148,11 @@ static qword_t *text_string_box(qword_t *q, float x, float y,
 {
     float cursor_x = x;
     float cursor_y = y;
+    color_t color;
 
     if (text == NULL)
         return q;
+    set_color(&color, rgb);
     while (*text != '\0' && cursor_y + GS_UI_GLYPH_H <= max_y) {
         unsigned char ch = (unsigned char)*text++;
 
@@ -154,7 +169,7 @@ static qword_t *text_string_box(qword_t *q, float x, float y,
             if (cursor_y + GS_UI_GLYPH_H > max_y)
                 break;
         }
-        q = text_char(q, cursor_x, cursor_y, ch, rgb);
+        q = text_char(q, cursor_x, cursor_y, ch, &color);
         cursor_x += GS_UI_GLYPH_W;
     }
     return q;
@@ -342,6 +357,7 @@ static void end_frame(packet_t *packet, qword_t *q)
     dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
                             (int)(q - packet->data), 0, 0);
     render_packet_index ^= 1u;
+    console_dirty = 0;
 }
 
 static ui_rgb_t tone_color(gs_ui_tone_t tone,
@@ -391,7 +407,9 @@ int gs_ui_initialize(void)
 
     console_buffer[0] = '\0';
     console_used = 0;
+    console_dirty = 0;
     render_packet_index = 0;
+    blending_enabled = -1;
     renderer_ready = 1;
     gs_ui_render_message("Starting",
                          "Graphics Synthesizer frontend ready.",
@@ -572,7 +590,7 @@ static void render_console_buffer(void)
         memcpy(title, console_buffer, title_len);
         title[title_len] = '\0';
         body = newline + 1;
-        if (strncmp(title, APP_NAME, strlen(APP_NAME)) == 0)
+        if (strncmp(title, APP_NAME, sizeof(APP_NAME) - 1u) == 0)
             snprintf(title, sizeof(title), "Manager status");
     } else {
         snprintf(title, sizeof(title), "Manager status");
@@ -585,8 +603,7 @@ void gs_ui_console_clear(void)
 {
     console_buffer[0] = '\0';
     console_used = 0;
-    if (renderer_ready)
-        render_console_buffer();
+    console_dirty = 1;
 }
 
 void gs_ui_console_vprintf(const char *format, va_list arguments)
@@ -610,6 +627,15 @@ void gs_ui_console_vprintf(const char *format, va_list arguments)
     else
         console_used += (unsigned int)written;
     console_buffer[console_used] = '\0';
+    console_dirty = 1;
+}
+
+void gs_ui_console_present(void)
+{
+    if (!console_dirty)
+        return;
+    if (!renderer_ready && gs_ui_initialize() < 0)
+        return;
     render_console_buffer();
 }
 
