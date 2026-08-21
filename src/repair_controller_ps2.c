@@ -16,6 +16,7 @@
 #include "apa.h"
 #include "apa_repair.h"
 #include "boot_chain.h"
+#include "disk_status_ps2.h"
 #include "hdd_read.h"
 #include "hdd_repair_ps2.h"
 #include "platform.h"
@@ -61,14 +62,24 @@ static int apply_header_repair(unsigned char header[APA_HEADER_SIZE],
     char snapshot_path[REPAIR_SNAPSHOT_PATH_SIZE];
     int result;
 
+    disk_status_begin_at("Deterministic APA master recovery",
+                         "Building planner-approved repaired header",
+                         "In-memory copy of APA master sectors 0-1");
+    disk_status_io(DISK_STATUS_SCAN, 0, 2, 1, 3);
     result = apa_repair_build_header(header, plan, repaired);
-    if (result < 0)
+    if (result < 0) {
+        disk_status_end();
         return REPAIR_CONTROLLER_BLOCKED;
+    }
 
     /* Raw sectors 0-1 are the exceptional recovery path. Preserve the exact
        damaged bytes externally before the first write; normal Torii-style
        operations continue to avoid raw master-header writes entirely. */
+    disk_status_phase_at("Saving exact pre-repair HDDRAW snapshot",
+                         "Selected backup storage; source is sectors 0-1");
+    disk_status_io(DISK_STATUS_SCAN, 0, 2, 2, 3);
     result = repair_snapshot_save(storage_selected(), header, snapshot_path);
+    disk_status_end();
     if (result < 0) {
         scr_clear();
         scr_printf("Raw repair snapshot could not be saved.\n\n");
@@ -92,8 +103,6 @@ static int apply_header_repair(unsigned char header[APA_HEADER_SIZE],
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_START))
         return REPAIR_CONTROLLER_NONE;
 
-    scr_clear();
-    scr_printf("Writing repaired APA master header...\n");
     result = hdd_repair_write_master_header_verified(repaired, header);
     if (result < 0) {
         session_log_line("Raw APA repair failed code=%d snapshot=%s", result,
@@ -134,8 +143,15 @@ int repair_controller_startup(unsigned char header[APA_HEADER_SIZE],
         APA_REPAIR_ISSUE_MBR_VERSION;
     apa_repair_plan_t plan;
 
-    if (apa_repair_analyze(header, &plan) < 0)
+    disk_status_begin_at("Startup recovery analysis",
+                         "Evaluating raw APA master identity and checksum",
+                         "APA master header / sectors 0-1");
+    disk_status_io(DISK_STATUS_SCAN, 0, 2, 1, 1);
+    if (apa_repair_analyze(header, &plan) < 0) {
+        disk_status_end();
         return REPAIR_CONTROLLER_BLOCKED;
+    }
+    disk_status_end();
 
     /* Pointer-only anomalies belong to normal mounted-disk health handling;
        startup recovery exists only to rescue a master rejected by ps2hdd. */
@@ -188,15 +204,33 @@ int repair_controller_health(unsigned char header[APA_HEADER_SIZE],
 {
     repair_health_t health;
     int bounds_result = 0;
+    unsigned int start = read_le32(header + APA_OSD_START_OFFSET);
+    unsigned int size = read_le32(header + APA_OSD_SIZE_OFFSET);
 
-    if (read_le32(header + APA_OSD_START_OFFSET) != 0 &&
-        read_le32(header + APA_OSD_SIZE_OFFSET) != 0)
-        bounds_result = hdd_validate_payload_bounds(
-            read_le32(header + APA_OSD_START_OFFSET),
-            read_le32(header + APA_OSD_SIZE_OFFSET));
+    disk_status_begin_at("Deterministic HDD health analysis",
+                         "Checking APA master identity and pointer state",
+                         "APA master header / sectors 0-1");
+    disk_status_io(DISK_STATUS_SCAN, 0, 2, 1, 3);
 
-    if (repair_health_assess(header, boot_chain, bounds_result, &health) < 0)
+    if (start != 0 && size != 0) {
+        disk_status_phase_at("Validating active bootstrap pointer bounds",
+                             "Reserved __mbr payload geometry");
+        disk_status_io(DISK_STATUS_SCAN, start, size, 2, 3);
+        bounds_result = hdd_validate_payload_bounds(start, size);
+    } else {
+        disk_status_phase_at("Bootstrap pointer is disabled",
+                             "APA master osdStart/osdSize");
+        disk_status_io(DISK_STATUS_SCAN, 0, 2, 2, 3);
+    }
+
+    disk_status_phase_at("Combining header, pointer and payload evidence",
+                         "In-memory deterministic repair policy");
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 3, 3);
+    if (repair_health_assess(header, boot_chain, bounds_result, &health) < 0) {
+        disk_status_end();
         return REPAIR_CONTROLLER_BLOCKED;
+    }
+    disk_status_end();
 
     for (;;) {
         u32 pressed;
