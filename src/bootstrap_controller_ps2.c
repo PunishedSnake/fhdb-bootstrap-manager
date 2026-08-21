@@ -285,9 +285,11 @@ void bootstrap_controller_restore(
     scr_printf("Full rescue restore from\n%s\n\n", rescue.path);
     scr_printf("Family  : %s (%s)\n", rescue.info.family,
                rescue.info.confidence);
-    scr_printf("Target  : 0x%08x\n", rescue.info.payload_start);
+    scr_printf("Target  : 0x%08x\n",
+               (unsigned int)rescue.info.payload_start);
     scr_printf("Payload : %u bytes / 0x%x sectors\n",
-               rescue.info.payload_bytes, rescue.info.payload_sectors);
+               (unsigned int)rescue.info.payload_bytes,
+               (unsigned int)rescue.info.payload_sectors);
     scr_printf("Safety  : %s\n\n", safety_backup);
     scr_printf("The payload will be written and compared first.\n");
     scr_printf("Its pointer will be enabled only after verification.\n\n");
