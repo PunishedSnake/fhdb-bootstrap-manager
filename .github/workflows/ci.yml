@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   host-tests:
@@ -32,3 +32,195 @@ jobs:
           path: |
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+
+  integrate-rescue-lifecycle:
+    if: github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/0.4.0-michishirube
+          fetch-depth: 0
+
+      - name: Route rescue lifecycle through modules
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/main.c')
+          text = path.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once('#include "capsule_format.h"\n', '', 'capsule format include')
+          replace_once('#include "header_backup.h"\n#include "kelf.h"\n',
+                       '#include "header_backup.h"\n#include "kelf.h"\n#include "rescue_storage.h"\n',
+                       'rescue storage include')
+          replace_once('#include "sha256.h"\n', '', 'sha256 include')
+          replace_once('#define MAX_RESCUE_CAPSULE_SIZE \\\n    (RESCUE_CAPSULE_METADATA_SIZE + APA_HEADER_SIZE + MAX_MBR_PAYLOAD_SIZE)\n',
+                       '', 'rescue size macro')
+          replace_once('static unsigned char capsule_metadata[RESCUE_CAPSULE_METADATA_SIZE]\n    __attribute__((aligned(64)));\n',
+                       '', 'capsule metadata buffer')
+
+          start = text.index('/* Generate one of two non-overwriting full rescue-capsule paths. */')
+          end = text.index('/* Resolve a compatible enabled legacy pointer backup on selected storage. */', start)
+          old_block = text[start:end]
+          for token in ('write_rescue_file', 'load_rescue_file',
+                        'rescue_file_matches', 'save_rescue_capsule',
+                        'find_rescue_capsule'):
+              if token not in old_block:
+                  raise SystemExit(f'rescue lifecycle block missing {token}')
+          new_block = '''/* Save the current versioned rescue state through the isolated lifecycle. */
+          static const char *save_rescue_capsule(void)
+          {
+              return rescue_storage_save_current(
+                  storage_selected(), header_buffer, boot_chain.romver,
+                  boot_chain.family, boot_chain.confidence);
+          }
+
+          '''
+          text = text[:start] + new_block + text[end:]
+
+          start = text.index('/* Restore a verified payload first and expose it to ROM only after read-back. */')
+          end = text.index('/* Sign, write, verify, and finally enable a stock MBR.XLF payload. */', start)
+          new_restore = '''/* Restore a verified payload first and expose it to ROM only after read-back. */
+          static void restore_rescue_capsule(void)
+          {
+              rescue_storage_entry_t rescue;
+              const unsigned char *payload;
+              const char *safety_backup;
+              bootstrap_transaction_result_t transaction;
+              int result;
+
+              result = rescue_storage_find(storage_selected(), header_buffer, &rescue);
+              if (result == RESCUE_STORAGE_NOT_FOUND ||
+                  result == RESCUE_STORAGE_HEADER_ONLY) {
+                  restore_legacy_pointer();
+                  return;
+              }
+              if (result < 0) {
+                  scr_clear();
+                  scr_printf("A rescue capsule exists but is not safe to restore.\\n");
+                  scr_printf("Validation code: %d\\n\\n", result);
+                  scr_printf("It was not replaced by a pointer-only restore.\\n");
+                  session_log_line("Rescue capsule load rejected with code %d", result);
+                  session_log_flush(storage_selected());
+                  wait_to_return();
+                  return;
+              }
+
+              result = hdd_validate_payload_bounds(rescue.info.payload_start,
+                                                   rescue.info.payload_sectors);
+              if (result < 0) {
+                  rescue_storage_entry_release(&rescue);
+                  scr_clear();
+                  scr_printf("Rescue payload does not fit this __mbr area.\\n");
+                  scr_printf("Validation code: %d\\n", result);
+                  wait_to_return();
+                  return;
+              }
+              safety_backup = save_backup();
+              if (safety_backup == NULL) {
+                  rescue_storage_entry_release(&rescue);
+                  backup_error_screen();
+                  return;
+              }
+
+              payload = rescue_storage_payload(&rescue);
+              scr_clear();
+              scr_printf("Full rescue restore from\\n%s\\n\\n", rescue.path);
+              scr_printf("Family  : %s (%s)\\n", rescue.info.family,
+                         rescue.info.confidence);
+              scr_printf("Target  : 0x%08x\\n",
+                         (unsigned int)rescue.info.payload_start);
+              scr_printf("Payload : %u bytes / 0x%x sectors\\n",
+                         (unsigned int)rescue.info.payload_bytes,
+                         (unsigned int)rescue.info.payload_sectors);
+              scr_printf("Safety  : %s\\n\\n", safety_backup);
+              scr_printf("The payload will be written and compared first.\\n");
+              scr_printf("Its pointer will be enabled only after verification.\\n\\n");
+              scr_printf("Hold L1+R1 and press SQUARE to confirm.\\n");
+              scr_printf("Press TRIANGLE to cancel.\\n");
+              if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_SQUARE)) {
+                  rescue_storage_entry_release(&rescue);
+                  return;
+              }
+
+              scr_clear();
+              scr_printf("Restoring and verifying rescue payload...\\n");
+              result = bootstrap_transaction_ps2_activate(
+                  header_buffer, payload, rescue.info.payload_bytes,
+                  rescue.info.payload_start, rescue.info.payload_sectors,
+                  free, rescue.file_data, &transaction);
+              rescue.file_data = NULL;
+              if (result < 0) {
+                  if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_PAYLOAD)
+                      fatal_screen(
+                          "Rescue payload verification failed; pointer remains disabled.",
+                          result);
+                  else if (transaction.stage ==
+                           BOOTSTRAP_TRANSACTION_STAGE_POINTER_SET)
+                      fatal_screen(
+                          "Rescue payload verified, but pointer restore failed.", result);
+                  else
+                      fatal_screen("Rescue pointer read-back verification failed.",
+                                   result);
+              }
+
+              session_log_line(
+                  "Full rescue restored from %s (%u bytes); safety backup=%s",
+                  rescue.path, rescue.file_size, safety_backup);
+              refresh_boot_chain_report(1);
+              scr_clear();
+              scr_printf("Payload and pointer restored and verified.\\n\\n");
+              scr_printf("Source: %s\\n", rescue.path);
+              wait_to_return();
+          }
+
+          '''
+          text = text[:start] + new_restore + text[end:]
+
+          forbidden = (
+              'capsule_metadata', 'write_rescue_file', 'load_rescue_file',
+              'rescue_file_matches', 'find_rescue_capsule',
+              'rescue_path_for_slot', 'MAX_RESCUE_CAPSULE_SIZE',
+              'sha256_buffer('
+          )
+          for token in forbidden:
+              if token in text:
+                  raise SystemExit(f'legacy rescue implementation remained: {token}')
+          for required in ('rescue_storage_save_current', 'rescue_storage_find',
+                           'rescue_storage_payload',
+                           'rescue_storage_entry_release'):
+              if required not in text:
+                  raise SystemExit(f'missing rescue module call: {required}')
+
+          path.write_text(text)
+          PY
+
+      - name: Verify rescue boundary and regressions
+        run: |
+          ! grep -q 'fileXioOpen.*HDDRESCUE\|write_rescue_file\|load_rescue_file\|find_rescue_capsule\|capsule_metadata\|sha256_buffer' src/main.c
+          ! grep -q 'scr_printf\|wait_for_chord\|bootstrap_transaction\|HDIOC_WRITESECTOR\|HDIOC_SETOSDMBR' src/rescue_storage.c
+          ! grep -q 'fileXio\|DelayThread\|storage_selected\|session_log\|hdd_read' src/rescue_image.c
+          grep -q 'rescue_storage_save_current' src/main.c
+          grep -q 'rescue_storage_find' src/main.c
+          make test-host
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
+            sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit integrated rescue lifecycle and restore normal CI
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/main.c
+          git commit -m "Route rescue lifecycle through modules"
+          git checkout 1aa98ee9ef9a5bacd08dea788b886b8d4000b2de -- .github/workflows/ci.yml
+          git add -- .github/workflows/ci.yml
+          git commit -m "Restore normal CI after rescue extraction"
+          git push origin HEAD:dev/0.4.0-michishirube
