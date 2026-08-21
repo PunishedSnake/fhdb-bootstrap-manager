@@ -52,9 +52,12 @@ int hdd_write_set_osd_mbr(u32 start, u32 size)
     hddSetOsdMBR_t info;
     int result;
 
-    disk_status_begin("Bootstrap pointer update",
-                      "Updating osdStart/osdSize through ps2hdd");
-    disk_status_io(DISK_STATUS_POINTER, 0, 2, 0, 0);
+    disk_status_begin_at("Bootstrap pointer update",
+                         start == 0 && size == 0
+                             ? "Clearing osdStart/osdSize through ps2hdd"
+                             : "Enabling osdStart/osdSize through ps2hdd",
+                         "APA master header / sectors 0-1");
+    disk_status_io(DISK_STATUS_POINTER, 0, 2, 0, 2);
     info.start = start;
     info.size = size;
     result = fileXioDevctl("hdd0:", HDIOC_SETOSDMBR_LOCAL,
@@ -64,8 +67,9 @@ int hdd_write_set_osd_mbr(u32 start, u32 size)
         disk_status_end();
         return result;
     }
-    disk_status_phase("Flushing updated APA master pointer");
-    disk_status_io(DISK_STATUS_FLUSH, 0, 2, 0, 0);
+    disk_status_phase_at("Flushing updated APA master pointer",
+                         "ATA write cache / APA master sectors 0-1");
+    disk_status_io(DISK_STATUS_FLUSH, 0, 2, 1, 2);
     result = fileXioDevctl("hdd0:", HDIOC_FLUSH_LOCAL,
                            NULL, 0, NULL, 0);
     if (result < 0)
@@ -79,17 +83,25 @@ int hdd_write_verify_osd_mbr(unsigned char destination[APA_HEADER_SIZE],
 {
     int result;
 
-    disk_status_io(DISK_STATUS_VERIFY, 0, 2, 0, 0);
+    disk_status_begin_at("Bootstrap pointer verification",
+                         "Reading APA master back after pointer update",
+                         "APA master header / sectors 0-1");
+    disk_status_io(DISK_STATUS_VERIFY, 0, 2, 1, 2);
     if (hdd_read_raw_sectors(0, 2, header_verify_buffer) < 0) {
         app_error_record(APP_ERROR_DOMAIN_HDD_WRITE,
                          HDD_WRITE_HEADER_READ_FAILED,
                          "verify sectors 0-1 after pointer update");
+        disk_status_end();
         return HDD_WRITE_HEADER_READ_FAILED;
     }
+    disk_status_phase_at("Comparing pointer and canonical APA master fields",
+                         "In-memory read-back of sectors 0-1");
+    disk_status_io(DISK_STATUS_VERIFY, 0, 2, 2, 2);
     if (!is_standard_apa_header(header_verify_buffer)) {
         app_error_record(APP_ERROR_DOMAIN_HDD_WRITE,
                          HDD_WRITE_HEADER_INVALID,
                          "verify canonical APA master");
+        disk_status_end();
         return HDD_WRITE_HEADER_INVALID;
     }
     if (read_le32(header_verify_buffer + APA_OSD_START_OFFSET) !=
@@ -97,6 +109,7 @@ int hdd_write_verify_osd_mbr(unsigned char destination[APA_HEADER_SIZE],
         app_error_record(APP_ERROR_DOMAIN_HDD_WRITE,
                          HDD_WRITE_START_MISMATCH,
                          "verify osdStart read-back");
+        disk_status_end();
         return HDD_WRITE_START_MISMATCH;
     }
     if (read_le32(header_verify_buffer + APA_OSD_SIZE_OFFSET) !=
@@ -104,10 +117,12 @@ int hdd_write_verify_osd_mbr(unsigned char destination[APA_HEADER_SIZE],
         app_error_record(APP_ERROR_DOMAIN_HDD_WRITE,
                          HDD_WRITE_SIZE_MISMATCH,
                          "verify osdSize read-back");
+        disk_status_end();
         return HDD_WRITE_SIZE_MISMATCH;
     }
     memcpy(destination, header_verify_buffer, APA_HEADER_SIZE);
     result = 0;
+    disk_status_end();
     return result;
 }
 
@@ -120,8 +135,9 @@ int hdd_write_payload_verified(const unsigned char *payload,
     u32 total_sectors = (payload_size + HDD_SECTOR_SIZE - 1u) /
                         HDD_SECTOR_SIZE;
 
-    disk_status_begin("Bootstrap payload transaction",
-                      "Writing payload sectors");
+    disk_status_begin_at("Bootstrap payload transaction",
+                         "Writing payload sectors",
+                         "Reserved __mbr bootstrap program area");
     while (offset < payload_size) {
         unsigned int remaining = payload_size - offset;
         unsigned int bytes = remaining > HDD_TRANSFER_BYTES
@@ -150,7 +166,8 @@ int hdd_write_payload_verified(const unsigned char *payload,
         sector_offset += sectors;
     }
 
-    disk_status_phase("Flushing bootstrap payload");
+    disk_status_phase_at("Flushing bootstrap payload",
+                         "ATA write cache / reserved __mbr program area");
     disk_status_io(DISK_STATUS_FLUSH, start_sector, total_sectors,
                    total_sectors, total_sectors);
     if (fileXioDevctl("hdd0:", HDIOC_FLUSH_LOCAL,
@@ -162,7 +179,8 @@ int hdd_write_payload_verified(const unsigned char *payload,
         return HDD_WRITE_PAYLOAD_FLUSH_FAILED;
     }
 
-    disk_status_phase("Reading payload back for exact verification");
+    disk_status_phase_at("Reading payload back for exact verification",
+                         "Reserved __mbr bootstrap program area");
     offset = 0;
     sector_offset = 0;
     while (offset < payload_size) {
