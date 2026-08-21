@@ -24,11 +24,6 @@ jobs:
 
           #include "boot_chain.h"
 
-          /*
-           * Own the latest rendered BOOTCHAIN.TXT image and its persistence result.
-           * Rendering remains delegated to boot_report.c and device I/O to
-           * boot_report_ps2.c; this module only keeps their shared session state.
-           */
           unsigned int boot_report_session_render(const boot_chain_info_t *info,
                                                   unsigned int start,
                                                   unsigned int sectors,
@@ -36,7 +31,6 @@ jobs:
                                                   const char *application_version);
           int boot_report_session_save(unsigned int storage);
           int boot_report_session_last_save_result(void);
-          unsigned int boot_report_session_length(void);
 
           #endif
           EOF
@@ -80,11 +74,6 @@ jobs:
           int boot_report_session_last_save_result(void)
           {
               return last_save_result;
-          }
-
-          unsigned int boot_report_session_length(void)
-          {
-              return report_length;
           }
           EOF
 
@@ -143,7 +132,15 @@ jobs:
               '    scr_printf("Save code : %d\\n\\n", last_report_save_result);\n',
               '    scr_printf("Save code : %d\\n\\n",\n'
               '               boot_report_session_last_save_result());\n',
-              'report save result UI')
+              'diagnostics save result')
+          text = replace_once(
+              text,
+              '        scr_printf("Report   : %s\\n\\n",\n'
+              '                   last_report_save_result == 0 ? "saved" : "not saved");\n',
+              '        scr_printf("Report   : %s\\n\\n",\n'
+              '                   boot_report_session_last_save_result() == 0\n'
+              '                       ? "saved" : "not saved");\n',
+              'main menu report status')
 
           for token in ('boot_report_length', 'last_report_save_result',
                         'static char boot_report[', 'save_boot_chain_report('):
@@ -187,7 +184,6 @@ jobs:
               '`boot_diagnostics_ps2.c` now orchestrates the complete read-only evidence scan; `boot_report_ps2.c` owns `BOOTCHAIN.TXT` persistence and `session_log.c` owns bounded `HDDMAN.LOG` buffering, rotation, and flush policy. `main.c` retains diagnostics presentation/timing, rescue/install policy, MagicGate signing, and every write-capable APA operation.',
               '`boot_diagnostics_ps2.c` orchestrates the complete read-only evidence scan; `boot_report_session.c` owns the latest rendered report/session save result, `boot_report_ps2.c` owns `BOOTCHAIN.TXT` device persistence, and `session_log.c` owns bounded `HDDMAN.LOG` buffering, rotation, and flush policy. `main.c` retains diagnostics presentation/timing, rescue/install policy, MagicGate signing, and every write-capable APA operation.',
               'README report session')
-
           replace_once(
               'docs/ARCHITECTURE.md',
               '- `src/boot_report_ps2.c` — PS2-only `BOOTCHAIN.TXT` persistence, including storage-path construction and the existing USB mount grace period; it performs no rendering or classification.\n',
@@ -199,14 +195,12 @@ jobs:
               '5. `boot_report_ps2.c` persists that already-rendered image as `BOOTCHAIN.TXT`; `session_log.c` owns ordered `HDDMAN.LOG` buffering, append/rotation, and storage retry policy. `main.c` retains scan timing/presentation, the last report-save result used by the UI, and the short diagnostics screen.\n',
               '5. `boot_report_session.c` owns the latest rendered text image and last save result, delegating actual file persistence to `boot_report_ps2.c`; `session_log.c` owns ordered `HDDMAN.LOG` buffering, append/rotation, and storage retry policy. `main.c` retains scan timing/presentation and the short diagnostics screen.\n',
               'architecture report pipeline')
-
           replace_once(
               'docs/ROADMAP.md',
               '- [ ] diagnostics presentation/UI — `main.c` still decides when to scan/render/persist, retains the last report-save result for display, and owns the short diagnostics screen.\n',
               '- [x] `boot_report_session` state — latest rendered report bytes, length, and last persistence result are outside `main.c`, while rendering and device I/O remain delegated to their existing narrow modules.\n'
               '- [ ] diagnostics presentation/UI — `main.c` still decides when to scan/render/persist and owns the short diagnostics screen itself.\n',
               'roadmap report state')
-
           replace_once(
               'CHANGELOG.md',
               '- Kept only diagnostics timing/presentation, the last report-save result used by the UI, and the short diagnostics screen in `main.c`.\n',
