@@ -18,7 +18,7 @@ jobs:
 
       - name: Encapsulate selected storage state
         run: |
-          unexpected="$(grep -RIl '\bselected_storage\b' src include | grep -vE '^(src/main.c|src/storage.c|include/storage.h)$' || true)"
+          unexpected="$(grep -RIl '\bselected_storage\b' src include | grep -vE '^(src/main.c|src/storage.c|src/boot_chain_ps2.c|include/storage.h)$' || true)"
           if [ -n "$unexpected" ]; then
             echo "Unexpected selected_storage users:"
             echo "$unexpected"
@@ -96,6 +96,16 @@ jobs:
           if 'selected_storage' in text:
               raise SystemExit('selected_storage remained in main.c')
           path.write_text(text)
+
+          path = Path('src/boot_chain_ps2.c')
+          text = path.read_text()
+          text = replace_once(text,
+              '    int attempts = (selected_storage == 2 &&\n',
+              '    int attempts = (storage_selected() == 2 &&\n',
+              'boot-chain USB retry selection')
+          if 'selected_storage' in text:
+              raise SystemExit('selected_storage remained in boot_chain_ps2.c')
+          path.write_text(text)
           PY
 
       - name: Update documentation
@@ -134,8 +144,11 @@ jobs:
         run: |
           ! grep -q 'extern unsigned int selected_storage' include/storage.h
           ! grep -q '\bselected_storage\b' src/main.c
+          ! grep -q '\bselected_storage\b' src/boot_chain_ps2.c
           grep -q 'static unsigned int selected_storage' src/storage.c
           grep -q 'storage_set_selected' src/main.c
+          remaining="$(grep -RIl '\bselected_storage\b' src include | grep -v '^src/storage.c$' || true)"
+          test -z "$remaining"
           make test-host
 
       - name: Cross-build integrated R5900 ELF
@@ -148,8 +161,8 @@ jobs:
           rm .github/workflows/encapsulate-storage-selection.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- include/storage.h src/storage.c src/main.c CHANGELOG.md \
-            docs/ARCHITECTURE.md docs/ROADMAP.md \
+          git add -- include/storage.h src/storage.c src/main.c src/boot_chain_ps2.c \
+            CHANGELOG.md docs/ARCHITECTURE.md docs/ROADMAP.md \
             .github/workflows/encapsulate-storage-selection.yml
           git commit -m "Encapsulate storage selection state"
           git push origin HEAD:dev/0.4.0-michishirube
