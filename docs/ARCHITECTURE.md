@@ -6,18 +6,19 @@ PS2 HDD Bootstrap Manager is intentionally conservative: it is allowed to be slo
 
 The `0.4.0-dev` **Michishirube** line is progressively converting the former monolithic EE application into explicit modules. The split is intentionally mechanical first: code moves behind headers without simultaneously changing storage semantics.
 
-- `src/main.c` — application state machine, raw active-payload acquisition, boot-chain report orchestration, rescue/install workflows, logging policy, raw HDD transport, and guarded pointer/write ordering that has not yet been extracted.
+- `src/main.c` — application state machine, raw active-payload acquisition, report persistence/orchestration, rescue/install workflows, logging policy, raw HDD transport, and guarded pointer/write ordering that has not yet been extracted.
 - `src/platform.c` — IOP reset, embedded IRX startup, pad initialization, button-edge input, and confirmation-chord input.
 - `src/storage.c` — storage target definitions, launch-device selection, ROMVER access, and generic fileXio helpers. The first split temporarily exposes the selected target state so call sites remain behaviorally identical; later Michishirube work will encapsulate it after regression coverage exists.
 - `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
 - `src/boot_chain.c` — PS2SDK-free boot-chain evidence model, CNF parsing, ROMVER mapping, target parsing, and family-classification policy.
 - `src/boot_chain_ps2.c` — PS2-only but read-only evidence collection from memory cards and PFS partitions. It owns no raw HDD write or pointer update.
+- `src/boot_report.c` — PS2SDK-free, bounded rendering of a completed evidence snapshot into the human-readable `BOOTCHAIN.TXT` image. It performs no device access or persistence.
 - `src/kelf.c` — portable structural KELF parser and recovery of the real file length from a sector-padded HDD image. It reads the PS2SDK-defined wire fields explicitly as little-endian bytes rather than relying on a target-native struct cast.
 - `src/mbr_compat.c` — narrow `MBR.XIN` / `MBR.XLF` filename compatibility interposition.
 - `src/sha256.c` — portable SHA-256 used for rescue integrity and payload fingerprints.
 - `src/capsule_format.c` — endian-stable rescue capsule serialization.
 - `include/` — module interfaces shared by the EE build and, where practical, host tests.
-- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, and malformed KELF regression cases.
+- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, boot-report, and malformed KELF regression cases.
 - `docs/` — format, architecture, and roadmap documentation.
 
 ### Modularization rule
@@ -30,7 +31,7 @@ Moving code between translation units is easy; proving that initialization, DMA-
 4. complete a warning-clean R5900 release build with the pinned PS2DEV toolchain;
 5. only then consider API cleanup, state encapsulation, or additional optimization.
 
-Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. The APA module is intentionally split in two: its pure header logic has moved and is host-tested, while raw sector transport and pointer updates remain in `main.c` until a later gated step. Boot-chain policy and filesystem evidence collection are now separated from raw payload acquisition for the same reason.
+Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. The APA module is intentionally split in two: its pure header logic has moved and is host-tested, while raw sector transport and pointer updates remain in `main.c` until a later gated step. Boot-chain policy, filesystem evidence collection, KELF format parsing, and report formatting are now separated from raw payload acquisition for the same reason.
 
 ## Non-negotiable write invariants
 
@@ -58,6 +59,18 @@ The following operations still belong to the not-yet-extracted transport half in
 - post-write sector comparison and final header read-back.
 
 Keeping that boundary explicit prevents a testable parser extraction from accidentally becoming an unreviewed rewrite of the write path.
+
+## Boot-chain reporting boundary
+
+Boot-chain diagnostics now have three explicit layers instead of one function that both understood evidence and owned output state:
+
+1. `boot_chain.c` and `boot_chain_ps2.c` define/collect the evidence that can be obtained without raw write access.
+2. `main.c` still acquires and fingerprints the active raw HDD payload because that operation crosses the not-yet-extracted APA transport boundary.
+3. `boot_report.c` receives the completed `boot_chain_info_t` plus explicit `osdStart`/`osdSize` values and renders the bounded text image. `main.c` remains responsible for saving that image as `BOOTCHAIN.TXT`, appending the save result to `HDDMAN.LOG`, and presenting the short UI summary.
+
+The renderer has no fileXio, PFS, memory-card, or raw-HDD dependency. Its complete section order, assessment precedence, SHA-256 text, and truncation behavior can therefore be checked on a host. A full disabled-state golden fixture protects the human-readable contract users paste into bug reports, while targeted fixtures cover active evidence, warning/critical branches, the external-HDD-module note, and NUL termination under a deliberately tiny output capacity.
+
+The detailed text contract and non-goals are documented in [`BOOT_REPORT.md`](BOOT_REPORT.md).
 
 ## KELF module boundary
 
