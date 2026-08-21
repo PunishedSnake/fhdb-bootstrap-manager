@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o app_ui_ps2.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o platform.o storage.o header_backup.o repair_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o app_ui_ps2.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o platform.o storage.o header_backup.o repair_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o apa_forensic.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen -Wl,--wrap=fileXioDevctl
@@ -15,6 +15,7 @@ EE_OBJS += $(IRX_FILES:.irx=_irx.o)
 HOST_CC ?= cc
 HOST_FORMAT_TEST = tests/test_formats
 HOST_APA_REPAIR_TEST = tests/test_apa_repair
+HOST_APA_FORENSIC_TEST = tests/test_apa_forensic
 HOST_BOOT_CHAIN_TEST = tests/test_boot_chain
 HOST_BOOT_PAYLOAD_TEST = tests/test_boot_payload
 HOST_BOOT_REPORT_TEST = tests/test_boot_report
@@ -25,7 +26,7 @@ HOST_HDD_FIXTURE_TEST = tests/test_hdd_fixtures
 HOST_HDD_MUTATION_TEST = tests/test_hdd_mutations
 HOST_HDD_REPAIR_FIXTURE_TEST = tests/test_hdd_repair_fixtures
 HOST_HDD_FIXTURE_DIR = tests/generated_hdds
-HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST) $(HOST_HDD_REPAIR_FIXTURE_TEST)
+HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_APA_FORENSIC_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST) $(HOST_HDD_REPAIR_FIXTURE_TEST)
 
 all: $(EE_BIN)
 
@@ -42,6 +43,10 @@ test-host:
 		tests/test_apa_repair.c src/apa_repair.c src/apa.c \
 		-o $(HOST_APA_REPAIR_TEST)
 	./$(HOST_APA_REPAIR_TEST)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_apa_forensic.c src/apa_forensic.c src/apa.c \
+		-o $(HOST_APA_FORENSIC_TEST)
+	./$(HOST_APA_FORENSIC_TEST)
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
 		tests/test_boot_chain.c src/boot_chain.c -o $(HOST_BOOT_CHAIN_TEST)
 	./$(HOST_BOOT_CHAIN_TEST)
@@ -125,6 +130,9 @@ apa.o: src/apa.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 apa_repair.o: src/apa_repair.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+apa_forensic.o: src/apa_forensic.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 repair_health.o: src/repair_health.c
