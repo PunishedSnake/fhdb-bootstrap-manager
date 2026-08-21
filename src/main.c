@@ -41,6 +41,7 @@
 #include "capsule_format.h"
 #include "hdd_limits.h"
 #include "hdd_read.h"
+#include "hdd_write.h"
 #include "kelf.h"
 #include "platform.h"
 #include "session_log.h"
@@ -63,21 +64,14 @@
 /* Human-readable diagnostics and logging remain bounded in EE memory. */
 #define TEXT_FILE_LIMIT 32768
 
-/* Local names keep the source compatible with older PS2SDK header revisions. */
-#define HDIOC_SETOSDMBR_LOCAL 0x6833
-#define HDIOC_WRITESECTOR_LOCAL 0x6837
-#define HDIOC_FLUSH_LOCAL 0x4804
-
 /* Backup diagnostics use sentinel values that cannot be mistaken for IOP errors. */
 #define BACKUP_SLOT_COUNT 2
 #define BACKUP_NOT_TRIED 999999
 #define BACKUP_OCCUPIED 999998
 
-/* DMA-safe buffers shared with pad, fileXio, and raw HDD RPC operations. */
+/* Application-owned buffers retained across higher-level workflows. */
 static unsigned char header_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));
-static unsigned char verify_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));
 static unsigned char backup_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));
-static unsigned char sector_verify_buffer[TRANSFER_BYTES] __attribute__((aligned(64)));
 static unsigned char capsule_metadata[RESCUE_CAPSULE_METADATA_SIZE]
     __attribute__((aligned(64)));
 
@@ -86,15 +80,6 @@ static int backup_read_result[BACKUP_SLOT_COUNT];
 static int backup_write_result[BACKUP_SLOT_COUNT];
 static int backup_verify_result[BACKUP_SLOT_COUNT];
 static char backup_diagnostic_path[BACKUP_SLOT_COUNT][64];
-
-/* Input packet used by the raw write devctl, including at most two sectors. */
-typedef struct {
-    u32 lba;
-    u32 size;
-    unsigned char data[TRANSFER_BYTES];
-} raw_write_packet_t;
-
-static raw_write_packet_t write_packet __attribute__((aligned(64)));
 
 /* Read-only evidence is modeled in boot_chain.h. */
 static boot_chain_info_t boot_chain;
@@ -306,90 +291,6 @@ static int choose_signing_card(void)
 static int read_header(unsigned char *destination)
 {
     return hdd_read_raw_sectors(0, 2, destination);
-}
-
-/* Update only osdStart/osdSize through ps2hdd and flush its APA cache. */
-static int set_osd_mbr(u32 start, u32 size)
-{
-    hddSetOsdMBR_t info;
-    int result;
-
-    info.start = start;
-    info.size = size;
-    result = fileXioDevctl("hdd0:", HDIOC_SETOSDMBR_LOCAL,
-                           &info, sizeof(info), NULL, 0);
-    if (result < 0)
-        return result;
-    return fileXioDevctl("hdd0:", HDIOC_FLUSH_LOCAL, NULL, 0, NULL, 0);
-}
-
-/* Re-read the APA header and confirm checksum plus requested pointer values. */
-static int verify_values(u32 expected_start, u32 expected_size)
-{
-    if (read_header(verify_buffer) < 0)
-        return -1;
-    if (!is_standard_apa_header(verify_buffer))
-        return -2;
-    if (read_le32(verify_buffer + APA_OSD_START_OFFSET) != expected_start)
-        return -3;
-    if (read_le32(verify_buffer + APA_OSD_SIZE_OFFSET) != expected_size)
-        return -4;
-    memcpy(header_buffer, verify_buffer, APA_HEADER_SIZE);
-    return 0;
-}
-
-/* Write the signed payload in two-sector chunks, flush, then compare every byte. */
-static int write_and_verify_payload(const unsigned char *payload,
-                                    unsigned int payload_size, u32 start_sector)
-{
-    unsigned int offset = 0;
-    u32 sector_offset = 0;
-
-    while (offset < payload_size) {
-        unsigned int remaining = payload_size - offset;
-        unsigned int bytes = remaining > TRANSFER_BYTES ? TRANSFER_BYTES : remaining;
-        u32 sectors = (bytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
-        int result;
-
-        write_packet.lba = start_sector + sector_offset;
-        write_packet.size = sectors;
-        memset(write_packet.data, 0, TRANSFER_BYTES);
-        memcpy(write_packet.data, payload + offset, bytes);
-        result = fileXioDevctl("hdd0:", HDIOC_WRITESECTOR_LOCAL,
-                               &write_packet,
-                               sizeof(write_packet.lba) + sizeof(write_packet.size) +
-                                   (sectors * SECTOR_SIZE),
-                               NULL, 0);
-        if (result < 0)
-            return result;
-        offset += bytes;
-        sector_offset += sectors;
-    }
-
-    if (fileXioDevctl("hdd0:", HDIOC_FLUSH_LOCAL, NULL, 0, NULL, 0) < 0)
-        return -130;
-
-    offset = 0;
-    sector_offset = 0;
-    while (offset < payload_size) {
-        unsigned int remaining = payload_size - offset;
-        unsigned int bytes = remaining > TRANSFER_BYTES ? TRANSFER_BYTES : remaining;
-        u32 sectors = (bytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
-        int result;
-
-        memset(write_packet.data, 0, TRANSFER_BYTES);
-        memcpy(write_packet.data, payload + offset, bytes);
-        result = hdd_read_raw_sectors(start_sector + sector_offset, sectors,
-                                      sector_verify_buffer);
-        if (result < 0)
-            return result;
-        if (memcmp(write_packet.data, sector_verify_buffer,
-                   sectors * SECTOR_SIZE) != 0)
-            return -131;
-        offset += bytes;
-        sector_offset += sectors;
-    }
-    return 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -900,10 +801,10 @@ static void disable_bootstrap(void)
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_CROSS))
         return;
 
-    result = set_osd_mbr(0, 0);
+    result = hdd_write_set_osd_mbr(0, 0);
     if (result < 0)
         fatal_screen("HDIOC_SETOSDMBR failed.", result);
-    result = verify_values(0, 0);
+    result = hdd_write_verify_osd_mbr(header_buffer, 0, 0);
     if (result < 0)
         fatal_screen("Disable verification failed. Keep the backup.", result);
 
@@ -966,10 +867,10 @@ static void restore_legacy_pointer(void)
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_SQUARE))
         return;
 
-    result = set_osd_mbr(start, size);
+    result = hdd_write_set_osd_mbr(start, size);
     if (result < 0)
         fatal_screen("Bootstrap restore failed.", result);
-    result = verify_values(start, size);
+    result = hdd_write_verify_osd_mbr(header_buffer, start, size);
     if (result < 0)
         fatal_screen("Restore verification failed.", result);
 
@@ -1047,17 +948,17 @@ static void restore_rescue_capsule(void)
 
     scr_clear();
     scr_printf("Restoring and verifying rescue payload...\n");
-    result = write_and_verify_payload(payload, info.payload_bytes,
+    result = hdd_write_payload_verified(payload, info.payload_bytes,
                                       info.payload_start);
     free(file_data);
     if (result < 0)
         fatal_screen("Rescue payload verification failed; pointer remains disabled.",
                      result);
-    result = set_osd_mbr(info.payload_start, info.payload_sectors);
+    result = hdd_write_set_osd_mbr(info.payload_start, info.payload_sectors);
     if (result < 0)
         fatal_screen("Rescue payload verified, but pointer restore failed.",
                      result);
-    result = verify_values(info.payload_start, info.payload_sectors);
+    result = hdd_write_verify_osd_mbr(header_buffer, info.payload_start, info.payload_sectors);
     if (result < 0)
         fatal_screen("Rescue pointer read-back verification failed.", result);
 
@@ -1190,15 +1091,15 @@ static void install_bootstrap(void)
 
     scr_clear();
     scr_printf("Writing and verifying signed payload...\n");
-    result = write_and_verify_payload(payload, payload_size, MBR_PAYLOAD_START);
+    result = hdd_write_payload_verified(payload, payload_size, MBR_PAYLOAD_START);
     free(payload);
     if (result < 0)
         fatal_screen("Payload write/read-back failed; pointer remains disabled.", result);
 
-    result = set_osd_mbr(MBR_PAYLOAD_START, sectors);
+    result = hdd_write_set_osd_mbr(MBR_PAYLOAD_START, sectors);
     if (result < 0)
         fatal_screen("Payload verified, but enabling its pointer failed.", result);
-    result = verify_values(MBR_PAYLOAD_START, sectors);
+    result = hdd_write_verify_osd_mbr(header_buffer, MBR_PAYLOAD_START, sectors);
     if (result < 0)
         fatal_screen("Installed pointer verification failed.", result);
 
