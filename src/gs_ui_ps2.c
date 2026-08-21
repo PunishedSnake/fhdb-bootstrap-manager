@@ -471,6 +471,10 @@ static void restore_native_video(void)
        physical hardware. It is also the timed escape hatch from an unsupported
        480p display/cable combination. */
     init_scr();
+    /* libdebug's init_scr() resets DMA globally. Re-establish libdma's GIF
+       channel state before the next application frame is submitted. */
+    dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
+    dma_channel_fast_waits(DMA_CHANNEL_GIF);
     render_scale_y = 1u;
     video_mode = GS_UI_VIDEO_NATIVE;
     draw_frame_index = 1u;
