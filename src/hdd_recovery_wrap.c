@@ -1,11 +1,16 @@
 /*
  * Narrow startup recovery hook around the first hdd0: HDIOC_STATUS query.
  *
- * main.c intentionally keeps its fail-closed status/header gates unchanged.
- * This wrapper runs immediately before that gate returns to main: after pad,
- * fileXio, storage selection, DEV9/ATA and ps2hdd are initialized, but before
- * the manager rejects a damaged master header. All non-startup devctl calls are
- * forwarded byte-for-byte to fileXioDevctl.
+ * Normal main.c admission remains fail-closed and normal write workflows still
+ * never raw-write the APA master. This wrapper creates the one exceptional
+ * recovery window: after pad/fileXio/DEV9/ATA/ps2hdd initialization, but before
+ * a damaged master makes the first HDIOC_STATUS fatal, raw sectors 0-1 can be
+ * inspected and passed to the guarded recovery controller.
+ *
+ * It intercepts exactly one status query. Every other devctl, including nested
+ * reads/writes performed by recovery itself, is forwarded byte-for-byte to the
+ * real fileXioDevctl implementation. A verified raw repair always restarts the
+ * console so ps2hdd cannot continue using pre-repair cached state.
  */
 
 #define NEWLIB_PORT_AWARE
@@ -68,8 +73,8 @@ int __wrap_fileXioDevctl(const char *name, int cmd,
         strcmp(name, "hdd0:") != 0 || cmd != HDIOC_STATUS)
         return __real_fileXioDevctl(name, cmd, arg, arglen, bufp, buflen);
 
-    /* Intercept exactly once. Nested devctl calls from the recovery UI go
-       straight to the real fileXio implementation. */
+    /* Mark interception before invoking recovery so nested devctl calls cannot
+       recursively re-enter the status wrapper. */
     startup_status_seen = 1;
     status = __real_fileXioDevctl(name, cmd, arg, arglen, bufp, buflen);
 
