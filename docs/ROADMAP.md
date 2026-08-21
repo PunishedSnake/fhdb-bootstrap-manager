@@ -33,7 +33,8 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 - [x] `boot_report_ps2` persistence — storage-path construction, complete `BOOTCHAIN.TXT` replacement, and the existing USB write grace period are outside `main.c` while the portable renderer stays storage-free.
 - [x] `session_log` persistence — bounded ordered session buffering, append-only `HDDMAN.LOG`, 128 KiB rotation, per-storage unsaved offsets, and USB retry behavior are outside `main.c`.
 - [x] `boot_diagnostics_ps2` orchestration — ROMVER initialization, active-payload evidence, FMCB/PFS evidence collection, and final family classification are combined outside `main.c` behind a read-only PS2-specific entry point.
-- [ ] diagnostics presentation/UI — `main.c` still decides when to scan/render/persist, retains the last report-save result for display, and owns the short diagnostics screen.
+- [x] `boot_report_session` state — latest rendered report bytes, length, and last persistence result are outside `main.c`, while rendering and device I/O remain delegated to their existing narrow modules.
+- [ ] diagnostics presentation/UI — `main.c` still decides when to scan/render/persist and owns the short diagnostics screen itself.
 - [ ] `rescue` — capsule creation/lookup/validation plus restore orchestration while preserving payload-first/pointer-last semantics.
 - [ ] `ui` — menus, fatal/info screens, logging presentation, and confirmation text after core policy has explicit interfaces.
 

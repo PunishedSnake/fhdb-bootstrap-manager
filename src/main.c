@@ -37,8 +37,7 @@
 #include "apa.h"
 #include "boot_chain.h"
 #include "boot_diagnostics_ps2.h"
-#include "boot_report.h"
-#include "boot_report_ps2.h"
+#include "boot_report_session.h"
 #include "capsule_format.h"
 #include "hdd_limits.h"
 #include "hdd_read.h"
@@ -82,11 +81,6 @@ static unsigned char sector_verify_buffer[TRANSFER_BYTES] __attribute__((aligned
 static unsigned char capsule_metadata[RESCUE_CAPSULE_METADATA_SIZE]
     __attribute__((aligned(64)));
 
-/* The latest report is kept in memory so it can follow a storage selection. */
-static char boot_report[BOOT_REPORT_SIZE];
-static unsigned int boot_report_length;
-static int last_report_save_result = BACKUP_NOT_TRIED;
-
 /* Per-slot results are displayed verbatim when a mandatory backup fails. */
 static int backup_read_result[BACKUP_SLOT_COUNT];
 static int backup_write_result[BACKUP_SLOT_COUNT];
@@ -105,8 +99,7 @@ static raw_write_packet_t write_packet __attribute__((aligned(64)));
 /* Read-only evidence is modeled in boot_chain.h. */
 static boot_chain_info_t boot_chain;
 
-/* Forward declarations for report paths used before diagnostics UI. */
-static int save_boot_chain_report(unsigned int storage);
+/* Forward declaration for diagnostics refresh used by the UI and write workflows. */
 static void refresh_boot_chain_report(int save_to_storage);
 
 /* ------------------------------------------------------------------------- */
@@ -196,18 +189,6 @@ static void wait_to_return(void)
 /* Parse FMCB's numeric or textual Skip_HDD setting from one configuration. */
 
 
-/* Persist the latest rendered report while retaining UI result state here. */
-static int save_boot_chain_report(unsigned int storage)
-{
-    int result;
-
-    if (storage >= STORAGE_TARGET_COUNT || boot_report_length == 0)
-        return -1;
-    result = boot_report_save(storage, boot_report, boot_report_length);
-    last_report_save_result = result;
-    return result;
-}
-
 /* Load a bounded MBR.XIN/MBR.XLF source; USB receives a short mount grace period. */
 static int load_payload_file(const char *path, unsigned char **data_out,
                              unsigned int *size_out, int retry_usb)
@@ -283,7 +264,7 @@ static void choose_storage(void)
             storage_set_selected(choice);
             session_log_line("Selected storage device: %s",
                      storage_targets[storage_selected()].name);
-            save_boot_chain_report(storage_selected());
+            boot_report_session_save(storage_selected());
             session_log_flush(storage_selected());
             return;
         }
@@ -422,14 +403,13 @@ static void refresh_boot_chain_report(int save_to_storage)
     u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);
 
     boot_diagnostics_scan(&boot_chain, start, sectors);
-    boot_report_length = boot_report_render(
-        boot_report, sizeof(boot_report), &boot_chain,
-        start, sectors, APP_NAME, APP_VERSION);
+    boot_report_session_render(&boot_chain, start, sectors,
+                               APP_NAME, APP_VERSION);
     session_log_line("Boot-chain scan: family='%s', confidence=%s, payload_read=%d, "
              "kelf=%d", boot_chain.family, boot_chain.confidence,
              boot_chain.payload_read_result, boot_chain.payload_kelf_result);
     if (save_to_storage) {
-        int result = save_boot_chain_report(storage_selected());
+        int result = boot_report_session_save(storage_selected());
 
         session_log_line("BOOTCHAIN.TXT save to %s returned %d",
                  storage_targets[storage_selected()].name, result);
@@ -450,7 +430,8 @@ static void diagnostics_screen(void)
     scr_printf("Confidence: %s\n", boot_chain.confidence);
     scr_printf("Next stage: %s\n", boot_chain.next_stage);
     scr_printf("Report    : %s\n", path);
-    scr_printf("Save code : %d\n\n", last_report_save_result);
+    scr_printf("Save code : %d\n\n",
+               boot_report_session_last_save_result());
     scr_printf("The complete report is separate from HDDMAN.LOG.\n");
     wait_to_return();
 }
@@ -1301,7 +1282,8 @@ int main(int argc, char **argv)
         scr_printf("Storage  : %s\n", storage_targets[storage_selected()].name);
         scr_printf("Detected : %s\n", boot_chain.family);
         scr_printf("Report   : %s\n\n",
-                   last_report_save_result == 0 ? "saved" : "not saved");
+                   boot_report_session_last_save_result() == 0
+                       ? "saved" : "not saved");
 
         if (start != 0 || size != 0) {
             scr_printf("HDD bootstrap is ENABLED.\n\n");

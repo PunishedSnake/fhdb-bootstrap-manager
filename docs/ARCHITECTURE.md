@@ -18,6 +18,7 @@ The `0.4.0-dev` **Michishirube** line is progressively converting the former mon
 - `src/boot_diagnostics_ps2.c` — PS2-only orchestration that initializes one evidence snapshot, combines ROMVER/filesystem/raw-payload sources, and invokes portable classification. It performs no rendering, persistence, UI, or disk-changing operation.
 - `src/boot_report.c` — PS2SDK-free, bounded rendering of a completed evidence snapshot into the human-readable `BOOTCHAIN.TXT` image. It performs no device access or persistence.
 - `src/boot_report_ps2.c` — PS2-only `BOOTCHAIN.TXT` persistence, including storage-path construction and the existing USB mount grace period; it performs no rendering or classification.
+- `src/boot_report_session.c` — owns the latest rendered report buffer, length, and last save result while delegating formatting to `boot_report.c` and device I/O to `boot_report_ps2.c`.
 - `src/session_log.c` — bounded ordered session logging plus `HDDMAN.LOG` append/rotation/USB-retry persistence. It owns no boot-chain classification or HDD write transaction.
 - `src/kelf.c` — portable structural KELF parser and recovery of the real file length from a sector-padded HDD image. It reads the PS2SDK-defined wire fields explicitly as little-endian bytes rather than relying on a target-native struct cast.
 - `src/mbr_compat.c` — narrow `MBR.XIN` / `MBR.XLF` filename compatibility interposition.
@@ -76,7 +77,7 @@ Boot-chain diagnostics now have explicit acquisition, policy, rendering, and per
 2. `boot_payload_ps2.c` acquires the active sector image through read-only `hdd_read.c`; portable `boot_payload.c` performs hashing and KELF-size/structure conversion.
 3. `boot_diagnostics_ps2.c` initializes and combines those evidence sources, then invokes portable `classify_boot_chain()`; `main.c` no longer contains evidence-collection orchestration.
 4. `boot_report.c` receives the completed `boot_chain_info_t` plus explicit `osdStart`/`osdSize` values and renders the bounded text image.
-5. `boot_report_ps2.c` persists that already-rendered image as `BOOTCHAIN.TXT`; `session_log.c` owns ordered `HDDMAN.LOG` buffering, append/rotation, and storage retry policy. `main.c` retains scan timing/presentation, the last report-save result used by the UI, and the short diagnostics screen.
+5. `boot_report_session.c` owns the latest rendered text image and last save result, delegating actual file persistence to `boot_report_ps2.c`; `session_log.c` owns ordered `HDDMAN.LOG` buffering, append/rotation, and storage retry policy. `main.c` retains scan timing/presentation and the short diagnostics screen.
 
 The renderer has no fileXio, PFS, memory-card, or raw-HDD dependency. Its complete section order, assessment precedence, SHA-256 text, and truncation behavior can therefore be checked on a host. A full disabled-state golden fixture protects the human-readable contract users paste into bug reports, while targeted fixtures cover active evidence, warning/critical branches, the external-HDD-module note, and NUL termination under a deliberately tiny output capacity.
 
