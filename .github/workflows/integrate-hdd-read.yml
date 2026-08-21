@@ -47,7 +47,6 @@ jobs:
               '#include "capsule_format.h"\n#include "kelf.h"\n',
               '#include "capsule_format.h"\n#include "hdd_limits.h"\n#include "hdd_read.h"\n#include "kelf.h"\n',
               'HDD read includes')
-
           replace_once(
               '#define MBR_PAYLOAD_START 0x2000\n'
               '#define SECTOR_SIZE 512\n'
@@ -60,7 +59,6 @@ jobs:
               '#define TRANSFER_BYTES HDD_TRANSFER_BYTES\n'
               '#define MAX_MBR_PAYLOAD_SIZE HDD_MAX_MBR_PAYLOAD_SIZE\n',
               'shared HDD limits')
-
           replace_once('#define HDIOC_READSECTOR_LOCAL 0x6836\n', '',
                        'local raw-read ioctl')
           replace_once(
@@ -81,13 +79,11 @@ jobs:
               '    return hdd_read_raw_sectors(0, 2, destination);\n'
               '}\n',
               'read_header')
-
           replace_regex(
               r'/\* Read a small raw sector range for post-write payload verification\. \*/.*?'
               r'(?=/\* Update only osdStart/osdSize through ps2hdd and flush its APA cache\. \*/)',
               '',
               'raw read helpers')
-
           text = text.replace('result = read_raw_sectors(',
                               'result = hdd_read_raw_sectors(')
 
@@ -117,9 +113,13 @@ jobs:
               '}\n',
               'boot-chain analyzer')
 
-          replace_once('    iox_stat_t mbr_status;\n    int result;\n',
-                       '    int result;\n',
-                       'rescue local mbr status')
+          replace_once(
+              '    u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);\n'
+              '    iox_stat_t mbr_status;\n'
+              '    int result;\n',
+              '    u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);\n'
+              '    int result;\n',
+              'rescue local mbr status')
           replace_once('result = validate_payload_bounds(start, sectors, &mbr_status);',
                        'result = hdd_validate_payload_bounds(start, sectors);',
                        'rescue bounds call')
