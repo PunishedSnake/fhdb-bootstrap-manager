@@ -1,5 +1,9 @@
 /* Versioned preservation of every APA header touched by forensic repair. */
 
+#define NEWLIB_PORT_AWARE
+#include <fileXio_rpc.h>
+#include <io_common.h>
+
 #include "forensic_snapshot.h"
 
 #include <stdlib.h>
@@ -60,6 +64,7 @@ static int build_snapshot_image(const apa_forensic_result_t *result,
     write_le32_snapshot(image + 24, plan->patch_count);
     write_le32_snapshot(image + 28, plan->corroborated_count);
     write_le32_snapshot(image + 32, plan->speculative_count);
+    write_le32_snapshot(image + 36, plan->one_or_two_bit_count);
 
     offset = SNAPSHOT_HEADER_BYTES;
     for (i = 0; i < plan->patch_count; i++) {
@@ -117,10 +122,15 @@ int forensic_snapshot_save(unsigned int storage,
 
     for (slot = 0; slot < FORENSIC_SNAPSHOT_SLOT_COUNT; slot++) {
         char path[FORENSIC_SNAPSHOT_PATH_SIZE];
+        iox_stat_t stat;
+        int stat_result;
 
         storage_path(path, sizeof(path), storage, snapshot_names[slot]);
-        if (path_exists(path)) {
-            if (read_exact_file(path, verify, (int)image_size) == 0 &&
+        memset(&stat, 0, sizeof(stat));
+        stat_result = fileXioGetStat(path, &stat);
+        if (stat_result >= 0) {
+            if (stat.size == image_size &&
+                read_exact_file(path, verify, (int)image_size) == 0 &&
                 memcmp(verify, image, image_size) == 0) {
                 strncpy(path_out, path, FORENSIC_SNAPSHOT_PATH_SIZE - 1u);
                 path_out[FORENSIC_SNAPSHOT_PATH_SIZE - 1u] = '\0';
