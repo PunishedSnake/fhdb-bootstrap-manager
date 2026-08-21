@@ -7,6 +7,7 @@
 #include "boot_diagnostics_ps2.h"
 #include "boot_report_session.h"
 #include "diagnostics_controller_ps2.h"
+#include "platform.h"
 #include "session_log.h"
 #include "storage.h"
 #include "version.h"
@@ -19,6 +20,7 @@ void diagnostics_controller_refresh(
     unsigned int start = read_le32(header + APA_OSD_START_OFFSET);
     unsigned int sectors = read_le32(header + APA_OSD_SIZE_OFFSET);
 
+    pad_activity_begin();
     boot_diagnostics_scan(boot_chain, start, sectors);
     boot_report_session_render(boot_chain, start, sectors,
                                APP_NAME, APP_VERSION);
@@ -34,6 +36,7 @@ void diagnostics_controller_refresh(
                          storage_targets[storage_selected()].name, result);
         session_log_flush(storage_selected());
     }
+    pad_activity_end();
 }
 
 void diagnostics_controller_screen(
@@ -42,6 +45,8 @@ void diagnostics_controller_screen(
 {
     char path[64];
 
+    app_ui_activity_message("Boot-chain inspection",
+                            "Scanning HDD, memory cards and configuration...");
     diagnostics_controller_refresh(header, boot_chain, 1);
     storage_path(path, sizeof(path), storage_selected(), "BOOTCHAIN.TXT");
     scr_clear();
