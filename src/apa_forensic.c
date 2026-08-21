@@ -328,6 +328,67 @@ static void build_forward_map(const apa_forensic_result_t *result,
     }
 }
 
+static int canonical_empty_node(const apa_forensic_node_t *node)
+{
+    const uint32_t required = APA_FORENSIC_EVIDENCE_MAGIC |
+                              APA_FORENSIC_EVIDENCE_SELF_START |
+                              APA_FORENSIC_EVIDENCE_CHECKSUM |
+                              APA_FORENSIC_EVIDENCE_LENGTH |
+                              APA_FORENSIC_EVIDENCE_TYPE |
+                              APA_FORENSIC_EVIDENCE_ID;
+
+    return node->type == 0 && node->flags == 0 && node->length != 0 &&
+           strcmp(node->id, "__empty") == 0 &&
+           node->stored_checksum == node->calculated_checksum &&
+           (node->evidence & required) == required;
+}
+
+static void classify_dormant_free_remnants(apa_forensic_result_t *result,
+                                           const apa_forensic_map_t *forward)
+{
+    unsigned int i;
+
+    result->dormant_free_nodes = 0;
+    for (i = 0; i < result->node_count; i++)
+        result->nodes[i].evidence &= ~APA_FORENSIC_EVIDENCE_DORMANT_FREE;
+
+    /*
+     * Real hardware keeps valid historical __empty headers after free-space
+     * coalescing. Example from a healthy 2 TB disk: the active forward chain
+     * owns one __empty extent at 0x84000000..0x88000000 while eight older,
+     * checksum-valid __empty headers remain physically present inside it.
+     * They are useful forensic history but are not eight competing active APA
+     * nodes. Only a strict interior header wholly covered by a canonical empty
+     * extent that is itself in the master forward chain is classified this way.
+     * Anything extending outside the active extent remains competing evidence.
+     */
+    for (i = 0; i < result->node_count; i++) {
+        apa_forensic_node_t *node = &result->nodes[i];
+        uint64_t node_end;
+        unsigned int j;
+
+        if (map_contains(forward, i) || !canonical_empty_node(node))
+            continue;
+        node_end = (uint64_t)node->start + (uint64_t)node->length;
+        for (j = 0; j < forward->node_count; j++) {
+            const apa_forensic_node_t *container =
+                &result->nodes[forward->order[j]];
+            uint64_t container_end;
+
+            if (!canonical_empty_node(container) ||
+                node->start <= container->start)
+                continue;
+            container_end = (uint64_t)container->start +
+                            (uint64_t)container->length;
+            if (node_end <= container_end) {
+                node->evidence |= APA_FORENSIC_EVIDENCE_DORMANT_FREE;
+                result->dormant_free_nodes++;
+                break;
+            }
+        }
+    }
+}
+
 static void reverse_indices(unsigned short *values, unsigned int count)
 {
     unsigned int i;
@@ -434,6 +495,8 @@ static void build_geometry_map(const apa_forensic_result_t *result,
         const uint32_t required = APA_FORENSIC_EVIDENCE_SELF_START |
                                   APA_FORENSIC_EVIDENCE_LENGTH;
 
+        if ((node->evidence & APA_FORENSIC_EVIDENCE_DORMANT_FREE) != 0)
+            continue;
         if (node->lba == 0 ||
             (node->confidence >= 50 &&
              (node->evidence & required) == required))
@@ -470,7 +533,9 @@ static void evaluate_map(const apa_forensic_result_t *result,
     }
 
     for (i = 0; i < result->node_count; i++) {
-        if (result->nodes[i].confidence >= 60)
+        const apa_forensic_node_t *node = &result->nodes[i];
+        if (node->confidence >= 60 &&
+            (node->evidence & APA_FORENSIC_EVIDENCE_DORMANT_FREE) == 0)
             high_nodes++;
     }
 
@@ -605,6 +670,7 @@ int apa_forensic_scan(apa_forensic_read_fn reader, void *reader_context,
     chase_references(reader, reader_context, total_sectors, result);
 
     build_forward_map(result, &candidate);
+    classify_dormant_free_remnants(result, &candidate);
     evaluate_map(result, &candidate);
     add_map_if_unique(result, &candidate);
 
