@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   host-tests:
@@ -32,3 +32,126 @@ jobs:
           path: |
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+
+  finalize-hdd-write-boundary:
+    if: github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/0.4.0-michishirube
+          fetch-depth: 0
+
+      - name: Update documentation and mechanical formatting
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'README.md',
+              '`main.c` retains diagnostics presentation/timing, rescue/install policy, MagicGate signing, and every write-capable APA operation.',
+              '`hdd_write.c` now owns write-capable APA transport primitives and their DMA/read-back buffers, while `main.c` deliberately retains rescue/install policy, confirmation gates, MagicGate signing, and payload-first/pointer-last transaction ordering.',
+              'README write boundary')
+
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install workflows, write-capable APA transport, and guarded pointer/write ordering that has not yet been extracted.\n',
+              '- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install workflows, confirmation/safety policy, and explicit payload-first/pointer-last transaction ordering.\n',
+              'architecture main ownership')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '- `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.\n',
+              '- `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.\n- `src/hdd_write.c` — PS2-only write-capable transport: raw `HDIOC_WRITESECTOR` packets, write-side DMA/read-back buffers, flushes, byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back verification. It owns mechanics only, not backup/confirmation/signing or transaction ordering.\n',
+              'architecture hdd_write module')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              'Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split three ways: portable header logic lives in `apa.c`, read-only raw sector transport and live payload bounds live in `hdd_read.c`, and the write-capable transport/pointer-update transaction remains in `main.c` until a later gated step. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.\n',
+              'Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split across portable header logic in `apa.c`, read-only raw transport/bounds in `hdd_read.c`, and write-capable transport/read-back mechanics in `hdd_write.c`. The higher-level rescue/install transaction policy remains visibly sequenced in `main.c`, so moving the transport does not hide backup, confirmation, signing, or payload-first/pointer-last ordering. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.\n',
+              'architecture write split')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              'The following operations deliberately remain in the not-yet-extracted write-capable half in `main.c`:\n\n- `HDIOC_WRITESECTOR` packets and the aligned write/verification buffers used by install/restore;\n- `HDIOC_SETOSDMBR` pointer changes and write-cache flushes;\n- post-write sector comparison and final APA-header read-back;\n- rescue/install transaction ordering, including payload-first/pointer-last activation.\n\nKeeping the read boundary separate from the write transaction lets diagnostics reuse one raw-read implementation without turning a parser refactor into an unreviewed rewrite of disk-changing behavior.\n',
+              'Write-capable transport is isolated in `hdd_write.c`: it owns the raw write packet, aligned verification buffers, `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, flushes, payload byte comparison, and final APA/pointer read-back. Its interface intentionally exposes those operations as separate steps rather than a single "install" call.\n\nThe safety policy still lives in the higher-level workflows in `main.c`: current-header backup, rescue validation, user confirmation, MagicGate signing, and the explicit payload-write/verify before pointer-update/verify sequence. This separation makes the dangerous I/O implementation modular without making transaction order implicit.\n\nKeeping read-only `hdd_read.c` separate from write-capable `hdd_write.c` also prevents diagnostics from acquiring a write interface merely because both paths need raw-sector read-back.\n',
+              'architecture APA write boundary')
+
+          replace_once(
+              'docs/ROADMAP.md',
+              '- [ ] `apa` write-capable transport half — `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, flush/read-back verification, write-side DMA buffers, and transaction ordering remain in `main.c` until the read-only boundary has wider regression and hardware coverage.\n',
+              '- [x] `hdd_write` write-capable transport — `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write-side DMA/read-back buffers, flushes, payload byte comparison, and final pointer verification are isolated behind a PS2-only interface.\n- [ ] write transaction policy — backup/confirmation/signing plus payload-first/pointer-last ordering remain explicit in `main.c` until the transport extraction has hardware coverage.\n',
+              'roadmap hdd_write')
+          replace_once(
+              'docs/ROADMAP.md',
+              '- only after the read-only boundary and diagnostics split have enough regression/hardware confidence, extract the write-capable APA transport without changing payload-first/pointer-last semantics;\n',
+              '- hardware-validate the new `hdd_write` transport boundary before moving higher-level rescue/install transaction policy; payload-first/pointer-last ordering remains an explicit invariant;\n',
+              'roadmap remaining write work')
+
+          replace_once(
+              'CHANGELOG.md',
+              '- Kept only diagnostics timing/presentation and the short diagnostics screen in `main.c`.\n',
+              '- Kept only diagnostics timing/presentation and the short diagnostics screen in `main.c`.\n- Extracted write-capable HDD transport into PS2-only `hdd_write.c` / `hdd_write.h`: raw sector write packets, write-side DMA/read-back buffers, flushes, payload byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back now live behind explicit primitives.\n',
+              'changelog write transport')
+          replace_once(
+              'CHANGELOG.md',
+              '- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flush/read-back verification, rescue restore, MagicGate signing, and payload-first/pointer-last ordering remain in `main.c` with their Torii semantics unchanged.\n',
+              '- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flushes, payload comparison, and pointer read-back moved mechanically into `hdd_write.c`; historical numeric diagnostics and the I/O sequence inside those primitives are unchanged. Rescue/install policy, mandatory backup/confirmation, MagicGate signing, and payload-first/pointer-last ordering remain explicit in `main.c`.\n',
+              'changelog write safety')
+          replace_once(
+              'CHANGELOG.md',
+              '- The report renderer cannot access storage. `boot_report_ps2` and `session_log` own only diagnostic-file persistence; active payload acquisition remains behind the read-only `boot_payload_ps2`/`hdd_read` boundary, while `main.c` still owns diagnostics orchestration/UI and every disk-changing transaction.\n',
+              '- The report renderer cannot access storage. `boot_report_ps2` and `session_log` own only diagnostic-file persistence; active payload acquisition remains behind the read-only `boot_payload_ps2`/`hdd_read` boundary. `main.c` retains diagnostics presentation/timing and higher-level disk-changing transaction policy, while raw write mechanics are isolated in `hdd_write.c`.\n',
+              'changelog ownership cleanup')
+
+          replace_once(
+              'src/main.c',
+              '    result = hdd_write_payload_verified(payload, info.payload_bytes,\n                                      info.payload_start);\n',
+              '    result = hdd_write_payload_verified(payload, info.payload_bytes,\n                                        info.payload_start);\n',
+              'rescue call formatting')
+          replace_once(
+              'src/main.c',
+              '    result = hdd_write_verify_osd_mbr(header_buffer, info.payload_start, info.payload_sectors);\n',
+              '    result = hdd_write_verify_osd_mbr(\n        header_buffer, info.payload_start, info.payload_sectors);\n',
+              'rescue verify formatting')
+          PY
+
+      - name: Recheck safety ordering and regressions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('src/main.c').read_text()
+          def section(start_marker, end_marker):
+              start = text.index(start_marker)
+              end = text.index(end_marker, start)
+              return text[start:end]
+          def ordered(body, names, label):
+              p = [body.index(name) for name in names]
+              if p != sorted(p):
+                  raise SystemExit(f'{label}: write order changed')
+          ordered(section('static void restore_rescue_capsule(void)', 'static void install_bootstrap(void)'),
+                  ['hdd_validate_payload_bounds(', 'save_backup()', 'wait_for_chord(',
+                   'hdd_write_payload_verified(', 'hdd_write_set_osd_mbr(',
+                   'hdd_write_verify_osd_mbr('], 'rescue')
+          ordered(section('static void install_bootstrap(void)', '/* ------------------------------------------------------------------------- */\n/* Main state machine'),
+                  ['save_backup()', 'SecrDownloadFile(', 'wait_for_chord(',
+                   'hdd_write_payload_verified(', 'hdd_write_set_osd_mbr(',
+                   'hdd_write_verify_osd_mbr('], 'install')
+          PY
+          make test-host
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
+            sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit docs and restore normal CI
+        run: |
+          git checkout 63bcec8701bad876b55e30997edee33e454bec28 -- .github/workflows/ci.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md CHANGELOG.md docs/ARCHITECTURE.md docs/ROADMAP.md src/main.c .github/workflows/ci.yml
+          git commit -m "Document write transport boundary"
+          git push origin HEAD:dev/0.4.0-michishirube
