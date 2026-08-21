@@ -13,12 +13,10 @@ typedef enum {
 /*
  * Michishirube's application-wide GS frontend.
  *
- * Physical hardware validation showed that the proven PS2SDK/libdebug CRT
- * bootstrap should remain responsible for establishing the interlaced output
- * and framebuffer read circuit. gs_ui_ps2 then owns every application pixel in
- * that framebuffer. The UI uses a virtual 640x448 layout mapped vertically to
- * the bootstrap's 640x224 field coordinate space. PS2SDK libdraw already adds
- * the GS +2048 primitive bias; callers must never compensate for it themselves.
+ * Physical hardware uses the proven libdebug CRT bootstrap: 640x224 field
+ * coordinates, framebuffer at VRAM 0. All application pixels are nevertheless
+ * rendered by this module through libdraw/GIF DMA. Coordinates exposed to
+ * callers are native 640x224 coordinates; no fractional Y scaling is used.
  */
 int gs_ui_initialize(void);
 int gs_ui_is_ready(void);
@@ -36,9 +34,9 @@ void gs_ui_render_message(const char *title,
                           const char *footer,
                           gs_ui_tone_t tone);
 
-/* Compatibility surface for existing controller screens. Their printf-style
- * construction is linker-wrapped and routed through this GS/GIF-DMA frontend;
- * libdebug itself does not draw normal application UI after video bootstrap. */
+/* Compatibility surface for controller screens that still construct text
+ * incrementally. Linker wrappers route historical scr_* calls here, so the
+ * real libdebug renderer is used only as an initialization-failure fallback. */
 void gs_ui_console_clear(void);
 void gs_ui_console_printf(const char *format, ...)
     __attribute__((format(printf, 1, 2)));
@@ -46,6 +44,7 @@ void gs_ui_console_vprintf(const char *format, va_list arguments);
 
 void gs_ui_render_disk_status(const char *operation,
                               const char *phase,
+                              const char *location,
                               const char *io_kind,
                               unsigned int percent,
                               unsigned int progress_current,
