@@ -2,6 +2,7 @@
 
 #include "bootstrap_transaction_ps2.h"
 #include "hdd_write.h"
+#include "platform.h"
 
 static int ps2_write_payload_verified(void *context,
                                       const unsigned char *payload,
@@ -40,8 +41,13 @@ int bootstrap_transaction_ps2_set_pointer(
     uint32_t start, uint32_t size,
     bootstrap_transaction_result_t *result)
 {
-    return bootstrap_transaction_set_pointer(&ps2_ops, header, start, size,
-                                             result);
+    int transaction_result;
+
+    pad_activity_begin();
+    transaction_result = bootstrap_transaction_set_pointer(
+        &ps2_ops, header, start, size, result);
+    pad_activity_end();
+    return transaction_result;
 }
 
 int bootstrap_transaction_ps2_activate(
@@ -52,7 +58,12 @@ int bootstrap_transaction_ps2_activate(
     void *release_context,
     bootstrap_transaction_result_t *result)
 {
-    return bootstrap_transaction_activate(
+    int transaction_result;
+
+    pad_activity_begin();
+    transaction_result = bootstrap_transaction_activate(
         &ps2_ops, header, payload, payload_size, start, size,
         release_payload, release_context, result);
+    pad_activity_end();
+    return transaction_result;
 }
