@@ -36,6 +36,10 @@
 #include "storage.h"
 #include "version.h"
 
+extern void __real_scr_clear(void);
+extern void __real_scr_printf(const char *format, ...)
+    __attribute__((format(printf, 1, 2)));
+
 static unsigned char header_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));
 static boot_chain_info_t boot_chain;
 
