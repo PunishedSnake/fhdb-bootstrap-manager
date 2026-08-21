@@ -6,10 +6,10 @@ EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
 
 # Filesystem, MagicGate, USB mass-storage, power, and APA HDD services are
 # embedded so the manager does not depend on whichever IOP modules launched it.
-IRX_FILES = iomanX.irx fileXio.irx secrman_irx freesio2.irx freepad.irx \
-	mcman.irx mcserv.irx secrsif_irx poweroff_irx bdm_irx \
-	bdmfs_fatfs_irx usbd_irx usbmass_bd_irx ps2dev9_irx ps2atad_irx \
-	ps2hdd_irx ps2fs_irx
+IRX_FILES = iomanX.irx fileXio.irx secrman.irx freesio2.irx freepad.irx \
+	mcman.irx mcserv.irx secrsif.irx poweroff.irx bdm.irx \
+	bdmfs_fatfs.irx usbd.irx usbmass_bd.irx ps2dev9.irx ps2atad.irx \
+	ps2hdd.irx ps2fs.irx
 EE_OBJS += $(IRX_FILES:.irx=_irx.o)
 
 HOST_CC ?= cc
