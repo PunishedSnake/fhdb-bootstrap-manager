@@ -90,6 +90,7 @@ typedef struct {
     uint32_t old_prev;
     uint32_t new_next;
     uint32_t new_prev;
+    unsigned int changed_bits;
     int checksum_corroborated;
 } apa_forensic_patch_t;
 
@@ -97,6 +98,7 @@ typedef struct {
     unsigned int map_index;
     unsigned int patch_count;
     unsigned int corroborated_count;
+    unsigned int one_or_two_bit_count;
     unsigned int speculative_count;
     unsigned int confidence;
     int automatic_safe;
@@ -117,7 +119,10 @@ int apa_forensic_scan(apa_forensic_read_fn reader, void *reader_context,
                       apa_forensic_result_t *result);
 
 /* Build a topology-only repair plan for one candidate map. Missing headers,
- * geometry changes and filesystem reconstruction are deliberately excluded. */
+ * geometry changes and filesystem reconstruction are deliberately excluded.
+ * changed_bits records the exact Hamming distance across prev/next; therefore
+ * stale-checksum one- and two-bit link corruptions are explicit evidence, not
+ * a special-case guess hidden inside the UI. */
 int apa_forensic_build_repair_plan(const apa_forensic_result_t *result,
                                    unsigned int map_index,
                                    apa_forensic_repair_plan_t *plan);
