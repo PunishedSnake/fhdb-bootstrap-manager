@@ -28,6 +28,7 @@ HDDMETA*.BIN
 HDDMAN.LOG
 BOOTCHAIN.TXT
 FORENSIC.TXT
+ps2-hdd-fault-*/
 
 # Editor and operating-system noise
 .DS_Store
