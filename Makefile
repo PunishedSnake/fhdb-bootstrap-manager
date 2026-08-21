@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o platform.o storage.o header_backup.o apa.o hdd_read.o hdd_write.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o platform.o storage.o header_backup.o rescue_image.o rescue_storage.o apa.o hdd_read.o hdd_write.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
@@ -19,7 +19,8 @@ HOST_BOOT_PAYLOAD_TEST = tests/test_boot_payload
 HOST_BOOT_REPORT_TEST = tests/test_boot_report
 HOST_KELF_TEST = tests/test_kelf
 HOST_BOOTSTRAP_TRANSACTION_TEST = tests/test_bootstrap_transaction
-HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST)
+HOST_RESCUE_IMAGE_TEST = tests/test_rescue_image
+HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST)
 
 all: $(EE_BIN)
 
@@ -50,6 +51,10 @@ test-host:
 		tests/test_bootstrap_transaction.c src/bootstrap_transaction.c \
 		-o $(HOST_BOOTSTRAP_TRANSACTION_TEST)
 	./$(HOST_BOOTSTRAP_TRANSACTION_TEST)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_rescue_image.c src/rescue_image.c src/capsule_format.c \
+		src/apa.c src/kelf.c src/sha256.c -o $(HOST_RESCUE_IMAGE_TEST)
+	./$(HOST_RESCUE_IMAGE_TEST)
 
 clean:
 	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TESTS)
@@ -67,6 +72,12 @@ storage.o: src/storage.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 header_backup.o: src/header_backup.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+rescue_image.o: src/rescue_image.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+rescue_storage.o: src/rescue_storage.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 apa.o: src/apa.c
