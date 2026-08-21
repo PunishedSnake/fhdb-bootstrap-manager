@@ -122,7 +122,7 @@ int apa_repair_analyze(const unsigned char header[APA_HEADER_SIZE],
     }
 
     /*
-     * Identity repair is accepted only when exactly one canonical identity
+     * Identity repair is considered only when exactly one canonical identity
      * marker is damaged and all three independent master anchors agree.
      */
     if (identity_issues != 0) {
@@ -135,7 +135,7 @@ int apa_repair_analyze(const unsigned char header[APA_HEADER_SIZE],
     }
 
     /*
-     * A single damaged master anchor can be repaired only when all three
+     * A single damaged master anchor is considered only when all three
      * identity markers agree and the other two anchors still identify sector
      * zero as the APA MBR. Multiple damaged anchors are intentionally refused.
      */
@@ -149,25 +149,26 @@ int apa_repair_analyze(const unsigned char header[APA_HEADER_SIZE],
     }
 
     /*
-     * Never assume a checksum-only mismatch means the checksum word is bad.
-     * It may instead be protecting corruption in next/prev/length/timestamps or
-     * another field we cannot reconstruct. If one known canonical field is bad
-     * and the source checksum also fails, accept the repair only when replacing
-     * that known field makes the *stored* checksum correct again. This proves
-     * the observed mismatch is fully explained by the proposed canonical fix
-     * under APA's additive checksum model.
+     * APA's additive checksum is evidence only when it disagrees with the raw
+     * header and the proposed canonical fix restores the *stored* checksum.
+     * A checksum-valid but semantically noncanonical header is ambiguous: a
+     * second corruption can cancel the checksum delta exactly. Therefore raw
+     * auto-repair is refused unless the checksum mismatch corroborates the
+     * single known-field repair. Checksum-only failures are also diagnostic.
      */
-    if (stored_checksum != calculated_checksum) {
-        if (plan->safe_header_fixes == 0 || plan->blockers != 0) {
+    if (plan->safe_header_fixes != 0 && plan->blockers == 0) {
+        unsigned char candidate[APA_HEADER_SIZE];
+
+        if (stored_checksum == calculated_checksum) {
             plan->blockers |= APA_REPAIR_BLOCKER_UNEXPLAINED_CHECKSUM;
         } else {
-            unsigned char candidate[APA_HEADER_SIZE];
-
             memcpy(candidate, header, APA_HEADER_SIZE);
             apply_known_fixes(candidate, plan->safe_header_fixes);
             if (apa_checksum(candidate) != stored_checksum)
                 plan->blockers |= APA_REPAIR_BLOCKER_UNEXPLAINED_CHECKSUM;
         }
+    } else if (stored_checksum != calculated_checksum) {
+        plan->blockers |= APA_REPAIR_BLOCKER_UNEXPLAINED_CHECKSUM;
     }
 
     plan->header_patch_safe =
@@ -186,7 +187,8 @@ int apa_repair_build_header(const unsigned char source[APA_HEADER_SIZE],
     memcpy(repaired, source, APA_HEADER_SIZE);
     apply_known_fixes(repaired, plan->safe_header_fixes);
 
-    /* Every accepted canonical repair ends by rebuilding the checksum. */
+    /* The accepted fix already restores the stored checksum; recalculate it
+       anyway so the emitted header is canonical and self-consistent. */
     write_le32_local(repaired, apa_checksum(repaired));
     return 0;
 }
