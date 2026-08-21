@@ -7,7 +7,7 @@ EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen -Wl,--wrap=fileXioDevctl
 # Filesystem, MagicGate, USB mass-storage, power, and APA HDD services are
 # embedded so the manager does not depend on whichever IOP modules launched it.
 IRX_FILES = iomanX.irx fileXio.irx secrman.irx freesio2.irx freepad.irx \
-	mcman.irx mcserv.irx secrsif.irx poweroff.irx bdm.irx \
+	mcman.irx mcserv.irx secrsif_irx poweroff.irx bdm.irx \
 	bdmfs_fatfs.irx usbd.irx usbmass_bd.irx ps2dev9.irx ps2atad.irx \
 	ps2hdd.irx ps2fs.irx
 EE_OBJS += $(IRX_FILES:.irx=_irx.o)
@@ -16,6 +16,7 @@ HOST_CC ?= cc
 HOST_FORMAT_TEST = tests/test_formats
 HOST_APA_REPAIR_TEST = tests/test_apa_repair
 HOST_APA_FORENSIC_TEST = tests/test_apa_forensic
+HOST_FORENSIC_FIXTURE_TEST = tests/test_forensic_fixtures
 HOST_BOOT_CHAIN_TEST = tests/test_boot_chain
 HOST_BOOT_PAYLOAD_TEST = tests/test_boot_payload
 HOST_BOOT_REPORT_TEST = tests/test_boot_report
@@ -26,7 +27,8 @@ HOST_HDD_FIXTURE_TEST = tests/test_hdd_fixtures
 HOST_HDD_MUTATION_TEST = tests/test_hdd_mutations
 HOST_HDD_REPAIR_FIXTURE_TEST = tests/test_hdd_repair_fixtures
 HOST_HDD_FIXTURE_DIR = tests/generated_hdds
-HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_APA_FORENSIC_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST) $(HOST_HDD_REPAIR_FIXTURE_TEST)
+HOST_FORENSIC_FIXTURE_DIR = tests/generated_forensic_hdds
+HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_APA_FORENSIC_TEST) $(HOST_FORENSIC_FIXTURE_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST) $(HOST_HDD_REPAIR_FIXTURE_TEST)
 
 all: $(EE_BIN)
 
@@ -47,6 +49,11 @@ test-host:
 		tests/test_apa_forensic.c src/apa_forensic.c src/apa.c \
 		-o $(HOST_APA_FORENSIC_TEST)
 	./$(HOST_APA_FORENSIC_TEST)
+	python3 tools/generate_forensic_fixtures.py $(HOST_FORENSIC_FIXTURE_DIR)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_forensic_fixtures.c src/apa_forensic.c src/apa.c \
+		-o $(HOST_FORENSIC_FIXTURE_TEST)
+	./$(HOST_FORENSIC_FIXTURE_TEST) $(HOST_FORENSIC_FIXTURE_DIR)
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
 		tests/test_boot_chain.c src/boot_chain.c -o $(HOST_BOOT_CHAIN_TEST)
 	./$(HOST_BOOT_CHAIN_TEST)
@@ -85,7 +92,7 @@ test-host:
 
 clean:
 	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TESTS)
-	rm -rf $(HOST_HDD_FIXTURE_DIR)
+	rm -rf $(HOST_HDD_FIXTURE_DIR) $(HOST_FORENSIC_FIXTURE_DIR)
 
 main.o: src/main.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
