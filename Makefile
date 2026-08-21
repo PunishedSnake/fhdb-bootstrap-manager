@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o platform.o storage.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o platform.o storage.o apa.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
@@ -23,7 +23,7 @@ release: $(EE_BIN)
 # Portable tests deliberately work on a machine that has no PS2SDK installed.
 test-host:
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
-		tests/test_formats.c src/sha256.c src/capsule_format.c -o $(HOST_TEST)
+		tests/test_formats.c src/apa.c src/sha256.c src/capsule_format.c -o $(HOST_TEST)
 	./$(HOST_TEST)
 
 clean:
@@ -39,6 +39,9 @@ platform.o: src/platform.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 storage.o: src/storage.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+apa.o: src/apa.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 sha256.o: src/sha256.c
