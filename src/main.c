@@ -38,8 +38,11 @@
 #include "apa.h"
 #include "boot_chain.h"
 #include "boot_chain_ps2.h"
+#include "boot_payload_ps2.h"
 #include "boot_report.h"
 #include "capsule_format.h"
+#include "hdd_limits.h"
+#include "hdd_read.h"
 #include "kelf.h"
 #include "platform.h"
 #include "sha256.h"
@@ -50,11 +53,11 @@
 #define APP_NAME "PS2 HDD Bootstrap Manager"
 
 /* The HDD bootstrap payload begins in the reserved area of __mbr at sector 0x2000. */
-#define MBR_PAYLOAD_START 0x2000
-#define SECTOR_SIZE 512
-#define TRANSFER_SECTORS 2
-#define TRANSFER_BYTES (SECTOR_SIZE * TRANSFER_SECTORS)
-#define MAX_MBR_PAYLOAD_SIZE (4 * 1024 * 1024)
+#define MBR_PAYLOAD_START HDD_MBR_PAYLOAD_START
+#define SECTOR_SIZE HDD_SECTOR_SIZE
+#define TRANSFER_SECTORS HDD_TRANSFER_SECTORS
+#define TRANSFER_BYTES HDD_TRANSFER_BYTES
+#define MAX_MBR_PAYLOAD_SIZE HDD_MAX_MBR_PAYLOAD_SIZE
 #define MAX_RESCUE_CAPSULE_SIZE \
     (RESCUE_CAPSULE_METADATA_SIZE + APA_HEADER_SIZE + MAX_MBR_PAYLOAD_SIZE)
 
@@ -65,7 +68,6 @@
 
 /* Local names keep the source compatible with older PS2SDK header revisions. */
 #define HDIOC_SETOSDMBR_LOCAL 0x6833
-#define HDIOC_READSECTOR_LOCAL 0x6836
 #define HDIOC_WRITESECTOR_LOCAL 0x6837
 #define HDIOC_FLUSH_LOCAL 0x4804
 
@@ -96,12 +98,6 @@ static int backup_read_result[BACKUP_SLOT_COUNT];
 static int backup_write_result[BACKUP_SLOT_COUNT];
 static int backup_verify_result[BACKUP_SLOT_COUNT];
 static char backup_diagnostic_path[BACKUP_SLOT_COUNT][64];
-
-/* Argument layout used by the raw read devctl. */
-typedef struct {
-    u32 lba;
-    u32 size;
-} raw_transfer_t;
 
 /* Input packet used by the raw write devctl, including at most two sectors. */
 typedef struct {
@@ -322,7 +318,7 @@ static int load_payload_file(const char *path, unsigned char **data_out,
         return fd;
 
     size = fileXioLseek(fd, 0, FIO_SEEK_END);
-    if (size <= 0 || size > MAX_MBR_PAYLOAD_SIZE) {
+    if (size <= 0 || (unsigned int)size > MAX_MBR_PAYLOAD_SIZE) {
         fileXioClose(fd);
         return -120;
     }
@@ -415,90 +411,10 @@ static int choose_signing_card(void)
 /* HDD header reads, writes, and verification                                */
 /* ------------------------------------------------------------------------- */
 
-/* Read sectors 0 and 1, which contain the complete APA master header. */
+/* Read sectors 0 and 1 through the shared read-only transport. */
 static int read_header(unsigned char *destination)
 {
-    raw_transfer_t transfer;
-
-    transfer.lba = 0;
-    transfer.size = 2;
-    memset(destination, 0, APA_HEADER_SIZE);
-    return fileXioDevctl("hdd0:", HDIOC_READSECTOR_LOCAL,
-                         &transfer, sizeof(transfer),
-                         destination, APA_HEADER_SIZE);
-}
-
-/* Read a small raw sector range for post-write payload verification. */
-static int read_raw_sectors(u32 lba, u32 sectors, unsigned char *destination)
-{
-    raw_transfer_t transfer;
-
-    transfer.lba = lba;
-    transfer.size = sectors;
-    memset(destination, 0, sectors * SECTOR_SIZE);
-    return fileXioDevctl("hdd0:", HDIOC_READSECTOR_LOCAL,
-                         &transfer, sizeof(transfer), destination,
-                         sectors * SECTOR_SIZE);
-}
-
-/* Validate an active pointer against both policy limits and __mbr capacity. */
-static int validate_payload_bounds(u32 start, u32 sectors,
-                                   iox_stat_t *mbr_status)
-{
-    int result;
-
-    if (start == 0 || sectors == 0)
-        return -170;
-    if (sectors > MAX_MBR_PAYLOAD_SIZE / SECTOR_SIZE)
-        return -171;
-    if (start < MBR_PAYLOAD_START)
-        return -172;
-    memset(mbr_status, 0, sizeof(*mbr_status));
-    result = fileXioGetStat("hdd0:__mbr", mbr_status);
-    if (result < 0)
-        return result;
-    if (mbr_status->private_5 != 0 || start >= mbr_status->size ||
-        sectors > mbr_status->size - start)
-        return -173;
-    return 0;
-}
-
-/* Read an active sector-aligned payload through the DMA-safe transfer buffer. */
-static int read_payload_image(u32 start, u32 sectors,
-                              unsigned char **payload_out,
-                              unsigned int *bytes_out)
-{
-    unsigned int bytes;
-    unsigned int offset = 0;
-    u32 sector_offset = 0;
-    unsigned char *payload;
-
-    if (sectors == 0 || sectors > MAX_MBR_PAYLOAD_SIZE / SECTOR_SIZE)
-        return -174;
-    bytes = sectors * SECTOR_SIZE;
-    payload = malloc(bytes);
-    if (payload == NULL)
-        return -175;
-    while (sector_offset < sectors) {
-        u32 chunk_sectors = sectors - sector_offset;
-        int result;
-
-        if (chunk_sectors > TRANSFER_SECTORS)
-            chunk_sectors = TRANSFER_SECTORS;
-        result = read_raw_sectors(start + sector_offset, chunk_sectors,
-                                  sector_verify_buffer);
-        if (result < 0) {
-            free(payload);
-            return result;
-        }
-        memcpy(payload + offset, sector_verify_buffer,
-               chunk_sectors * SECTOR_SIZE);
-        sector_offset += chunk_sectors;
-        offset += chunk_sectors * SECTOR_SIZE;
-    }
-    *payload_out = payload;
-    *bytes_out = bytes;
-    return 0;
+    return hdd_read_raw_sectors(0, 2, destination);
 }
 
 /* Update only osdStart/osdSize through ps2hdd and flush its APA cache. */
@@ -572,7 +488,7 @@ static int write_and_verify_payload(const unsigned char *payload,
 
         memset(write_packet.data, 0, TRANSFER_BYTES);
         memcpy(write_packet.data, payload + offset, bytes);
-        result = read_raw_sectors(start_sector + sector_offset, sectors,
+        result = hdd_read_raw_sectors(start_sector + sector_offset, sectors,
                                   sector_verify_buffer);
         if (result < 0)
             return result;
@@ -607,50 +523,25 @@ static int write_and_verify_payload(const unsigned char *payload,
 /* Classify the probable family separately from the directly observed evidence. */
 
 
-/* Read the active payload, fingerprint it, and collect downstream evidence. */
+/* Collect active-payload and downstream evidence, then classify it. */
 static void analyze_boot_chain(boot_chain_info_t *info)
 {
     u32 start = read_le32(header_buffer + APA_OSD_START_OFFSET);
     u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);
-    unsigned char *payload = NULL;
-    unsigned int payload_bytes = 0;
-    iox_stat_t mbr_status;
 
     memset(info, 0, sizeof(*info));
     info->skip_hdd[0] = -1;
     info->skip_hdd[1] = -1;
     info->skip_hdd[2] = -1;
-    info->payload_read_result = -1;
-    info->payload_kelf_result = -1;
     read_romver(info->romver);
     expected_system_folder(info->romver, info->expected_system_folder,
                            sizeof(info->expected_system_folder));
-    info->pointer_consistent = ((start == 0) == (sectors == 0));
-
-    if (start != 0 && sectors != 0) {
-        info->payload_read_result =
-            validate_payload_bounds(start, sectors, &mbr_status);
-        if (info->payload_read_result == 0)
-            info->payload_read_result =
-                read_payload_image(start, sectors, &payload, &payload_bytes);
-        if (info->payload_read_result == 0) {
-            info->payload_bytes = payload_bytes;
-            sha256_buffer(payload, payload_bytes, info->payload_sha256);
-            info->payload_kelf_result =
-                kelf_size_from_disk_image(payload, payload_bytes,
-                                          &info->kelf_file_bytes);
-            if (info->payload_kelf_result == 0)
-                sha256_buffer(payload, info->kelf_file_bytes,
-                              info->kelf_sha256);
-        }
-    }
-
+    scan_active_payload_evidence(info, start, sectors);
     scan_skip_hdd_settings(info);
     scan_memory_card_boot_files(info);
     scan_sysconf_partition(info);
     scan_system_partition(info);
     classify_boot_chain(info, start, sectors);
-    free(payload);
 }
 /* Refresh the in-memory evidence and optionally persist both report and log. */
 static void refresh_boot_chain_report(int save_to_storage)
@@ -898,7 +789,6 @@ static const char *save_rescue_capsule(void)
     unsigned int slot;
     u32 start = read_le32(header_buffer + APA_OSD_START_OFFSET);
     u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);
-    iox_stat_t mbr_status;
     int result;
 
     if ((start == 0) != (sectors == 0)) {
@@ -917,12 +807,12 @@ static const char *save_rescue_capsule(void)
     sha256_buffer(header_buffer, APA_HEADER_SIZE, info.apa_sha256);
 
     if (start != 0) {
-        result = validate_payload_bounds(start, sectors, &mbr_status);
+        result = hdd_validate_payload_bounds(start, sectors);
         if (result < 0) {
             log_line("Rescue capsule payload bounds failed: %d", result);
             return NULL;
         }
-        result = read_payload_image(start, sectors, &payload, &payload_bytes);
+        result = hdd_read_payload_image(start, sectors, &payload, &payload_bytes);
         if (result < 0) {
             log_line("Rescue capsule payload read failed: %d", result);
             return NULL;
@@ -1182,7 +1072,6 @@ static void restore_legacy_pointer(void)
     u32 start;
     u32 size;
     int result;
-    iox_stat_t mbr_status;
 
     if (backup_path == NULL) {
         scr_clear();
@@ -1195,7 +1084,7 @@ static void restore_legacy_pointer(void)
 
     start = read_le32(backup_buffer + APA_OSD_START_OFFSET);
     size = read_le32(backup_buffer + APA_OSD_SIZE_OFFSET);
-    result = validate_payload_bounds(start, size, &mbr_status);
+    result = hdd_validate_payload_bounds(start, size);
     if (result < 0) {
         scr_clear();
         scr_printf("The saved pointer is outside this __mbr area.\n");
@@ -1249,7 +1138,6 @@ static void restore_rescue_capsule(void)
     unsigned int file_size = 0;
     const unsigned char *payload;
     const char *safety_backup;
-    iox_stat_t mbr_status;
     int result;
 
     result = find_rescue_capsule(rescue_path, sizeof(rescue_path), &info,
@@ -1269,8 +1157,7 @@ static void restore_rescue_capsule(void)
         return;
     }
 
-    result = validate_payload_bounds(info.payload_start,
-                                     info.payload_sectors, &mbr_status);
+    result = hdd_validate_payload_bounds(info.payload_start, info.payload_sectors);
     if (result < 0) {
         free(file_data);
         scr_clear();
