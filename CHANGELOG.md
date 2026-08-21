@@ -2,6 +2,26 @@
 
 All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
+## [0.3.1] - 2026-08-21
+
+**Codename: Torii (鳥居)**
+
+### Changed
+
+- `MBR.XIN` is now the preferred source filename for manual HDD bootstrap installation, matching the Sony naming pointed out by Berion on PSX-Place.
+- `MBR.XLF` remains supported as a compatibility fallback for existing community installer layouts; no payload conversion or on-disk format change is performed.
+- When both names are available, the compatibility shim opens `MBR.XIN`. If that preferred file exists but cannot be opened or fails the existing KELF validation, the operation fails instead of silently hiding it behind `MBR.XLF`.
+- The selected path buffer is updated to `MBR.XIN` after selection so subsequent source diagnostics identify the payload actually being installed.
+
+### Safety
+
+- No APA write-path, rescue-capsule format, signing, payload verification, or pointer-last activation logic changed in this patch.
+- The compatibility behavior is isolated in `src/mbr_compat.c` and linked through GNU ld `--wrap=fileXioOpen`, keeping the hardware-validated 0.3.0 installation state machine unchanged.
+
+### Credit
+
+- Thanks to **Berion** on PSX-Place for catching the `MBR.XIN` naming detail and explaining the historical `MBR.XLF` installer convention.
+
 ## [0.3.0] - 2026-08-21
 
 **Codename: Torii (鳥居)**
