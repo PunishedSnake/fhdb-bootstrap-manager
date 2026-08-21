@@ -4,7 +4,7 @@ PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, back
 
 It began after a real console got trapped in a post-uninstall FHDB boot loop: FHDB was gone, but the bootstrap pointer was still enabled, so the machine faithfully rebooted into software that no longer existed. Apparently uninstalling a program and persuading the console to stop launching it were separate premium features.
 
-Version `0.3.0` **Torii** adds two larger pieces that the old PS2 HDD tool pile somehow never put in one place: a complete, verifiable backup of the active MBR payload and a read-only boot-chain inspector. It also writes a session log and a separate boot-chain report to `mass:`, `mc0:`, or `mc1:`—because diagnosing a twenty-year-old encrypted boot path exclusively from photographs of a CRT was becoming a little too authentic.
+Version `0.3.1` **Torii** is a small compatibility update to the stable 0.3.x line. It prefers the Sony-style `MBR.XIN` filename for manual bootstrap installation while retaining `MBR.XLF` as a compatibility fallback for existing community installer layouts. Version 0.3.0 added the larger Torii features: a complete, verifiable backup of the active MBR payload and a read-only boot-chain inspector, plus persistent diagnostics on `mass:`, `mc0:`, or `mc1:`—because diagnosing a twenty-year-old encrypted boot path exclusively from photographs of a CRT was becoming a little too authentic.
 
 ## Why this exists
 
@@ -15,15 +15,15 @@ The PS2 ROM decides whether to launch an HDD update from two fields in the APA m
 
 If removal software deletes FHDB but leaves those fields populated, the ROM still sees an enabled update, attempts to execute a missing or unusable payload, resets, and repeats. The traditional recovery method is to disconnect the HDD, change a setting, or reach for increasingly archaeological utilities. The difficult part, naturally, was clearing two 32-bit values without treating the rest of the disk as acceptable collateral damage.
 
-A 1024-byte header backup preserves the pointer, but it does not preserve the program to which that pointer refers. Version `0.3.0` therefore adds a rescue capsule containing the APA master header, the exact sector-aligned active payload, metadata, and SHA-256 digests. Restoration writes and verifies the payload first and exposes it to the ROM only after that verification succeeds.
+A 1024-byte header backup preserves the pointer, but it does not preserve the program to which that pointer refers. Version `0.3.0` therefore added a rescue capsule containing the APA master header, the exact sector-aligned active payload, metadata, and SHA-256 digests. Restoration writes and verifies the payload first and exposes it to the ROM only after that verification succeeds.
 
-Manual installation has the opposite problem. Copying an MBR program to a disk is not enough: the KELF/XLF must be signed through the PS2 security hardware, written into the reserved `__mbr` payload area, verified, and only then exposed through the APA pointer. This manager turns those jobs into explicit guarded operations in one ELF.
+Manual installation has the opposite problem. Copying an MBR program to a disk is not enough: the KELF must be signed through the PS2 security hardware, written into the reserved `__mbr` payload area, verified, and only then exposed through the APA pointer. This manager turns those jobs into explicit guarded operations in one ELF.
 
 ## Release status
 
-`0.3.0` **Torii** is the stable release line. The complete `0.2.0` manager—including selectable USB storage, standalone header backup, disable, restore, restart, shutdown, MagicGate signing, and guarded installation—was exercised successfully on real PlayStation 2 hardware.
+`0.3.1` **Torii** is the current stable release. The complete `0.2.0` manager—including selectable USB storage, standalone header backup, disable, restore, restart, shutdown, MagicGate signing, and guarded installation—was exercised successfully on real PlayStation 2 hardware.
 
-Torii promotes the full-payload rescue and boot-chain inspection work to stable while keeping the write-safety model unchanged. Portable SHA-256/capsule logic is covered by host-side tests and release builds are cross-compiled with the pinned PS2DEV v2.0.0 toolchain. Broader real-console coverage is still welcome; stable means the release gates are satisfied, not that twenty-year-old disks have suddenly become immortal. Keep irreplaceable data copied elsewhere.
+Torii keeps the full-payload rescue and boot-chain inspection work stable while preserving the write-safety model. Portable SHA-256/capsule logic is covered by host-side tests and release builds are cross-compiled with the pinned PS2DEV v2.0.0 toolchain. Broader real-console coverage is still welcome; stable means the release gates are satisfied, not that twenty-year-old disks have suddenly become immortal. Keep irreplaceable data copied elsewhere.
 
 ## Features
 
@@ -38,7 +38,8 @@ Torii promotes the full-payload rescue and boot-chain inspection work to stable 
 - Restores a full capsule payload first, verifies every sector, and enables its pointer last.
 - Disables only the bootstrap pointer through `HDIOC_SETOSDMBR`.
 - Restores compatible `HDDMBR*.BIN` and old `FHDBMBR*.BIN` pointer backups.
-- Structurally validates and MagicGate-signs a stock `MBR.XLF`.
+- Structurally validates and MagicGate-signs a stock MBR KELF.
+- Prefers `MBR.XIN` and falls back to `MBR.XLF` for compatibility with existing installer layouts.
 - Writes signed payloads only inside the reserved `__mbr` payload area.
 - Produces `HDDMAN.LOG` and a separate `BOOTCHAIN.TXT` report.
 - Fingerprints both the sector image and unpadded KELF with SHA-256.
@@ -50,7 +51,7 @@ Torii promotes the full-payload rescue and boot-chain inspection work to stable 
 
 The manager does not format a disk, create APA partitions, install the FHDB, PSBBN, or HDD-OSD file tree, copy applications, repair PFS filesystems, or decide which third-party distribution you should trust this week.
 
-The `MBR.XLF` installation option installs only the signed MBR bootstrap program. The partitions and files expected by that program must already exist. Installing the bootstrap without its corresponding environment merely gives the ROM a beautifully verified way to launch something incomplete.
+The `MBR.XIN`/`MBR.XLF` installation option installs only the signed MBR bootstrap program. The partitions and files expected by that program must already exist. Installing the bootstrap without its corresponding environment merely gives the ROM a beautifully verified way to launch something incomplete.
 
 The family detector is evidence-based, not clairvoyant. Signed KELFs are encrypted; the manager validates their structure and correlates them with downstream files and configuration. `BOOTCHAIN.TXT` labels the result as probable and records the evidence used instead of inventing certainty from encrypted bytes.
 
@@ -84,15 +85,20 @@ No raw write is issued to sectors 0 or 1. Raw writes are confined to the reserve
 
 Copy `PS2_HDD_BOOTSTRAP_MANAGER.ELF` somewhere your existing launcher can run it. Launching it from USB automatically selects `mass:`; launching it from a memory card automatically selects that card. You can change the destination later with `SELECT`.
 
-For bootstrap installation, also copy the stock unsigned `MBR.XLF` supplied with the matching FHDB/HDD-OSD installer to the root of the selected device:
+For bootstrap installation, put the stock unsigned MBR payload at the root of the selected device. `MBR.XIN` is preferred; `MBR.XLF` remains accepted for compatibility with existing community installer layouts:
 
 ```text
-mc0:/MBR.XLF
+mc0:/MBR.XIN      preferred
+mc0:/MBR.XLF      compatibility fallback
+mc1:/MBR.XIN
 mc1:/MBR.XLF
+mass:/MBR.XIN
 mass:/MBR.XLF
 ```
 
-Do not rename an ordinary ELF to `MBR.XLF`; the manager checks the KELF container and rejects plain ELF files. A genuine PS2 memory card is required for MagicGate signing. If `mass:` is selected, the manager asks whether `mc0` or `mc1` should perform the signing.
+If both names are present, `MBR.XIN` is selected. If the preferred file exists but cannot be opened or does not pass the existing KELF validation, the manager fails the operation rather than silently hiding that problem behind `MBR.XLF`. Do not rename an ordinary ELF to either filename; the manager checks the KELF container and rejects plain ELF files.
+
+A genuine PS2 memory card is required for MagicGate signing. If `mass:` is selected, the manager asks whether `mc0` or `mc1` should perform the signing.
 
 ## Recovering from an FHDB boot loop
 
@@ -180,7 +186,7 @@ The legacy fallback cannot prove that the referenced payload sectors still conta
 This is intended for a manual FHDB or HDD-OSD setup whose required partitions and files already exist.
 
 1. Ensure the current pointer is disabled.
-2. Put the correct stock `MBR.XLF` at the root of the selected device.
+2. Put the correct stock `MBR.XIN` at the root of the selected device, or use `MBR.XLF` for compatibility with an existing installer layout.
 3. Press `CIRCLE`.
 4. Select a signing memory card if the source is `mass:`.
 5. Review the source, backup, target sector, byte size, and sector count.
@@ -200,7 +206,7 @@ After a successful installation the manager refreshes the boot-chain report and 
 | Disable confirmation | `L1 + R1 + X` | Clear the active pointer |
 | Disabled bootstrap | `SQUARE` | Load a full rescue capsule or legacy pointer backup |
 | Restore confirmation | `L1 + R1 + SQUARE` | Restore payload/pointer according to the selected backup type |
-| Disabled bootstrap | `CIRCLE` | Load, sign, and prepare to install `MBR.XLF` |
+| Disabled bootstrap | `CIRCLE` | Load, sign, and prepare to install `MBR.XIN` or compatible `MBR.XLF` |
 | Install confirmation | `L1 + R1 + CIRCLE` | Write, verify, and enable the payload |
 | Main menu | `TRIANGLE` | Open the power/restart menu |
 | Confirmation screens | `TRIANGLE` | Cancel without the pending write |
@@ -219,6 +225,8 @@ The primary device calls are:
 - read-only `pfs0:` mounts of `__sysconf` and `__system` for diagnostics;
 - `ExecOSD("BootBrowser")` for restart.
 
+Version 0.3.1 adds `src/mbr_compat.c`, a narrow GNU ld `--wrap=fileXioOpen` compatibility layer. It only intercepts attempts to open a path ending in `/MBR.XLF`; when a sibling `MBR.XIN` exists, that file is opened instead. This keeps the established 0.3.0 installation state machine and all HDD write ordering unchanged.
+
 The source layout and write-order invariants are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). In particular, the conservative two-sector raw HDD transfer size is intentional and must not be increased without measuring and testing the fileXio/IOP path on hardware.
 
 ## Hardware validation
@@ -230,7 +238,7 @@ The original disable workflow eliminated a real post-uninstall FHDB boot loop on
 - cross-model Free McBoot memory card;
 - standard non-GPT APA HDD.
 
-The console subsequently cold-booted with the HDD connected. The final `0.2.0` workflow was also reported working on the same hardware, including selectable `mass:` storage and standalone byte-for-byte backup. The full rescue capsule and expanded boot-chain inspector are stable in `0.3.0` Torii; additional console, adapter, and HDD combinations remain useful validation coverage.
+The console subsequently cold-booted with the HDD connected. The final `0.2.0` workflow was also reported working on the same hardware, including selectable `mass:` storage and standalone byte-for-byte backup. The full rescue capsule and expanded boot-chain inspector are stable in the Torii 0.3.x line; additional console, adapter, and HDD combinations remain useful validation coverage.
 
 ## Building and testing
 
@@ -244,10 +252,10 @@ For the PS2 ELF, use PS2DEV/PS2SDK or the same pinned container as CI:
 
 ```sh
 docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
-  sh -lc 'make clean && make release'
+  sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
 ```
 
-The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Stable `0.3.0` releases are built with the pinned PS2DEV v2.0.0 container. GitHub release assets include the ELF and `SHA256SUMS.txt`; generated binaries are deliberately not tracked in the source tree.
+The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Stable `0.3.x` releases are built with the pinned PS2DEV v2.0.0 container. GitHub release assets include the ELF and `SHA256SUMS.txt`; generated binaries are deliberately not tracked in the source tree.
 
 ## Project documentation
 
@@ -265,4 +273,5 @@ The application source is released under the MIT License. Embedded PS2SDK module
 - PS2DEV and PS2SDK contributors for the APA, PFS, USB, security, and console services.
 - Free McBoot/FHDB contributors for the original signing and MBR installation workflow.
 - OSDMenu, HDD-OSD, and PSBBN preservation contributors whose documented layouts make evidence-based identification possible.
+- **Berion (PSX-Place)** for pointing out the original Sony-style `MBR.XIN` naming and the historical `MBR.XLF` installer convention.
 - Hifu Himejima for reproducing the failure, preserving the disk header, testing on real hardware, and being that one gloriously unhinged developer who decided to correct this great injustice.
