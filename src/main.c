@@ -16,7 +16,6 @@
 /* EE kernel, RPC, module loading, video, controller, and power services. */
 #include <tamtypes.h>
 #include <kernel.h>
-#include <delaythread.h>
 #include <sifrpc.h>
 #include <iopcontrol.h>
 #include <loadfile.h>
@@ -25,7 +24,6 @@
 #include <libpad.h>
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
-#include <io_common.h>
 #include <hdd-ioctl.h>
 #include <libpwroff.h>
 #include <libsecr.h>
@@ -35,6 +33,7 @@
 #include <unistd.h>
 
 #include "apa.h"
+#include "bootstrap_source.h"
 #include "bootstrap_transaction_ps2.h"
 #include "boot_chain.h"
 #include "boot_diagnostics_ps2.h"
@@ -54,10 +53,6 @@
 
 /* The HDD bootstrap payload begins in the reserved area of __mbr at sector 0x2000. */
 #define MBR_PAYLOAD_START HDD_MBR_PAYLOAD_START
-#define SECTOR_SIZE HDD_SECTOR_SIZE
-#define TRANSFER_SECTORS HDD_TRANSFER_SECTORS
-#define TRANSFER_BYTES HDD_TRANSFER_BYTES
-#define MAX_MBR_PAYLOAD_SIZE HDD_MAX_MBR_PAYLOAD_SIZE
 
 /* Human-readable diagnostics and logging remain bounded in EE memory. */
 #define TEXT_FILE_LIMIT 32768
@@ -160,56 +155,6 @@ static void wait_to_return(void)
 
 /* Parse FMCB's numeric or textual Skip_HDD setting from one configuration. */
 
-
-/* Load a bounded MBR.XIN/MBR.XLF source; USB receives a short mount grace period. */
-static int load_payload_file(const char *path, unsigned char **data_out,
-                             unsigned int *size_out, int retry_usb)
-{
-    int fd = -1;
-    int attempts = retry_usb ? 20 : 1;
-    int size;
-    int total;
-    unsigned char *data;
-
-    while (attempts-- > 0) {
-        fd = fileXioOpen(path, FIO_O_RDONLY, 0);
-        if (fd >= 0)
-            break;
-        DelayThread(250000);
-    }
-    if (fd < 0)
-        return fd;
-
-    size = fileXioLseek(fd, 0, FIO_SEEK_END);
-    if (size <= 0 || (unsigned int)size > MAX_MBR_PAYLOAD_SIZE) {
-        fileXioClose(fd);
-        return -120;
-    }
-    if (fileXioLseek(fd, 0, FIO_SEEK_SET) < 0) {
-        fileXioClose(fd);
-        return -121;
-    }
-
-    data = malloc(size);
-    if (data == NULL) {
-        fileXioClose(fd);
-        return -122;
-    }
-    total = 0;
-    while (total < size) {
-        int received = fileXioRead(fd, data + total, size - total);
-        if (received <= 0) {
-            free(data);
-            fileXioClose(fd);
-            return received < 0 ? received : -123;
-        }
-        total += received;
-    }
-    fileXioClose(fd);
-    *data_out = data;
-    *size_out = (unsigned int)size;
-    return 0;
-}
 
 /* Select mc0, mc1, or mass without changing anything until X confirms. */
 static void choose_storage(void)
@@ -624,19 +569,16 @@ static void restore_rescue_capsule(void)
     wait_to_return();
 }
 
-/* Sign, write, verify, and finally enable a stock MBR.XLF payload. */
+/* Sign, write, verify, and finally enable a prepared stock MBR payload. */
 static void install_bootstrap(void)
 {
-    char source_path[64];
+    bootstrap_source_t source;
+    bootstrap_source_result_t source_result;
     const char *backup_path;
     const char *installed_rescue;
-    unsigned char *payload = NULL;
-    unsigned int payload_size = 0;
-    unsigned int sectors;
     int signing_port;
     bootstrap_transaction_result_t transaction;
     int result;
-    iox_stat_t mbr_stat;
 
     if (read_le32(header_buffer + APA_OSD_START_OFFSET) != 0 ||
         read_le32(header_buffer + APA_OSD_SIZE_OFFSET) != 0) {
@@ -646,57 +588,54 @@ static void install_bootstrap(void)
         return;
     }
 
-    storage_path(source_path, sizeof(source_path), storage_selected(), "MBR.XLF");
+    bootstrap_source_init(&source, storage_selected());
     scr_clear();
-    scr_printf("Loading %s\n", source_path);
+    scr_printf("Loading %s\n", source.path);
     if (storage_selected() == 2)
         scr_printf("Waiting briefly for USB if necessary...\n");
 
-    result = load_payload_file(source_path, &payload, &payload_size,
-                               storage_selected() == 2);
+    result = bootstrap_source_prepare(storage_selected(), &source,
+                                      &source_result);
     if (result < 0) {
-        session_log_line("MBR.XLF load failed from %s: %d", source_path, result);
-        session_log_flush(storage_selected());
-        scr_clear();
-        scr_printf("Could not load %s\nCode: %d\n", source_path, result);
-        wait_to_return();
-        return;
-    }
-    result = kelf_validate_layout(payload, payload_size);
-    if (result < 0) {
-        free(payload);
-        session_log_line("MBR.XLF structural validation failed: %d", result);
-        session_log_flush(storage_selected());
-        scr_clear();
-        scr_printf("MBR.XLF is not a structurally valid KELF.\n");
-        scr_printf("Validation code: %d\n", result);
-        wait_to_return();
-        return;
-    }
+        if (source_result.stage == BOOTSTRAP_SOURCE_STAGE_LOAD) {
+            session_log_line("MBR.XLF load failed from %s: %d",
+                             source.path, source_result.code);
+            session_log_flush(storage_selected());
+            scr_clear();
+            scr_printf("Could not load %s\nCode: %d\n",
+                       source.path, source_result.code);
+            wait_to_return();
+            return;
+        }
+        if (source_result.stage == BOOTSTRAP_SOURCE_STAGE_KELF) {
+            session_log_line("MBR.XLF structural validation failed: %d",
+                             source_result.code);
+            session_log_flush(storage_selected());
+            scr_clear();
+            scr_printf("MBR.XLF is not a structurally valid KELF.\n");
+            scr_printf("Validation code: %d\n", source_result.code);
+            wait_to_return();
+            return;
+        }
 
-    sectors = (payload_size + SECTOR_SIZE - 1) / SECTOR_SIZE;
-    memset(&mbr_stat, 0, sizeof(mbr_stat));
-    result = fileXioGetStat("hdd0:__mbr", &mbr_stat);
-    if (result < 0 || mbr_stat.private_5 != 0 ||
-        mbr_stat.size <= MBR_PAYLOAD_START ||
-        sectors > mbr_stat.size - MBR_PAYLOAD_START) {
-        free(payload);
-        session_log_line("MBR.XLF capacity validation failed: getstat=%d, start=0x%08x, "
-                 "size=0x%08x, sectors=%u", result,
-                 (unsigned int)mbr_stat.private_5,
-                 (unsigned int)mbr_stat.size, sectors);
+        session_log_line(
+            "MBR.XLF capacity validation failed: getstat=%d, start=0x%08x, "
+            "size=0x%08x, sectors=%u",
+            source_result.getstat_result, source_result.mbr_start,
+            source_result.mbr_size, source_result.payload_sectors);
         session_log_flush(storage_selected());
         scr_clear();
         scr_printf("The __mbr reserved payload area is not valid.\n");
         scr_printf("getstat:%d start:0x%08x size:0x%08x\n",
-                   result, mbr_stat.private_5, mbr_stat.size);
+                   source_result.getstat_result,
+                   source_result.mbr_start, source_result.mbr_size);
         wait_to_return();
         return;
     }
 
     backup_path = save_backup();
     if (backup_path == NULL) {
-        free(payload);
+        bootstrap_source_release(&source);
         backup_error_screen();
         return;
     }
@@ -705,14 +644,14 @@ static void install_bootstrap(void)
     if (signing_port < 0)
         signing_port = choose_signing_card();
     if (signing_port < 0) {
-        free(payload);
+        bootstrap_source_release(&source);
         return;
     }
 
     scr_clear();
     scr_printf("Signing MBR.XLF through mc%d...\n", signing_port);
-    if (SecrDownloadFile(2 + signing_port, 0, payload) == NULL) {
-        free(payload);
+    if (SecrDownloadFile(2 + signing_port, 0, source.payload) == NULL) {
+        bootstrap_source_release(&source);
         session_log_line("MagicGate signing failed through mc%d", signing_port);
         session_log_flush(storage_selected());
         scr_clear();
@@ -721,33 +660,35 @@ static void install_bootstrap(void)
         wait_to_return();
         return;
     }
-    result = kelf_validate_layout(payload, payload_size);
+    result = kelf_validate_layout(source.payload, source.payload_size);
     if (result < 0) {
-        free(payload);
+        bootstrap_source_release(&source);
         fatal_screen("Signed KELF failed structural validation.", result);
     }
 
     scr_clear();
     scr_printf("Ready to install signed HDD bootstrap\n\n");
-    scr_printf("Source : %s\n", source_path);
+    scr_printf("Source : %s\n", source.path);
     scr_printf("Backup : %s\n", backup_path);
     scr_printf("Target : sector 0x%08x\n", MBR_PAYLOAD_START);
     scr_printf("Size   : %u bytes / 0x%x sectors\n\n",
-               payload_size, sectors);
+               source.payload_size, source.sectors);
     scr_printf("This installs only the MBR bootstrap program.\n");
     scr_printf("It does not create FHDB/HDD-OSD partitions.\n\n");
     scr_printf("Hold L1+R1 and press CIRCLE to confirm.\n");
     scr_printf("Press TRIANGLE to cancel.\n");
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_CIRCLE)) {
-        free(payload);
+        bootstrap_source_release(&source);
         return;
     }
 
     scr_clear();
     scr_printf("Writing and verifying signed payload...\n");
     result = bootstrap_transaction_ps2_activate(
-        header_buffer, payload, payload_size, MBR_PAYLOAD_START, sectors,
-        free, payload, &transaction);
+        header_buffer, source.payload, source.payload_size,
+        MBR_PAYLOAD_START, source.sectors, free, source.payload,
+        &transaction);
+    source.payload = NULL;
     if (result < 0) {
         if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_PAYLOAD)
             fatal_screen(
@@ -761,8 +702,10 @@ static void install_bootstrap(void)
             fatal_screen("Installed pointer verification failed.", result);
     }
 
-    session_log_line("Bootstrap installed and verified at sector 0x%08x (%u bytes, "
-             "%u sectors)", MBR_PAYLOAD_START, payload_size, sectors);
+    session_log_line(
+        "Bootstrap installed and verified at sector 0x%08x (%u bytes, "
+        "%u sectors)", MBR_PAYLOAD_START, source.payload_size,
+        source.sectors);
     refresh_boot_chain_report(1);
     installed_rescue = save_rescue_capsule();
     session_log_flush(storage_selected());
