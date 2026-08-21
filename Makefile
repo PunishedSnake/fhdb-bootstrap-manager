@@ -1,15 +1,15 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o platform.o storage.o apa.o hdd_read.o hdd_write.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o platform.o storage.o header_backup.o apa.o hdd_read.o hdd_write.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
 
 # Filesystem, MagicGate, USB mass-storage, power, and APA HDD services are
 # embedded so the manager does not depend on whichever IOP modules launched it.
-IRX_FILES = iomanX.irx fileXio.irx secrman.irx freesio2.irx freepad.irx \
-	mcman.irx mcserv.irx secrsif.irx poweroff.irx bdm.irx \
-	bdmfs_fatfs.irx usbd.irx usbmass_bd.irx ps2dev9.irx ps2atad.irx \
-	ps2hdd.irx ps2fs.irx
+IRX_FILES = iomanX.irx fileXio.irx secrman_irx freesio2.irx freepad.irx \
+	mcman.irx mcserv.irx secrsif_irx poweroff_irx bdm_irx \
+	bdmfs_fatfs_irx usbd_irx usbmass_bd_irx ps2dev9_irx ps2atad_irx \
+	ps2hdd_irx ps2fs_irx
 EE_OBJS += $(IRX_FILES:.irx=_irx.o)
 
 HOST_CC ?= cc
@@ -64,6 +64,9 @@ platform.o: src/platform.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 storage.o: src/storage.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+header_backup.o: src/header_backup.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 apa.o: src/apa.c
