@@ -21,6 +21,7 @@
 #include "apa.h"
 #include "hdd_read.h"
 #include "hdd_repair_ps2.h"
+#include "platform.h"
 
 #define HDIOC_WRITESECTOR_LOCAL 0x6837
 #define HDIOC_FLUSH_LOCAL 0x4804
@@ -44,8 +45,6 @@ int hdd_repair_write_master_header_verified(
     if (repaired == NULL || readback == NULL)
         return HDD_REPAIR_INVALID_ARGUMENT;
 
-    /* Never use this exceptional path to erase a GPT/protective-MBR signal or
-       to write a buffer that is not already a complete repaired APA master. */
     if (!is_standard_apa_header(repaired) || is_hybrid_gpt(repaired) ||
         read_le32(repaired + APA_START_OFFSET) != 0 ||
         read_le16(repaired + APA_TYPE_OFFSET) != APA_MASTER_TYPE_VALUE ||
@@ -53,25 +52,35 @@ int hdd_repair_write_master_header_verified(
             APA_MASTER_VERSION_VALUE)
         return HDD_REPAIR_UNSAFE_HEADER;
 
+    pad_activity_begin();
     repair_packet.lba = 0;
     repair_packet.size = 2;
     memcpy(repair_packet.data, repaired, APA_HEADER_SIZE);
     result = fileXioDevctl("hdd0:", HDIOC_WRITESECTOR_LOCAL,
                            &repair_packet, sizeof(repair_packet), NULL, 0);
-    if (result < 0)
+    if (result < 0) {
+        pad_activity_end();
         return HDD_REPAIR_WRITE_FAILED;
+    }
 
     result = fileXioDevctl("hdd0:", HDIOC_FLUSH_LOCAL,
                            NULL, 0, NULL, 0);
-    if (result < 0)
+    if (result < 0) {
+        pad_activity_end();
         return HDD_REPAIR_FLUSH_FAILED;
+    }
 
     result = hdd_read_raw_sectors(0, 2, repair_verify);
-    if (result < 0)
+    if (result < 0) {
+        pad_activity_end();
         return HDD_REPAIR_READBACK_FAILED;
-    if (memcmp(repair_verify, repaired, APA_HEADER_SIZE) != 0)
+    }
+    if (memcmp(repair_verify, repaired, APA_HEADER_SIZE) != 0) {
+        pad_activity_end();
         return HDD_REPAIR_COMPARE_FAILED;
+    }
 
     memcpy(readback, repair_verify, APA_HEADER_SIZE);
+    pad_activity_end();
     return 0;
 }
