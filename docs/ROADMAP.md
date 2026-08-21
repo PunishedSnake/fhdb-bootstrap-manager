@@ -15,9 +15,20 @@ Release codenames use Japanese words connected with thresholds, passage, bridges
 
 ## 0.4.x — Michishirube
 
-Planned engineering work:
+Michishirube is developed as a sequence of regression-gated extractions. A checked item means the responsibility has physically left `main.c`; it does not imply that its public API is already final.
 
-- split `src/main.c` along its existing logical boundaries (`platform`, `storage`, `apa`, `boot_chain`, `rescue`, `ui`) without changing write ordering;
+### Modularization progress
+
+- [x] `platform` — IOP reset, embedded IRX startup, pad DMA lifetime, button-edge input, and confirmation chords.
+- [x] `storage` first pass — storage targets, launch-device selection, ROMVER/file helpers, exact/bounded reads, and generic writes.
+- [ ] Encapsulate storage selection state after the mechanical split has hardware coverage.
+- [ ] `apa` — header parsing/validation, raw transfer boundary, pointer validation, and driver-mediated pointer updates.
+- [ ] `boot_chain` — configuration parsing, read-only evidence collection, classification, and report model.
+- [ ] `rescue` — capsule creation/lookup/validation plus restore orchestration while preserving payload-first/pointer-last semantics.
+- [ ] `ui` — menus, fatal/info screens, logging presentation, and confirmation text after core policy has explicit interfaces.
+
+### Remaining engineering work
+
 - replace project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly;
 - expand host tests for configuration parsing, same-disk header matching, KELF length validation, and boot-chain classification using synthetic fixtures;
 - add build-size/performance reporting so optimization work is measurable rather than flag-driven;
