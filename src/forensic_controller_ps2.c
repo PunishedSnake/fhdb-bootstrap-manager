@@ -26,7 +26,10 @@
 #include "session_log.h"
 #include "storage.h"
 
-#define FORENSIC_REPORT_BYTES 65536u
+/* A 512-node real disk already overflowed the old 64 KiB report near node 315.
+ * 512 KiB is large enough for the expanded 2048-node laboratory budget while
+ * remaining a bounded static buffer on the EE. */
+#define FORENSIC_REPORT_BYTES (512u * 1024u)
 
 static apa_forensic_result_t forensic_scan_result;
 static int forensic_scan_valid;
@@ -84,6 +87,11 @@ static int run_scan(void)
         forensic_scan_result.node_count, forensic_scan_result.map_count,
         forensic_scan_result.grid_reads, forensic_scan_result.reference_reads,
         forensic_scan_result.unreadable_reads, forensic_scan_result.truncated);
+    if (forensic_scan_result.truncated) {
+        session_log_line(
+            "APA forensic write gate: LOCKED because scan reached node capacity %u",
+            APA_FORENSIC_MAX_NODES);
+    }
     session_log_flush(storage_selected());
     return 0;
 }
@@ -127,10 +135,18 @@ static int save_report(void)
                   forensic_scan_result.grid_reads,
                   forensic_scan_result.reference_reads,
                   forensic_scan_result.unreadable_reads);
-    report_append(&used, "Nodes        : %u\nMaps         : %u\nTruncated    : %s\n\n",
-                  forensic_scan_result.node_count,
+    report_append(&used,
+                  "Nodes        : %u / %u capacity\nMaps         : %u\nTruncated    : %s\n",
+                  forensic_scan_result.node_count, APA_FORENSIC_MAX_NODES,
                   forensic_scan_result.map_count,
                   forensic_scan_result.truncated ? "YES" : "no");
+    if (forensic_scan_result.truncated) {
+        report_append(&used,
+                      "Write planning: LOCKED - scan is incomplete; visible tail is not physical tail\n");
+    } else {
+        report_append(&used, "Write planning: complete-scan policy applies\n");
+    }
+    report_append(&used, "\n");
 
     for (i = 0; i < forensic_scan_result.map_count; i++) {
         const apa_forensic_map_t *map = &forensic_scan_result.maps[i];
@@ -195,7 +211,7 @@ static void show_node(const apa_forensic_map_t *map, unsigned int position)
 
     scr_printf("Node %u/%u  LBA 0x%08x\n", position + 1u,
                map->node_count, (unsigned int)node->lba);
-    scr_printf("id      : %s\n", node->id[0] ? node->id : "(unreadable/empty)");
+    scr_printf("id      : %s\n", node->id[0] ? node->id : "(empty; normal for APA sub-partitions)");
     scr_printf("conf    : %u%%\n", node->confidence);
     scr_printf("checksum: %s\n",
                node->stored_checksum == node->calculated_checksum
@@ -216,6 +232,18 @@ static int repair_plan_screen(unsigned int map_index)
     unsigned int patch_position = 0;
     char snapshot_path[FORENSIC_SNAPSHOT_PATH_SIZE];
     int result;
+
+    if (forensic_scan_result.truncated) {
+        scr_clear();
+        scr_printf("Forensic topology repair LOCKED\n\n");
+        scr_printf("The raw scan reached the %u-node safety capacity.\n",
+                   APA_FORENSIC_MAX_NODES);
+        scr_printf("This is a PARTIAL map, not the physical end of the APA chain.\n");
+        scr_printf("No repair plan can be built from an incomplete scan.\n\n");
+        scr_printf("Read-only browsing and FORENSIC.TXT export remain available.\n");
+        app_ui_wait_to_return();
+        return 0;
+    }
 
     if (apa_forensic_build_repair_plan(&forensic_scan_result, map_index,
                                        &plan) < 0)
@@ -344,13 +372,20 @@ static int map_screen(unsigned int map_index)
         scr_printf("Candidate: %s\n", apa_forensic_map_name(map->kind));
         scr_printf("Confidence: %u%%  nodes:%u\n", map->confidence,
                    map->node_count);
-        scr_printf("Reciprocal:%u inferred:%u conflicts:%u overlaps:%u\n\n",
+        scr_printf("Reciprocal:%u inferred:%u conflicts:%u overlaps:%u\n",
                    map->reciprocal_links, map->inferred_links,
                    map->conflicts, map->overlaps);
+        if (forensic_scan_result.truncated)
+            scr_printf("Completeness: PARTIAL - WRITES LOCKED\n\n");
+        else
+            scr_printf("Completeness: complete\n\n");
         if (map->node_count != 0)
             show_node(map, position);
         scr_printf("\nLEFT/RIGHT Browse recovered headers\n");
-        scr_printf("SQUARE   Inspect/build topology repair plan\n");
+        if (forensic_scan_result.truncated)
+            scr_printf("SQUARE   Repair plan LOCKED (scan incomplete)\n");
+        else
+            scr_printf("SQUARE   Inspect/build topology repair plan\n");
         scr_printf("TRIANGLE Back\n");
         pressed = wait_for_press();
         if ((pressed & PAD_LEFT) && position > 0)
@@ -389,11 +424,16 @@ int forensic_controller_screen(void)
         scr_printf("APA FORENSIC / DEGRADED READ-ONLY\n\n");
         scr_printf("Disk sectors : 0x%08x\n",
                    (unsigned int)forensic_scan_result.total_sectors);
-        scr_printf("Headers found: %u\n", forensic_scan_result.node_count);
+        scr_printf("Headers found: %u / %u\n",
+                   forensic_scan_result.node_count, APA_FORENSIC_MAX_NODES);
         scr_printf("Maps built   : %u\n", forensic_scan_result.map_count);
         scr_printf("Unreadable   : %u\n", forensic_scan_result.unreadable_reads);
-        scr_printf("Truncated    : %s\n\n",
-                   forensic_scan_result.truncated ? "YES" : "no");
+        if (forensic_scan_result.truncated) {
+            scr_printf("Scan state   : PARTIAL - CAPACITY REACHED\n");
+            scr_printf("Write state  : LOCKED (read-only only)\n\n");
+        } else {
+            scr_printf("Scan state   : complete\n\n");
+        }
         if (forensic_scan_result.map_count != 0) {
             const apa_forensic_map_t *map =
                 &forensic_scan_result.maps[selected_map];
