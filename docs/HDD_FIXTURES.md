@@ -1,6 +1,6 @@
 # Synthetic HDD fixture and repair suite
 
-Michishirube exercises portable APA, KELF, pointer-bounds, mutation, and repair policy against complete synthetic raw-disk images without requiring a physical PlayStation 2 HDD. The images are generated deterministically by `tools/generate_hdd_fixtures.py` and are deliberately **not** committed to Git.
+Michishirube exercises portable APA, KELF, pointer-bounds, mutation, health, and repair policy against complete synthetic raw-disk images without requiring a physical PlayStation 2 HDD. The images are generated deterministically by `tools/generate_hdd_fixtures.py` and are deliberately **not** committed to Git.
 
 `make test-host` regenerates the suite under `tests/generated_hdds/`. Every image has a logical size of 16 MiB so sector `0x2000` exists, but the files are sparse and consume only a small amount of physical host storage on filesystems that support sparse allocation.
 
@@ -52,7 +52,7 @@ The final repair-policy regression currently divides the 30 cases into:
 
 ## What the repair test actually proves
 
-`tests/test_hdd_repair_fixtures.c` runs the production portable parser, repair planner, bounds policy, and KELF parser over every generated image.
+`tests/test_hdd_repair_fixtures.c` runs the production portable parser, `apa_repair` planner, `repair_health` mounted-disk recommendation policy, bounds policy, and KELF parser over every generated image. Device I/O is kept outside `repair_health`, so the same decision layer used by the PS2 `L2` health screen is exercised directly on the host.
 
 For each of the six raw-header repair cases it does not merely check that a repair was suggested. It builds the repaired 1024-byte header and requires all of the following postconditions:
 
@@ -79,74 +79,44 @@ APA protects the 1024-byte header with a simple additive 32-bit checksum: the su
 
 Two independent corruptions can cancel mathematically. A deliberately tested example changes one known byte by `-1` and an unrelated byte by `+1`; the stored checksum remains valid even though two bytes are wrong.
 
-For that reason Michishirube does **not** interpret either of these states as sufficient evidence for raw repair:
+For that reason a semantic mismatch is not sufficient for raw automatic repair. The source header must have a checksum mismatch and correction of exactly the one planner-approved canonical field must restore the **old stored checksum**. This provides an independent consistency check for a physical-style stale-checksum bit flip. It does not make the checksum cryptographically trustworthy; it deliberately narrows the set of states we are willing to write automatically.
 
-- a checksum-only mismatch with no reconstructable bad field;
-- a semantically noncanonical field whose checksum has already been made valid.
+Checksum-only mismatch, checksum-valid noncanonical master fields, multiple identity/anchor defects, GPT/protective layouts, random data, and torn ambiguous headers remain blocked.
 
-A raw automatic master-header repair is accepted only when all of these are true:
+## Normal mutation tests
 
-1. exactly one canonical identity field or master anchor is damaged under the planner's evidence rules;
-2. independent identity/master evidence still identifies sector zero as the APA master;
-3. the source checksum currently fails;
-4. replacing only that one known field makes the **old stored checksum** correct again;
-5. no GPT/hybrid blocker is present.
-
-This does not make the additive checksum cryptographically strong. It makes the proposed one-field repair explain the observed corruption instead of blindly legalizing unknown bytes by recomputing the checksum.
-
-The raw writer then has additional PS2-side gates: an exact 1024-byte `HDDRAW*.BIN` snapshot must be saved and verified first, the proposed header must pass the full repair contract before writing, sectors 0-1 are written as one deliberately narrow operation, the HDD is flushed, and the bytes are read back and compared exactly. A restart is required afterward so `ps2hdd` re-reads the repaired disk.
-
-## Mutation tests: what the original tool changes
+`tests/test_hdd_mutations.c` models the successful byte-level postconditions used by the normal manager. It does not emulate DEV9, ATA, fileXio RPC, journaling, or cache durability.
 
 ### Disabling HDD bootstrap
 
-The PS2 HDD bootstrap does not use the classic PC partition-table `BootIndicator` as its enable flag. The ROM-facing state is the APA master pair `osdStart` / `osdSize`.
+The ROM-facing enable state is the APA MBR pair `osdStart` / `osdSize`, not the PC partition-table `BootIndicator`. The model of successful `HDIOC_SETOSDMBR(0, 0)` proves that:
 
-The real PS2 path uses `HDIOC_SETOSDMBR(0, 0)`. The host mutation model verifies that a successful disable:
+1. both OSD pointer words become zero;
+2. APA checksum is recomputed;
+3. every unrelated byte stays unchanged;
+4. the bootstrap program at sector `0x2000` stays unchanged;
+5. a deliberately inserted PC `BootIndicator=0x80` remains `0x80`.
 
-- clears only `osdStart` and `osdSize` plus the resulting checksum change;
-- leaves the MBR payload at sector `0x2000` intact;
-- leaves a synthetic PC `BootIndicator = 0x80` untouched.
+### Overwriting the bootstrap program
 
-This prevents future code from confusing the unrelated PC boot flag with the PS2 OSD bootstrap pointer.
+The normal manager's raw payload writer begins at reserved sector `0x2000`; it does not write the APA master. The mutation test writes a 700-byte synthetic KELF over old bytes and proves exact payload content, final-sector zero padding, no following-sector damage, valid KELF structure, and pointer-last activation. Disabling afterward clears the pointer while preserving the newly written program.
 
-### Overwriting the MBR program
+## Interrupted-state scope
 
-Normal bootstrap installation writes the payload only into the reserved `__mbr` area beginning at sector `0x2000`. The mutation test fills target sectors with old bytes and writes a new 700-byte synthetic KELF with the same sector-padding behavior as `hdd_write.c`.
+The fixture suite models bytes that could be observed before, during, or after the transaction. It intentionally does **not** claim to model when a real ATA cache, fileXio RPC, DMA transfer, or APA journal makes a write durable.
 
-It verifies that:
+The important logical distinction is still testable:
 
-- sector zero and the OSD pointer remain unchanged while payload bytes are replaced;
-- payload bytes are exact and the final touched sector is zero-padded;
-- the following sector is untouched;
-- the resulting payload parses as a valid KELF;
-- the pointer is exposed only after the payload is complete;
-- disabling afterward clears the pointer without deleting that payload.
+- complete or partial new payload with `osdStart=osdSize=0` remains unexposed to ROM;
+- an active pointer to a zeroed/partial invalid payload is unsafe and should be cleared;
+- a torn master checksum is not treated as equivalent to a successful `HDIOC_SETOSDMBR` update.
 
-Together with `tests/test_bootstrap_transaction.c`, this covers call ordering and resulting bytes.
-
-## Interrupted transactions
-
-The interrupted fixtures model observable bytes-on-disk, not IOP/ATA timing. The important safety distinction is whether the pointer is visible:
-
-- payload written or partly written while pointer is `0/0` is safe from ROM execution and needs no automatic repair;
-- invalid payload while the pointer is active is unsafe and is routed to the normal backup + pointer-clear workflow;
-- an ambiguous torn master-header write is blocked rather than normalized speculatively.
-
-## Why `hdd_bounds` is portable
-
-The PS2-specific `hdd_validate_payload_bounds()` still queries live `fileXioGetStat("hdd0:__mbr")`, but deterministic pointer/geometry policy lives in `hdd_bounds.c`. The host suite therefore exercises empty, too-large, before-reserved, and outside-`__mbr` cases without a fake fileXio layer.
-
-The live PS2 path preserves Torii's error precedence: pointer shape first, live partition geometry second, portable geometry check last.
+Physical-HDD validation remains required for hardware timing, cache/flush behavior, journaling, and real power-loss semantics.
 
 ## GPT note
 
-The current `is_hybrid_gpt()` guard intentionally remains conservative and checks the conventional PC MBR `0x55AA` signature. The fixture suite records the actual GPT `EFI PART` signature at LBA 1 independently so a future stricter GPT parser can change behavior behind explicit regression expectations rather than silently changing the safety contract.
+The current `is_hybrid_gpt()` guard remains intentionally conservative and recognizes the PC `0x55AA` signature in the master area. The fixtures separately track the actual `EFI PART` signature at LBA 1 so a future real GPT parser can be introduced as an explicit behavior change rather than silently altering existing expectations.
 
-`apa_pc_signature_only.raw` protects the conservative current behavior, while `hybrid_apa_gpt.raw` and `gpt_only.raw` contain actual GPT-shaped bytes.
+## Adding a case
 
-## What these tests do not prove
-
-The host suite cannot model DEV9/ATA timing, DMA, fileXio RPC behavior, cache durability, APA journaling, controller/power interruptions, or the exact point at which a physical disk makes a write durable.
-
-It verifies parser policy, repair admissibility, generated repair bytes, pointer-clear postconditions, transaction ordering, and mutation boundaries. **Physical-HDD validation remains the final gate** for hardware-dependent write semantics.
+Extend the deterministic generator instead of committing a binary disk image. A useful case should isolate one state or corruption mode, record expected metadata in `manifest.json`, and have an explicit parser/repair assertion. New recovery algorithms should first gain raw-image counterexamples that demonstrate where the old evidence was insufficient.
