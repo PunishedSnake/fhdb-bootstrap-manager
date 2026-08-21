@@ -1,7 +1,8 @@
 /*
  * PS2 UI/controller for degraded read-only APA reconstruction and explicitly
  * authorized topology repair. The scanner is portable; this file supplies raw
- * reads, progress presentation, report persistence and the snapshot/write gate.
+ * reads, report persistence and the snapshot/write gate. High-frequency disk
+ * presentation is owned by disk_status_ps2/gs_ui_ps2 at the raw transport.
  */
 
 #include <tamtypes.h>
@@ -29,7 +30,6 @@
 
 static apa_forensic_result_t forensic_scan_result;
 static int forensic_scan_valid;
-static unsigned int progress_percent;
 static char forensic_report[FORENSIC_REPORT_BYTES];
 
 static int raw_reader(void *context, uint32_t lba, unsigned int sectors,
@@ -37,28 +37,6 @@ static int raw_reader(void *context, uint32_t lba, unsigned int sectors,
 {
     (void)context;
     return hdd_read_raw_sectors(lba, sectors, destination);
-}
-
-static void scan_progress(void *context, uint32_t lba, uint32_t total_sectors,
-                          unsigned int nodes_found)
-{
-    unsigned int percent;
-
-    (void)context;
-    if (total_sectors == 0)
-        return;
-    percent = (unsigned int)(((uint64_t)lba * 100u) / total_sectors);
-    if (percent == progress_percent && lba != total_sectors)
-        return;
-    progress_percent = percent;
-    scr_clear();
-    scr_printf("APA forensic raw scan\n\n");
-    scr_printf("Progress : %u%%\n", percent);
-    scr_printf("LBA      : 0x%08x / 0x%08x\n",
-               (unsigned int)lba, (unsigned int)total_sectors);
-    scr_printf("Candidates: %u\n\n", nodes_found);
-    scr_printf("ANALOG lamp ON = manager activity (supported pads).\n");
-    scr_printf("No HDD sectors are being modified.\n");
 }
 
 static int get_total_sectors(uint32_t *total_out)
@@ -86,10 +64,13 @@ static int run_scan(void)
     if (result < 0)
         return result;
 
-    progress_percent = 101u;
     pad_activity_begin();
+    /* Every physical raw read publishes its exact LBA directly through the
+     * GS/GIF live monitor. The portable scanner callback is intentionally NULL:
+     * a second presentation callback would duplicate/flicker over the transport
+     * telemetry and used to re-enter libdebug's per-character renderer. */
     result = apa_forensic_scan(raw_reader, NULL, total_sectors,
-                               scan_progress, NULL, &forensic_scan_result);
+                               NULL, NULL, &forensic_scan_result);
     pad_activity_end();
     if (result < 0) {
         forensic_scan_valid = 0;
