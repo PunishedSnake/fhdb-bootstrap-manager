@@ -1,97 +1,117 @@
 # Roadmap and release codenames
 
-Release codenames use Japanese words connected with thresholds, passage, bridges, and wayfinding. The theme fits a tool whose entire job is deciding what the PS2 crosses into after ROM boot. Semantic versions remain the authoritative machine-readable release identifiers.
+Release codenames use Japanese words connected with thresholds, passage, bridges, and wayfinding. Semantic versions remain the authoritative machine-readable identifiers.
 
 ## Release line
 
 | Version | Codename | Meaning | Milestone |
 |---|---|---|---|
-| `0.1.x` | **Kagi** (鍵) | key | Emergency APA pointer backup/disable/restore and the first hardware recovery. |
-| `0.2.0` | **Mon** (門) | gate | General HDD bootstrap management, selectable storage, MagicGate signing, and guarded installation. |
-| `0.3.x` | **Torii** (鳥居) | gateway | Stable full rescue capsules, payload restoration, boot-chain inspection, persistent diagnostics, CI, targeted R5900 hashing optimizations, and compatible MBR.XIN/MBR.XLF source handling. |
-| `0.4.x` | **Michishirube** (道標) | signpost | Internal modularization and stronger diagnostic/test infrastructure. |
-| `0.5.x` | **Kakehashi** (架け橋) | bridge | Broader interoperability and portable tooling around rescue/inspection data. |
-| `1.0.0` | **Kaidō** (街道) | main road | Frozen rescue-format contract, reproducible releases, and broad real-hardware validation. |
+| `0.1.x` | **Kagi** (鍵) | key | Emergency APA pointer backup/disable/restore and first hardware recovery. |
+| `0.2.0` | **Mon** (門) | gate | General HDD bootstrap management, selectable storage, MagicGate signing, guarded installation. |
+| `0.3.x` | **Torii** (鳥居) | gateway | Stable full rescue capsules, payload restoration, boot-chain diagnostics, CI, compatible MBR.XIN/XLF handling. |
+| `0.4.x` | **Michishirube** (道標) | signpost | Modular architecture, regression laboratory, guarded metadata recovery, and stronger diagnostics. |
+| `0.5.x` | **Kakehashi** (架け橋) | bridge | Broader interoperability and portable/forensic tooling around rescue and APA inspection data. |
+| `1.0.0` | **Kaidō** (街道) | main road | Frozen recovery/rescue contracts, reproducible releases, and broad real-hardware validation. |
 
 ## 0.4.x — Michishirube
 
-Michishirube is developed as a sequence of regression-gated extractions. A checked item means the responsibility has physically left `main.c`; it does not imply that its public API is already final.
+Michishirube is developed as regression-gated extractions. A checked item means the responsibility has physically left the monolithic application path and has an explicit interface; it does not mean every public API is frozen.
 
 ### Modularization progress
 
-- [x] `platform` — IOP reset, embedded IRX startup, pad DMA lifetime, button-edge input, and confirmation chords.
-- [x] `storage` — storage targets, encapsulated selected-target state, launch-device selection, ROMVER/file helpers, exact/bounded reads, and generic writes.
-- [x] `header_backup` safety storage — mandatory non-overwriting header backup/reuse, exact read-back verification, legacy same-disk lookup, and per-slot diagnostics are outside `main.c`; the application still fails closed when no safe slot exists.
-- [x] `rescue_image` portable validation — complete rescue-image metadata/hash/APA/KELF consistency and protected-slot state matching are host-testable without PS2SDK.
-- [x] `rescue_storage` lifecycle — protected rescue slots, active-payload acquisition, USB/file I/O, save/read-back verification, same-disk lookup, and damaged-capsule fallback policy are outside `main.c`.
-- [x] `bootstrap_source` installation preparation — MBR.XIN/XLF-compatible loading, size bound, unsigned-KELF validation, sector count, and live `__mbr` capacity validation are outside `main.c` and cannot sign or write the HDD.
-- [x] `bootstrap_signing` security adapter — `SecrInit`, console-side `SecrDownloadFile`, and post-sign KELF validation are isolated from card-selection UI and HDD transaction code.
-- [x] `apa` portable core — endian parsing, checksum validation, normal `__mbr` recognition, conservative hybrid-GPT guard, and same-disk header matching.
-- [x] `hdd_bounds` portable geometry policy — empty/too-large/before-reserved/outside-`__mbr` pointer checks are PS2SDK-free and shared by live `hdd_read` plus synthetic raw-HDD host tests without changing the stable result codes.
-- [x] `hdd_read` read-only transport — `HDIOC_READSECTOR`, the conservative aligned two-sector read buffer, live `hdd0:__mbr` geometry acquisition, and sector-aligned active-payload acquisition are isolated behind a PS2-only interface that exposes no write, flush, or pointer-update operation.
-- [x] `hdd_write` write-capable transport — `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write-side DMA/read-back buffers, flushes, payload byte comparison, and final pointer verification are isolated behind a PS2-only interface.
-- [x] `bootstrap_transaction` commit policy — portable failure-injected tests cover payload/release/pointer/verify ordering, and the PS2 adapter binds that policy to `hdd_write` without owning pre-write authorization.
-- [ ] higher-level write workflow/UI split — `main.c` still owns operation selection, the fail-closed decision around subsystem results, confirmation screens/chords, signing-card selection, and operation-specific error presentation; the underlying rescue/source/signing/transport/transaction mechanics are now modular.
-- [x] `boot_chain` portable core — shared evidence model, CNF parsing, `Skip_HDD`, ROMVER region mapping, OSDMenu/FHDB target parsing, and deterministic family classification.
-- [x] `boot_chain` PS2 read-only scanner — memory-card HDD modules, FMCB settings, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection.
-- [x] `kelf` portable core — endian-safe KELF structural validation and recovery of the unpadded file size from a sector-aligned HDD image, with named stable result codes.
-- [x] `boot_payload` portable fingerprinting — sector-image SHA-256, KELF structure/size conversion, and unpadded-KELF SHA-256 without PS2SDK, allocation, or I/O.
-- [x] `boot_payload_ps2` active-payload acquisition — combines the read-only HDD transport with portable payload fingerprinting and fills only payload-derived boot-chain evidence.
-- [x] `boot_report` portable renderer — bounded `BOOTCHAIN.TXT` formatting, assessment text, hashes, and evidence presentation with no device or persistence dependency.
-- [x] `boot_report_ps2` persistence — storage-path construction, complete `BOOTCHAIN.TXT` replacement, and the existing USB write grace period are outside `main.c` while the portable renderer stays storage-free.
-- [x] `session_log` persistence — bounded ordered session buffering, append-only `HDDMAN.LOG`, 128 KiB rotation, per-storage unsaved offsets, and USB retry behavior are outside `main.c`.
-- [x] `boot_diagnostics_ps2` orchestration — ROMVER initialization, active-payload evidence, FMCB/PFS evidence collection, and final family classification are combined outside `main.c` behind a read-only PS2-specific entry point.
-- [x] `boot_report_session` state — latest rendered report bytes, length, and last persistence result are outside `main.c`, while rendering and device I/O remain delegated to their existing narrow modules.
-- [ ] diagnostics presentation/UI — `main.c` still decides when to scan/render/persist and owns the short diagnostics screen itself.
-- [ ] `ui` — menus, power/fatal/info screens, storage/signing-card choice, logging presentation, and confirmation text after core policy has explicit interfaces.
+- [x] `platform` — IOP/module startup, pad DMA lifetime, button-edge input, confirmation chords.
+- [x] `storage` — selected-target state, launch-device selection, ROMVER/file helpers.
+- [x] `header_backup` — mandatory non-overwriting normal-operation master backup and exact read-back verification.
+- [x] `rescue_image` / `rescue_storage` — portable rescue validation plus PS2 file/payload lifecycle.
+- [x] `bootstrap_source` — MBR.XIN/XLF-compatible source preparation and live capacity validation.
+- [x] `bootstrap_signing` — MagicGate mutation and post-sign KELF validation with no HDD transaction authority.
+- [x] `apa` — portable APA parsing/checksum/identity/hybrid guard.
+- [x] `apa_repair` — portable fail-closed planner for narrowly reconstructable APA master defects.
+- [x] `repair_health` — portable mounted-disk policy for pointer/payload health and pointer-clear recommendation.
+- [x] `hdd_bounds` — portable payload-pointer/geometry rules and stable error ordering.
+- [x] `hdd_read` — PS2-only read transport with no write/flush/pointer API.
+- [x] `hdd_write` — normal payload write/flush/read-back and `HDIOC_SETOSDMBR` mechanics.
+- [x] `hdd_repair_ps2` — separately gated exceptional raw sectors 0-1 writer for approved master recovery only.
+- [x] `repair_snapshot` — exact `HDDRAW*.BIN` preservation before exceptional raw master repair.
+- [x] `bootstrap_transaction` + PS2 adapter — portable payload-first/pointer-last commit sequence and failure injection.
+- [x] `boot_chain` / `boot_chain_ps2` — portable classification plus read-only PS2 evidence acquisition.
+- [x] `boot_payload` / `boot_payload_ps2` — portable KELF/image fingerprinting plus read-only acquisition adapter.
+- [x] `boot_diagnostics_ps2` — read-only evidence orchestration outside the application root.
+- [x] `boot_report` / `boot_report_ps2` / `boot_report_session` — rendering, persistence, and current report state split.
+- [x] `session_log` — bounded ordered `HDDMAN.LOG` persistence.
+- [x] `kelf`, `sha256`, `capsule_format`, `mbr_compat` — format/security-support responsibilities isolated.
+- [x] `bootstrap_controller_ps2` — high-level backup/disable/restore/install authorization and user-facing error flow moved out of `main.c`.
+- [x] `diagnostics_controller_ps2` — scan timing/report refresh and diagnostics screen moved out of `main.c`.
+- [x] `repair_controller_ps2` — startup/health recovery presentation separated from portable `apa_repair` / `repair_health` policy.
+- [x] `app_ui_ps2` — shared fatal/info/power/storage/signing-card presentation and lifecycle helpers.
+- [x] `main.c` composition root — now limited to initialization, normal APA admission, top-level menu state, and dispatch.
+- [ ] UI polish / controller API cleanup — reduce remaining presentation duplication inside individual controllers without moving format or transport policy back into UI.
+
+### Guarded recovery progress
+
+- [x] first-`HDIOC_STATUS` recovery entry point for a raw-readable master rejected by normal APA admission;
+- [x] exact raw 1024-byte `HDDRAW*.BIN` snapshot before sectors 0-1 recovery write;
+- [x] single canonical-field master repair only when stale checksum corroborates the exact correction;
+- [x] additive-checksum collision regression; checksum-valid ambiguous corruption remains blocked;
+- [x] GPT/protective-MBR, low-identity, checksum-only, and multi/unknown corruption fail closed;
+- [x] exact two-sector raw write + flush + read-back + compare + mandatory restart;
+- [x] mounted `L2` structure-health UI routing pointer/payload anomalies through the safer normal backup + pointer-clear workflow;
+- [ ] physical-HDD validation of the exceptional raw master-repair path.
 
 ### Test coverage now in place
 
-Portable CI now exercises:
+Portable CI covers, among other format/diagnostic suites:
 
-- SHA-256 streaming and complete-block paths;
-- rescue capsule metadata round-trip and malformed metadata rejection;
-- complete rescue-image validation including APA/payload hash corruption, header-only images, and protected-slot state identity;
-- isolated synthetic APA header/checksum/same-disk cases;
-- 16 generated sparse raw-HDD fixtures covering valid disabled/enabled APA, valid synthetic KELF payloads, garbage payloads, bad checksum/APA/`__mbr`/Sony signatures, inconsistent pointer halves, before-reserved/too-large/outside-`__mbr` geometry, deterministic garbage, PC-MBR-signature-only APA, GPT-only media, and checksummed hybrid APA/GPT media;
-- separate assertions for the current conservative `0x55AA` hybrid guard and the actual `EFI PART` GPT signature at LBA 1;
-- CNF parsing with comments, CRLF, whitespace, exact-key matching, and bounded output;
-- current and legacy `Skip_HDD` spellings plus conflicting-key precedence;
-- OSDMenu `$PSBBN`, `$HOSDSYS`, custom and absent `boot_auto` values;
-- FHDB `LK_Auto_E1`/`E2`/`E3` precedence;
-- ROMVER region-to-system-folder mapping;
-- boot-chain classification for invalid/disabled/unreadable/invalid-KELF states;
-- explicit OSDMenu targets overriding deliberately conflicting stale filesystem evidence;
-- FHDB, HOSDMenu, PSBBN, HDD-OSD, and unknown-KELF fallback classifications;
-- valid low/high KELF header layouts, the optional length-prefixed section, and the 63-entry BIT-table boundary;
-- plain ELF, truncated/impossible header, BIT overflow, missing variable/key area, and malformed sector-image rejection;
-- recovery of the exact unpadded KELF size from a sector-aligned payload image;
-- portable payload fingerprinting for a valid sector-padded KELF, an invalid KELF whose full sector-image hash must still be retained, and empty-input field reset;
-- a complete byte-for-byte golden `BOOTCHAIN.TXT` fixture for a disabled bootstrap;
-- active payload report formatting including sector-image/KELF SHA-256 fingerprints, OSDMenu evidence, and memory-card HDD modules;
-- report assessment precedence for inconsistent pointers, unreadable payloads, invalid KELFs, and unknown downstream environments;
-- bootstrap transaction success plus injected payload, pointer-set, and pointer-verify failures, including proof that payload allocation release precedes pointer exposure and that payload failure stops the transaction;
-- bounded report truncation with guaranteed NUL termination and the external-HDD-module/`Skip_HDD` advisory note.
+- SHA-256/capsule/rescue integrity and stale/foreign rescue identity;
+- KELF structural edge cases and sector-padding recovery;
+- boot-chain parsing/classification, payload fingerprinting, and bounded report rendering;
+- bootstrap transaction success and injected payload/pointer failures;
+- **30 deterministic sparse raw-HDD fixtures** covering valid enabled/disabled states, interrupted writes, invalid payloads, inconsistent/out-of-range pointers, checksum-only corruption, checksum-valid noncanonical fields, physical-style stale-checksum bit flips, additive-checksum collision, torn header, PC signature, hybrid APA/GPT, GPT-only, and deterministic garbage;
+- byte-level normal MBR payload overwrite and `HDIOC_SETOSDMBR` pointer semantics;
+- all **30** fixture states through repair policy with postconditions: `4 no-repair / 6 header-repair / 8 pointer-clear / 12 blocked`;
+- portable `repair_health` as the actual mounted-disk recommendation layer used by the PS2 repair screen.
 
-### Remaining engineering work
+Generated images remain deterministic build products under `tests/generated_hdds/`; opaque binary fixtures are not committed.
 
-- continue replacing project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly; KELF, payload-bound, rescue-image, rescue-storage, and source-preparation result domains are now named where useful without changing historical diagnostics;
-- reduce the remaining UI/controller code in `main.c` now that storage formats, rescue lifecycle, source preparation, signing mechanics, raw write transport, commit ordering, and pointer geometry have explicit interfaces;
-- extend generated HDD scenarios when a new parser/policy bug is found rather than committing opaque binary fixtures; keep real GPT parsing separate from the existing conservative `0x55AA` guard until behavior is intentionally changed;
-- hardware-validate the combined `header_backup` + `rescue_storage` + `bootstrap_source` + `bootstrap_signing` + `hdd_read`/`hdd_bounds` + `hdd_write` + `bootstrap_transaction` boundaries on a real HDD before treating the refactor as behavior-equivalent to Torii;
-- add build-size/performance reporting so optimization work is measurable rather than flag-driven;
-- establish a hardware validation matrix across FAT console revisions, storage adapters/HDDs, memory-card layouts, and launch devices;
-- make classification evidence more data-driven so supporting another known environment does not require threading another special case through the UI.
+### Remaining 0.4 engineering work
+
+- hardware-validate normal modular boundaries and the exceptional sectors 0-1 recovery path on real HDDs/adapters;
+- keep extending the synthetic suite whenever a parser/policy/recovery bug is found;
+- continue replacing project-specific magic negative codes with named result domains where this does not obscure forwarded PS2SDK errors;
+- add build-size/performance reporting before adopting any larger raw transfer, LTO, or speculative compiler optimization;
+- establish a wider hardware validation matrix across FAT revisions, adapters/HDDs, launch devices, and memory-card layouts;
+- decide how much **forensic/degraded read-only APA reconstruction** belongs in 0.4 versus the interoperability-focused 0.5 line.
+
+## Forensic / degraded recovery direction
+
+A disk rejected by normal `ps2hdd` may still be raw-readable. Future recovery should exploit that fact without pretending uncertain metadata is healthy.
+
+Planned stages:
+
+1. raw-scan candidate APA headers across plausible partition boundaries;
+2. build forward/backward candidate graphs from `next` / `prev`, `start`, `length`, type/flags, main/sub references, alignment, bounds, and overlap constraints;
+3. score multiple plausible maps using independent evidence rather than checksum alone;
+4. expose sufficiently consistent candidates **read-only** for listing, reporting, dumping, and—where feasible—read-only filesystem inspection;
+5. present ambiguous map variants explicitly in the UI instead of silently choosing one;
+6. only after exact preview + snapshot of every touched header allow a separately authorized reconstruction write;
+7. raw-rescan and require the repaired graph to become internally consistent before returning to normal writable `ps2hdd` workflows.
+
+The trust ladder is therefore:
+
+`raw readable -> forensic candidate map -> read-only validated map -> repair candidate -> repaired/raw-revalidated -> normal ps2hdd admitted`.
+
+This model can potentially recover from multiple bit flips or broken link fields when neighboring headers provide enough redundant constraints. It cannot recreate lost partition/file contents whose sectors themselves are gone.
 
 ## 0.5.x — Kakehashi
 
-Candidate work after the internal split is proven:
+Candidate work after the 0.4 internal boundaries and recovery contracts are hardware-proven:
 
-- a small host-side rescue-capsule inspector/extractor that verifies `HDDRESCUE*.BIN` without a PS2;
-- import/export conveniences for reports and rescue metadata without weakening same-disk restore checks;
-- richer compatibility evidence for FHDB, OSDMenu, PSBBN, HDD-OSD/HOSDMenu, and custom chains;
-- optional machine-readable diagnostic output alongside the human-readable report.
+- host-side rescue-capsule inspector/extractor;
+- portable APA/raw-image inspection and forensic graph reconstruction;
+- import/export of machine-readable diagnostic/reconstruction reports;
+- safer bulk extraction from read-only reconstructed partition maps;
+- richer compatibility evidence for FHDB, OSDMenu, PSBBN, HDD-OSD/HOSDMenu, and custom chains.
 
 ## 1.0.0 — Kaidō
 
-1.0 is not a feature-count target. It requires a stable rescue-format contract, reproducible tagged builds, no known safety-critical write-path defects, documented interrupted-operation recovery behavior, and enough independent hardware validation that the project is no longer relying on one console as its entire quality-assurance department.
+1.0 is not a feature-count target. It requires stable rescue/recovery contracts, reproducible tagged builds, no known safety-critical write-path defect, documented interrupted-operation behavior, and enough independent physical-HDD validation that the project is no longer relying on one console as its entire quality-assurance department.
