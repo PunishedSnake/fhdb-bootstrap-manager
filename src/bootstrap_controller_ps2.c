@@ -18,6 +18,7 @@
 #include "bootstrap_source.h"
 #include "bootstrap_transaction_ps2.h"
 #include "diagnostics_controller_ps2.h"
+#include "disk_status_ps2.h"
 #include "hdd_limits.h"
 #include "hdd_read.h"
 #include "header_backup.h"
@@ -30,6 +31,14 @@
 #define MBR_PAYLOAD_START HDD_MBR_PAYLOAD_START
 
 static header_backup_diagnostics_t backup_diagnostics;
+
+static void status_step_begin(const char *operation, const char *phase,
+                              const char *location,
+                              unsigned int current, unsigned int total)
+{
+    disk_status_begin_at(operation, phase, location);
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, current, total);
+}
 
 static const char *save_backup(unsigned char header[APA_HEADER_SIZE])
 {
@@ -89,13 +98,34 @@ void bootstrap_controller_backup_current(
     unsigned char header[APA_HEADER_SIZE],
     boot_chain_info_t *boot_chain)
 {
-    const char *backup_path = save_backup(header);
-    const char *rescue_path = save_rescue_capsule(header, boot_chain);
+    const char *backup_path;
+    const char *rescue_path;
 
+    status_step_begin("Create full rescue backup",
+                      "Saving and verifying APA master backup",
+                      "Sectors 0-1 already in memory -> selected backup storage",
+                      1, 3);
+    backup_path = save_backup(header);
+    disk_status_end();
+
+    status_step_begin("Create full rescue backup",
+                      "Building rescue capsule and acquiring active payload",
+                      read_le32(header + APA_OSD_START_OFFSET) != 0
+                          ? "Active __mbr payload selected by osdStart/osdSize"
+                          : "Bootstrap disabled; header-only rescue capsule",
+                      2, 3);
+    rescue_path = save_rescue_capsule(header, boot_chain);
+    disk_status_end();
+
+    status_step_begin("Create full rescue backup",
+                      "Persisting session log and final backup result",
+                      "Selected backup/report storage",
+                      3, 3);
     session_log_line("Standalone backup: header=%s rescue=%s",
                      backup_path != NULL ? backup_path : "FAILED",
                      rescue_path != NULL ? rescue_path : "FAILED");
     session_log_flush(storage_selected());
+    disk_status_end();
 
     scr_clear();
     scr_printf("Standalone backup result\n\n");
@@ -119,18 +149,29 @@ void bootstrap_controller_disable(
     unsigned char header[APA_HEADER_SIZE],
     boot_chain_info_t *boot_chain)
 {
-    const char *backup_path = save_backup(header);
+    const char *backup_path;
     const char *rescue_path;
     bootstrap_transaction_result_t transaction;
     int result;
 
+    status_step_begin("Disable active bootstrap",
+                      "Saving mandatory APA master safety backup",
+                      "Sectors 0-1 already in memory -> selected backup storage",
+                      1, 3);
+    backup_path = save_backup(header);
+    disk_status_end();
     if (backup_path == NULL) {
         backup_error_screen();
         return;
     }
 
     /* Keep emergency pointer clearing independent of an optional large rescue. */
+    status_step_begin("Disable active bootstrap",
+                      "Saving optional full rescue capsule",
+                      "Active __mbr payload and selected backup storage",
+                      2, 3);
     rescue_path = save_rescue_capsule(header, boot_chain);
+    disk_status_end();
 
     scr_clear();
     scr_printf("Backup saved and verified:\n%s\n\n", backup_path);
@@ -143,6 +184,7 @@ void bootstrap_controller_disable(
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_CROSS))
         return;
 
+    /* hdd_write.c publishes pointer WRITE/FLUSH/VERIFY with exact sectors. */
     result = bootstrap_transaction_ps2_set_pointer(
         header, 0, 0, &transaction);
     if (result < 0) {
@@ -153,6 +195,11 @@ void bootstrap_controller_disable(
                 "Disable verification failed. Keep the backup.", result);
     }
 
+    status_step_begin("Disable active bootstrap",
+                      "Refreshing boot-chain evidence after pointer clear",
+                      "APA master + memory cards + __sysconf + __system",
+                      3, 3);
+    disk_status_end();
     session_log_line(
         "Bootstrap pointer disabled and verified; header backup=%s; rescue=%s",
         backup_path, rescue_path != NULL ? rescue_path : "unavailable");
@@ -175,7 +222,12 @@ static void restore_legacy_pointer(
     unsigned int size;
     int result;
 
+    status_step_begin("Legacy pointer restore",
+                      "Searching enabled HDDMBR/FHDBMBR backup slots",
+                      "Selected backup storage",
+                      1, 3);
     backup_path = load_backup(header, &start, &size);
+    disk_status_end();
     if (backup_path == NULL) {
         scr_clear();
         scr_printf("No valid enabled backup was found on %s.\n",
@@ -185,7 +237,13 @@ static void restore_legacy_pointer(
         return;
     }
 
+    status_step_begin("Legacy pointer restore",
+                      "Validating saved pointer against live __mbr geometry",
+                      "Reserved __mbr payload extent on current HDD",
+                      2, 3);
+    disk_status_io(DISK_STATUS_SCAN, start, size, 2, 3);
     result = hdd_validate_payload_bounds(start, size);
+    disk_status_end();
     if (result < 0) {
         scr_clear();
         scr_printf("The saved pointer is outside this __mbr area.\n");
@@ -198,7 +256,12 @@ static void restore_legacy_pointer(
         return;
     }
 
+    status_step_begin("Legacy pointer restore",
+                      "Saving current APA master safety backup",
+                      "Sectors 0-1 already in memory -> selected backup storage",
+                      3, 3);
     safety_backup = save_backup(header);
+    disk_status_end();
     if (safety_backup == NULL) {
         backup_error_screen();
         return;
@@ -245,7 +308,12 @@ void bootstrap_controller_restore(
     bootstrap_transaction_result_t transaction;
     int result;
 
+    status_step_begin("Bootstrap restore",
+                      "Searching and validating rescue capsule slots",
+                      "Selected backup storage / HDDRESCUE*.BIN",
+                      1, 3);
     result = rescue_storage_find(storage_selected(), header, &rescue);
+    disk_status_end();
     if (result == RESCUE_STORAGE_NOT_FOUND ||
         result == RESCUE_STORAGE_HEADER_ONLY) {
         restore_legacy_pointer(header, boot_chain);
@@ -262,8 +330,15 @@ void bootstrap_controller_restore(
         return;
     }
 
+    status_step_begin("Bootstrap restore",
+                      "Validating rescue payload against live __mbr bounds",
+                      "Reserved __mbr payload extent on current HDD",
+                      2, 3);
+    disk_status_io(DISK_STATUS_SCAN, rescue.info.payload_start,
+                   rescue.info.payload_sectors, 2, 3);
     result = hdd_validate_payload_bounds(rescue.info.payload_start,
                                          rescue.info.payload_sectors);
+    disk_status_end();
     if (result < 0) {
         rescue_storage_entry_release(&rescue);
         scr_clear();
@@ -273,7 +348,12 @@ void bootstrap_controller_restore(
         return;
     }
 
+    status_step_begin("Bootstrap restore",
+                      "Saving current APA master safety backup",
+                      "Sectors 0-1 already in memory -> selected backup storage",
+                      3, 3);
     safety_backup = save_backup(header);
+    disk_status_end();
     if (safety_backup == NULL) {
         rescue_storage_entry_release(&rescue);
         backup_error_screen();
@@ -300,8 +380,6 @@ void bootstrap_controller_restore(
         return;
     }
 
-    scr_clear();
-    scr_printf("Restoring and verifying rescue payload...\n");
     result = bootstrap_transaction_ps2_activate(
         header, payload, rescue.info.payload_bytes,
         rescue.info.payload_start, rescue.info.payload_sectors,
@@ -353,13 +431,13 @@ void bootstrap_controller_install(
     }
 
     bootstrap_source_init(&source, storage_selected());
-    scr_clear();
-    scr_printf("Loading %s\n", source.path);
-    if (storage_selected() == 2)
-        scr_printf("Waiting briefly for USB if necessary...\n");
-
+    status_step_begin("Install signed HDD bootstrap",
+                      "Loading and validating MBR.XIN/XLF source",
+                      source.path,
+                      1, 4);
     result = bootstrap_source_prepare(storage_selected(), &source,
                                       &source_result);
+    disk_status_end();
     if (result < 0) {
         if (source_result.stage == BOOTSTRAP_SOURCE_STAGE_LOAD) {
             session_log_line("MBR source load failed from %s: %d",
@@ -396,7 +474,12 @@ void bootstrap_controller_install(
         return;
     }
 
+    status_step_begin("Install signed HDD bootstrap",
+                      "Saving mandatory APA master safety backup",
+                      "Sectors 0-1 already in memory -> selected backup storage",
+                      2, 4);
     backup_path = save_backup(header);
+    disk_status_end();
     if (backup_path == NULL) {
         bootstrap_source_release(&source);
         backup_error_screen();
@@ -411,10 +494,14 @@ void bootstrap_controller_install(
         return;
     }
 
-    scr_clear();
-    scr_printf("Signing MBR through mc%d...\n", signing_port);
+    status_step_begin("Install signed HDD bootstrap",
+                      "MagicGate-signing bootstrap KELF",
+                      signing_port == 0 ? "mc0: MagicGate card" :
+                                          "mc1: MagicGate card",
+                      3, 4);
     result = bootstrap_signing_sign(
         signing_port, source.payload, source.payload_size, &signing_result);
+    disk_status_end();
     if (result < 0) {
         bootstrap_source_release(&source);
         if (signing_result.stage == BOOTSTRAP_SIGNING_STAGE_MAGICGATE) {
@@ -446,8 +533,8 @@ void bootstrap_controller_install(
         return;
     }
 
-    scr_clear();
-    scr_printf("Writing and verifying signed payload...\n");
+    /* hdd_write.c publishes every payload WRITE, FLUSH, VERIFY and final
+       pointer update with the exact LBA/range. */
     result = bootstrap_transaction_ps2_activate(
         header, source.payload, source.payload_size,
         MBR_PAYLOAD_START, source.sectors, free, source.payload,
@@ -466,6 +553,11 @@ void bootstrap_controller_install(
             app_ui_fatal_screen("Installed pointer verification failed.", result);
     }
 
+    status_step_begin("Install signed HDD bootstrap",
+                      "Refreshing evidence and creating installed-state rescue",
+                      "APA master + active __mbr payload + selected storage",
+                      4, 4);
+    disk_status_end();
     session_log_line(
         "Bootstrap installed and verified at sector 0x%08x (%u bytes, %u sectors)",
         MBR_PAYLOAD_START, source.payload_size, source.sectors);
