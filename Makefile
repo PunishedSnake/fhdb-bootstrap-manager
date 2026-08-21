@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o platform.o storage.o apa.o boot_chain.o boot_chain_ps2.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o platform.o storage.o apa.o boot_chain.o boot_chain_ps2.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
@@ -15,7 +15,8 @@ EE_OBJS += $(IRX_FILES:.irx=_irx.o)
 HOST_CC ?= cc
 HOST_FORMAT_TEST = tests/test_formats
 HOST_BOOT_CHAIN_TEST = tests/test_boot_chain
-HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_BOOT_CHAIN_TEST)
+HOST_KELF_TEST = tests/test_kelf
+HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_KELF_TEST)
 
 all: $(EE_BIN)
 
@@ -31,6 +32,9 @@ test-host:
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
 		tests/test_boot_chain.c src/boot_chain.c -o $(HOST_BOOT_CHAIN_TEST)
 	./$(HOST_BOOT_CHAIN_TEST)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_kelf.c src/kelf.c -o $(HOST_KELF_TEST)
+	./$(HOST_KELF_TEST)
 
 clean:
 	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TESTS)
@@ -56,6 +60,9 @@ boot_chain.o: src/boot_chain.c
 boot_chain_ps2.o: src/boot_chain_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
+kelf.o: src/kelf.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
 sha256.o: src/sha256.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
@@ -71,7 +78,7 @@ mbr_compat.o: src/mbr_compat.c
 # Only PS2 build goals need the SDK's global rules. This makes `make test-host`
 # and `make clean` useful on an ordinary development machine or CI runner.
 PS2_GOALS := $(filter-out test-host clean,$(MAKECMDGOALS))
-ifeq ($(strip $(MAKECMDGOALS)),)
+ifeq ($(strip $(MAKECMD_GOALS)),)
 include $(PS2SDK)/samples/Makefile.pref
 include $(PS2SDK)/samples/Makefile.eeglobal
 else ifneq ($(strip $(PS2_GOALS)),)
