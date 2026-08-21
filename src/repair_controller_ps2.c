@@ -1,4 +1,11 @@
-/* Guarded console UI for deterministic APA/header repair operations. */
+/*
+ * Guarded PS2 presentation/controller for deterministic APA recovery.
+ *
+ * Canonical header-repair policy lives in portable apa_repair.c and mounted-
+ * disk pointer-health policy lives in portable repair_health.c. This module
+ * owns only the confirmation screens, snapshot gate, and routing to the narrow
+ * PS2 raw-header writer or the established pointer-disable workflow.
+ */
 
 #include <tamtypes.h>
 #include <debug.h>
@@ -9,11 +16,11 @@
 #include "apa.h"
 #include "apa_repair.h"
 #include "boot_chain.h"
-#include "hdd_bounds.h"
 #include "hdd_read.h"
 #include "hdd_repair_ps2.h"
 #include "platform.h"
 #include "repair_controller_ps2.h"
+#include "repair_health.h"
 #include "repair_snapshot.h"
 #include "session_log.h"
 #include "storage.h"
@@ -58,13 +65,16 @@ static int apply_header_repair(unsigned char header[APA_HEADER_SIZE],
     if (result < 0)
         return REPAIR_CONTROLLER_BLOCKED;
 
+    /* Raw sectors 0-1 are the exceptional recovery path. Preserve the exact
+       damaged bytes externally before the first write; normal Torii-style
+       operations continue to avoid raw master-header writes entirely. */
     result = repair_snapshot_save(storage_selected(), header, snapshot_path);
     if (result < 0) {
         scr_clear();
         scr_printf("Raw repair snapshot could not be saved.\n\n");
         scr_printf("Storage: %s\n", storage_targets[storage_selected()].name);
         scr_printf("Code   : %d\n\n", result);
-        scr_printf("Sector 0 was NOT modified.\n");
+        scr_printf("Sectors 0-1 were NOT modified.\n");
         scr_printf("Press X to return.\n");
         while (!(wait_for_press() & PAD_CROSS)) {}
         return REPAIR_CONTROLLER_NONE;
@@ -127,8 +137,8 @@ int repair_controller_startup(unsigned char header[APA_HEADER_SIZE],
     if (apa_repair_analyze(header, &plan) < 0)
         return REPAIR_CONTROLLER_BLOCKED;
 
-    /* A pointer-only anomaly belongs to the established backup+SETOSDMBR
-       workflow after normal APA startup, not to raw sector-zero recovery. */
+    /* Pointer-only anomalies belong to normal mounted-disk health handling;
+       startup recovery exists only to rescue a master rejected by ps2hdd. */
     if ((plan.issues & header_issue_mask) == 0 && plan.blockers == 0)
         return REPAIR_CONTROLLER_NONE;
 
@@ -176,64 +186,59 @@ int repair_controller_startup(unsigned char header[APA_HEADER_SIZE],
 int repair_controller_health(unsigned char header[APA_HEADER_SIZE],
                              const boot_chain_info_t *boot_chain)
 {
-    apa_repair_plan_t plan;
-    unsigned int start;
-    unsigned int size;
+    repair_health_t health;
     int bounds_result = 0;
-    int pointer_unsafe = 0;
 
-    if (apa_repair_analyze(header, &plan) < 0)
+    if (read_le32(header + APA_OSD_START_OFFSET) != 0 &&
+        read_le32(header + APA_OSD_SIZE_OFFSET) != 0)
+        bounds_result = hdd_validate_payload_bounds(
+            read_le32(header + APA_OSD_START_OFFSET),
+            read_le32(header + APA_OSD_SIZE_OFFSET));
+
+    if (repair_health_assess(header, boot_chain, bounds_result, &health) < 0)
         return REPAIR_CONTROLLER_BLOCKED;
-
-    start = read_le32(header + APA_OSD_START_OFFSET);
-    size = read_le32(header + APA_OSD_SIZE_OFFSET);
-    if ((start == 0) != (size == 0)) {
-        pointer_unsafe = 1;
-    } else if (start != 0) {
-        bounds_result = hdd_validate_payload_bounds(start, size);
-        if (bounds_result < 0)
-            pointer_unsafe = 1;
-        if (boot_chain != NULL &&
-            (boot_chain->payload_read_result < 0 ||
-             boot_chain->payload_kelf_result < 0))
-            pointer_unsafe = 1;
-    }
 
     for (;;) {
         u32 pressed;
 
         scr_clear();
         scr_printf("HDD structure health / repair\n\n");
-        scr_printf("APA identity : %u/3\n", plan.identity_matches);
-        scr_printf("Master anchors: %u/3\n", plan.master_anchor_matches);
+        scr_printf("APA identity : %u/3\n",
+                   health.header_plan.identity_matches);
+        scr_printf("Master anchors: %u/3\n",
+                   health.header_plan.master_anchor_matches);
         scr_printf("Checksum     : %s\n",
-                   (plan.issues & APA_REPAIR_ISSUE_CHECKSUM) ? "BAD" : "OK");
-        scr_printf("osdStart     : 0x%08x\n", start);
-        scr_printf("osdSize      : 0x%08x\n", size);
-        if (start != 0 && size != 0)
-            scr_printf("Pointer bounds: %d\n", bounds_result);
-        if (boot_chain != NULL && start != 0 && size != 0) {
+                   (health.header_plan.issues & APA_REPAIR_ISSUE_CHECKSUM)
+                       ? "BAD" : "OK");
+        scr_printf("osdStart     : 0x%08x\n", health.osd_start);
+        scr_printf("osdSize      : 0x%08x\n", health.osd_size);
+        if (health.osd_start != 0 && health.osd_size != 0)
+            scr_printf("Pointer bounds: %d\n", health.bounds_result);
+        if (boot_chain != NULL &&
+            health.osd_start != 0 && health.osd_size != 0) {
             scr_printf("Payload read : %d\n", boot_chain->payload_read_result);
             scr_printf("Payload KELF : %d\n", boot_chain->payload_kelf_result);
         }
         scr_printf("\n");
-        if (plan.issues != 0 || plan.blockers != 0)
-            print_plan(&plan);
+        if (health.header_plan.issues != 0 ||
+            health.header_plan.blockers != 0)
+            print_plan(&health.header_plan);
         else
             scr_printf("No master-header defect detected.\n");
 
-        if (plan.header_patch_safe)
+        if (health.header_plan.header_patch_safe)
             scr_printf("\nX      Repair canonical master-header field(s)\n");
-        if (pointer_unsafe)
+        if (health.pointer_clear_recommended)
             scr_printf("SQUARE Use normal backup + disable workflow\n");
-        if (!plan.header_patch_safe && !pointer_unsafe)
+        if (!health.header_plan.header_patch_safe &&
+            !health.pointer_clear_recommended)
             scr_printf("\nNothing deterministic needs repair.\n");
         scr_printf("TRIANGLE Return\n");
 
         pressed = wait_for_press();
-        if ((pressed & PAD_CROSS) && plan.header_patch_safe)
-            return apply_header_repair(header, &plan);
-        if ((pressed & PAD_SQUARE) && pointer_unsafe)
+        if ((pressed & PAD_CROSS) && health.header_plan.header_patch_safe)
+            return apply_header_repair(header, &health.header_plan);
+        if ((pressed & PAD_SQUARE) && health.pointer_clear_recommended)
             return REPAIR_CONTROLLER_REQUEST_DISABLE;
         if (pressed & PAD_TRIANGLE)
             return REPAIR_CONTROLLER_NONE;
