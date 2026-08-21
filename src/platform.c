@@ -20,6 +20,13 @@
 /* Controller DMA memory must remain aligned and alive for padPortOpen(). */
 static unsigned char pad_buffer[256] __attribute__((aligned(64)));
 
+/* The ANALOG lamp is physically tied to the controller's main mode command.
+ * We therefore use steady OFF/ON transitions at operation boundaries rather
+ * than blinking it, which would repeatedly reconfigure the pad protocol. */
+static int activity_supported;
+static unsigned int activity_depth;
+static int initial_pad_mode = PAD_MMODE_DIGITAL;
+
 /* IRX modules embedded into the ELF by the Makefile's bin2c rules. */
 extern unsigned char iomanX_irx[];
 extern unsigned int size_iomanX_irx;
@@ -116,13 +123,76 @@ static int wait_pad_ready(void)
     return -1;
 }
 
+static int set_pad_main_mode(int mode, int lock)
+{
+    int result = padSetMainMode(0, 0, mode, lock);
+
+    if (result != 1)
+        return -1;
+    return wait_pad_ready();
+}
+
 /* Initialize the first controller using statically allocated DMA memory. */
 int init_pad(void)
 {
+    int current_id;
+
+    activity_supported = 0;
+    activity_depth = 0;
     padInit(0);
     if (!padPortOpen(0, 0, pad_buffer))
         return -1;
-    return wait_pad_ready();
+    if (wait_pad_ready() < 0)
+        return -1;
+
+    current_id = padInfoMode(0, 0, PAD_MODECURID, 0);
+    if (current_id == PAD_TYPE_DUALSHOCK || current_id == PAD_TYPE_ANALOG)
+        initial_pad_mode = PAD_MMODE_DUALSHOCK;
+    else
+        initial_pad_mode = PAD_MMODE_DIGITAL;
+
+    /* Probe the standard 0x44 main-mode command once. A real DualShock/DS2
+     * accepts it; simpler or third-party controllers may not. Failure is not a
+     * controller error because all normal button input continues to work. */
+    if (set_pad_main_mode(PAD_MMODE_DIGITAL, PAD_MMODE_LOCK) == 0)
+        activity_supported = 1;
+    return 0;
+}
+
+void pad_activity_begin(void)
+{
+    if (!activity_supported) {
+        activity_depth++;
+        return;
+    }
+    if (activity_depth++ != 0)
+        return;
+    if (set_pad_main_mode(PAD_MMODE_DUALSHOCK, PAD_MMODE_LOCK) < 0)
+        activity_supported = 0;
+}
+
+void pad_activity_end(void)
+{
+    if (activity_depth == 0)
+        return;
+    activity_depth--;
+    if (activity_depth != 0 || !activity_supported)
+        return;
+    if (set_pad_main_mode(PAD_MMODE_DIGITAL, PAD_MMODE_LOCK) < 0)
+        activity_supported = 0;
+}
+
+void pad_activity_restore(void)
+{
+    activity_depth = 0;
+    if (!activity_supported)
+        return;
+    (void)set_pad_main_mode(initial_pad_mode, PAD_MMODE_UNLOCK);
+}
+
+int pad_activity_is_supported(void)
+{
+    return activity_supported;
 }
 
 /* Block until a new button edge is observed, avoiding repeated menu actions. */
