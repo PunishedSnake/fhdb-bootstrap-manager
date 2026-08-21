@@ -20,39 +20,50 @@ typedef struct {
     unsigned int mbr_size;
     int bounds;
     int kelf;
+    unsigned int payload_lba;
 } fixture_case_t;
 
 static const fixture_case_t cases[] = {
     {"valid_disabled", 1, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
     {"valid_enabled", 1, 0, 0, 0x2000, 1, 0x4000,
-     0, KELF_IMAGE_VALID},
+     0, KELF_IMAGE_VALID, 0x2000},
     {"garbage_payload", 1, 0, 0, 0x2000, 1, 0x4000,
-     0, KELF_IMAGE_ERR_CALCULATED_SIZE},
-    {"bad_checksum", 0, 0, 0, 0x2000, 1, 0x4000, 0, NO_CHECK},
+     0, KELF_IMAGE_ERR_CALCULATED_SIZE, 0x2000},
+    {"bad_checksum", 0, 0, 0, 0x2000, 1, 0x4000, 0, NO_CHECK, 0},
     {"bad_apa_magic", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
     {"bad_mbr_id", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
     {"bad_sony_magic", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
     {"pointer_start_only", 1, 0, 0, 0x2000, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
     {"pointer_size_only", 1, 0, 0, 0, 1, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
     {"pointer_before_reserved", 1, 0, 0, 0x1000, 1, 0x4000,
-     HDD_PAYLOAD_ERR_BEFORE_RESERVED_AREA, NO_CHECK},
+     HDD_PAYLOAD_ERR_BEFORE_RESERVED_AREA, NO_CHECK, 0},
     {"pointer_too_large", 1, 0, 0, 0x2000, 8193, 0x6000,
-     HDD_PAYLOAD_ERR_TOO_LARGE, NO_CHECK},
+     HDD_PAYLOAD_ERR_TOO_LARGE, NO_CHECK, 0},
     {"pointer_outside_mbr", 1, 0, 0, 0x3fff, 2, 0x4000,
-     HDD_PAYLOAD_ERR_OUTSIDE_MBR, NO_CHECK},
+     HDD_PAYLOAD_ERR_OUTSIDE_MBR, NO_CHECK, 0},
     {"apa_pc_signature_only", 1, 1, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
     {"hybrid_apa_gpt", 1, 1, 1, 0x2000, 1, 0x4000,
-     0, KELF_IMAGE_VALID},
+     0, KELF_IMAGE_VALID, 0x2000},
     {"gpt_only", 0, 1, 1, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK},
-    {"deterministic_garbage", 0, 0, 0, 0, 0, 0, NO_CHECK, NO_CHECK}
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+    {"deterministic_garbage", 0, 0, 0, 0, 0, 0, NO_CHECK, NO_CHECK, 0},
+    {"interrupted_payload_written_pointer_zero", 1, 0, 0, 0, 0, 0x4000,
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, KELF_IMAGE_VALID, 0x2000},
+    {"interrupted_partial_payload_pointer_zero", 1, 0, 0, 0, 0, 0x4000,
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, KELF_IMAGE_ERR_SIZE_FIELDS, 0x2000},
+    {"enabled_zeroed_payload", 1, 0, 0, 0x2000, 1, 0x4000,
+     0, KELF_IMAGE_ERR_CALCULATED_SIZE, 0x2000},
+    {"enabled_partial_overwrite", 1, 0, 0, 0x2000, 1, 0x4000,
+     0, KELF_IMAGE_ERR_SIZE_FIELDS, 0x2000},
+    {"torn_disable_stale_checksum", 0, 0, 0, 0, 0, 0x4000,
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0}
 };
 
 static int read_fixture(const char *directory, const char *name, long offset,
@@ -120,7 +131,7 @@ static int run_case(const char *directory, const fixture_case_t *test)
 
     if (test->kelf != NO_CHECK) {
         if (read_fixture(directory, test->name,
-                         (long)test->start * HDD_SECTOR_SIZE,
+                         (long)test->payload_lba * HDD_SECTOR_SIZE,
                          payload, sizeof(payload)) < 0) {
             fprintf(stderr, "%s: payload read failed.\n", test->name);
             return 0;
