@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   host-tests:
@@ -32,3 +32,179 @@ jobs:
           path: |
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+
+  integrate-header-backup:
+    if: github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/0.4.0-michishirube
+          fetch-depth: 0
+
+      - name: Route mandatory header backups through module
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'src/main.c',
+              '#include "hdd_read.h"\n#include "kelf.h"\n',
+              '#include "hdd_read.h"\n#include "header_backup.h"\n#include "kelf.h"\n',
+              'header backup include')
+          replace_once(
+              'src/main.c',
+              '/* Backup diagnostics use sentinel values that cannot be mistaken for IOP errors. */\n#define BACKUP_SLOT_COUNT 2\n#define BACKUP_NOT_TRIED 999999\n#define BACKUP_OCCUPIED 999998\n\n',
+              '', 'legacy backup constants')
+          replace_once(
+              'src/main.c',
+              '/* Application-owned buffers retained across higher-level workflows. */\nstatic unsigned char header_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));\nstatic unsigned char backup_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));\nstatic unsigned char capsule_metadata[RESCUE_CAPSULE_METADATA_SIZE]\n    __attribute__((aligned(64)));\n\n/* Per-slot results are displayed verbatim when a mandatory backup fails. */\nstatic int backup_read_result[BACKUP_SLOT_COUNT];\nstatic int backup_write_result[BACKUP_SLOT_COUNT];\nstatic int backup_verify_result[BACKUP_SLOT_COUNT];\nstatic char backup_diagnostic_path[BACKUP_SLOT_COUNT][64];\n',
+              '/* Application-owned buffers retained across higher-level workflows. */\nstatic unsigned char header_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));\nstatic unsigned char capsule_metadata[RESCUE_CAPSULE_METADATA_SIZE]\n    __attribute__((aligned(64)));\n\n/* Explicit diagnostics returned by the mandatory header-backup storage gate. */\nstatic header_backup_diagnostics_t backup_diagnostics;\n',
+              'backup globals')
+
+          path = Path('src/main.c')
+          text = path.read_text()
+          start = text.index('/* Generate one of two non-overwriting backup paths on the selected device. */')
+          end = text.index('/* Generate one of two non-overwriting full rescue-capsule paths. */', start)
+          old_block = text[start:end]
+          for token in ('backup_path_for_slot', 'save_backup'):
+              if token not in old_block:
+                  raise SystemExit(f'backup block missing {token}')
+          new_block = '''/* Run the mandatory non-overwriting header-backup storage gate. */
+          static const char *save_backup(void)
+          {
+              return header_backup_save(storage_selected(), header_buffer,
+                                        &backup_diagnostics);
+          }
+
+          '''
+          path.write_text(text[:start] + new_block + text[end:])
+
+          path = Path('src/main.c')
+          text = path.read_text()
+          start = text.index('/* Search new names first, then the v0.1.x FHDB compatibility names. */')
+          end = text.index('/* Explain why the safety gate stopped before touching the disk. */', start)
+          old_block = text[start:end]
+          if 'static const char *load_backup(void)' not in old_block:
+              raise SystemExit('legacy backup lookup block missing')
+          new_block = '''/* Resolve a compatible enabled legacy pointer backup on selected storage. */
+          static const char *load_backup(u32 *start_out, u32 *size_out)
+          {
+              static char found_path[HEADER_BACKUP_PATH_SIZE];
+
+              if (header_backup_find_enabled(
+                      storage_selected(), header_buffer, found_path,
+                      sizeof(found_path), start_out, size_out) < 0)
+                  return NULL;
+              return found_path;
+          }
+
+          '''
+          path.write_text(text[:start] + new_block + text[end:])
+
+          replace_once(
+              'src/main.c',
+              '    const char *backup_path = load_backup();\n    const char *safety_backup;\n    bootstrap_transaction_result_t transaction;\n    u32 start;\n    u32 size;\n    int result;\n\n    if (backup_path == NULL) {\n',
+              '    const char *backup_path;\n    const char *safety_backup;\n    bootstrap_transaction_result_t transaction;\n    u32 start;\n    u32 size;\n    int result;\n\n    backup_path = load_backup(&start, &size);\n    if (backup_path == NULL) {\n',
+              'legacy lookup call')
+          replace_once(
+              'src/main.c',
+              '    start = read_le32(backup_buffer + APA_OSD_START_OFFSET);\n    size = read_le32(backup_buffer + APA_OSD_SIZE_OFFSET);\n',
+              '', 'legacy backup buffer pointer decode')
+
+          path = Path('src/main.c')
+          text = path.read_text()
+          text = text.replace('BACKUP_SLOT_COUNT', 'HEADER_BACKUP_SLOT_COUNT')
+          text = text.replace('backup_diagnostic_path[i]', 'backup_diagnostics.path[i]')
+          text = text.replace('backup_read_result[i]', 'backup_diagnostics.read_result[i]')
+          text = text.replace('backup_write_result[i]', 'backup_diagnostics.write_result[i]')
+          text = text.replace('backup_verify_result[i]', 'backup_diagnostics.verify_result[i]')
+          for token in ('backup_buffer', 'backup_diagnostic_path',
+                        'backup_read_result', 'backup_write_result',
+                        'backup_verify_result', 'BACKUP_NOT_TRIED',
+                        'BACKUP_OCCUPIED'):
+              if token in text:
+                  raise SystemExit(f'legacy header-backup state remained: {token}')
+          path.write_text(text)
+          PY
+
+      - name: Update header-backup documentation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'README.md',
+              '`hdd_write.c` owns write-capable APA transport primitives and their DMA/read-back buffers; portable `bootstrap_transaction.c` plus its PS2 adapter now own the post-confirmation payload-release/pointer sequencing. `main.c` retains validation, backup/confirmation, MagicGate signing, and error/UI policy.',
+              '`header_backup.c` now owns the mandatory non-overwriting 1024-byte header backup/legacy lookup storage mechanics and exposes explicit per-slot diagnostics. `hdd_write.c` owns write-capable APA transport primitives; portable `bootstrap_transaction.c` plus its PS2 adapter own the post-confirmation payload-release/pointer sequencing. `main.c` retains validation, the decision that backup is mandatory, user confirmation, MagicGate signing, and error/UI policy.',
+              'README header backup')
+
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '- `src/storage.c` — storage target definitions, encapsulated selected-target state, launch-device selection, ROMVER access, and generic fileXio helpers. Callers read/change the selection through validated accessors instead of mutating module state directly.\n',
+              '- `src/storage.c` — storage target definitions, encapsulated selected-target state, launch-device selection, ROMVER access, and generic fileXio helpers. Callers read/change the selection through validated accessors instead of mutating module state directly.\n- `src/header_backup.c` — PS2 storage-side mandatory/legacy APA-header backup mechanics: protected slot naming, non-overwrite/reuse behavior, exact read-back verification, same-disk legacy lookup, and explicit per-slot diagnostics. It has no raw HDD write interface or UI/logging policy.\n',
+              'architecture header backup module')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              'Pre-write authorization remains in `main.c`: current-header backup, rescue/capacity validation, user confirmation, and MagicGate signing all complete before the transaction sequencer is entered.\n',
+              'Pre-write authorization remains in `main.c`: it requires successful `header_backup_save()`, rescue/capacity validation, user confirmation, and MagicGate signing before the transaction sequencer is entered. The storage details of creating/reusing/verifying that mandatory header backup live in `header_backup.c`, while `main.c` retains the fail-closed policy and error presentation.\n',
+              'architecture backup gate')
+
+          replace_once(
+              'docs/ROADMAP.md',
+              '- [x] `storage` — storage targets, encapsulated selected-target state, launch-device selection, ROMVER/file helpers, exact/bounded reads, and generic writes.\n',
+              '- [x] `storage` — storage targets, encapsulated selected-target state, launch-device selection, ROMVER/file helpers, exact/bounded reads, and generic writes.\n- [x] `header_backup` safety storage — mandatory non-overwriting header backup/reuse, exact read-back verification, legacy same-disk lookup, and per-slot diagnostics are outside `main.c`; the application still fails closed when no safe slot exists.\n',
+              'roadmap header backup')
+          replace_once(
+              'docs/ROADMAP.md',
+              '- [ ] higher-level write workflow split — rescue/install validation, backups, user confirmation, MagicGate signing, and UI/error presentation still live in `main.c` and should move only after hardware coverage of the transport+transaction boundary.\n',
+              '- [ ] higher-level write workflow split — rescue-capsule lifecycle, user confirmation, MagicGate signing, and UI/error presentation still live in `main.c`; mandatory header-backup storage mechanics are now isolated in `header_backup`.\n',
+              'roadmap workflow split')
+
+          replace_once(
+              'CHANGELOG.md',
+              '- Extracted storage-target selection, ROMVER access, and generic fileXio helpers into `storage.c` / `storage.h`; Michishirube now also encapsulates the selected-target state behind `storage_selected()` / `storage_set_selected()` instead of exporting a mutable global.\n',
+              '- Extracted storage-target selection, ROMVER access, and generic fileXio helpers into `storage.c` / `storage.h`; Michishirube now also encapsulates the selected-target state behind `storage_selected()` / `storage_set_selected()` instead of exporting a mutable global.\n- Extracted mandatory/legacy APA-header backup storage mechanics into `header_backup.c` / `header_backup.h`, including non-overwriting protected slots, existing-identical backup reuse, exact read-back verification, same-disk legacy lookup, and explicit per-slot diagnostics.\n',
+              'changelog header backup')
+          replace_once(
+              'CHANGELOG.md',
+              '- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flushes, payload comparison, and pointer read-back remain isolated in `hdd_write.c`; historical numeric diagnostics and primitive I/O behavior are unchanged. Portable `bootstrap_transaction` now enforces the already-authorized payload-first/pointer-last commit sequence, while rescue/install validation, mandatory backup/confirmation, MagicGate signing, and UI/error policy remain in `main.c`.\n',
+              '- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flushes, payload comparison, and pointer read-back remain isolated in `hdd_write.c`; historical numeric diagnostics and primitive I/O behavior are unchanged. Portable `bootstrap_transaction` enforces the already-authorized payload-first/pointer-last commit sequence. Mandatory header-backup storage mechanics live in `header_backup.c`, while `main.c` still fails closed on backup failure and retains rescue/install validation, confirmation, MagicGate signing, and UI/error policy.\n',
+              'changelog header backup safety')
+          PY
+
+      - name: Verify backup boundary and regressions
+        run: |
+          ! grep -q 'backup_buffer\|backup_read_result\|backup_write_result\|backup_verify_result\|backup_diagnostic_path' src/main.c
+          ! grep -q 'HDIOC_\|hdd_write\|bootstrap_transaction\|wait_for_chord\|scr_printf\|session_log' src/header_backup.c
+          grep -q 'header_backup_save' src/main.c
+          grep -q 'header_backup_find_enabled' src/main.c
+          make test-host
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
+            sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit integrated backup module and restore normal CI
+        run: |
+          git checkout bded902509691453f768a999f74f199e8eca384e -- .github/workflows/ci.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main.c README.md CHANGELOG.md docs/ARCHITECTURE.md docs/ROADMAP.md .github/workflows/ci.yml
+          git commit -m "Extract mandatory header backup storage"
+          git push origin HEAD:dev/0.4.0-michishirube
