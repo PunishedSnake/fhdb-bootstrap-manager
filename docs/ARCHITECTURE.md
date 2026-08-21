@@ -9,6 +9,7 @@ The `0.4.0-dev` **Michishirube** line is progressively converting the former mon
 - `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install preconditions, backup/confirmation, MagicGate signing, and user-facing error policy.
 - `src/platform.c` — IOP reset, embedded IRX startup, pad initialization, button-edge input, and confirmation-chord input.
 - `src/storage.c` — storage target definitions, encapsulated selected-target state, launch-device selection, ROMVER access, and generic fileXio helpers. Callers read/change the selection through validated accessors instead of mutating module state directly.
+- `src/header_backup.c` — PS2 storage-side mandatory/legacy APA-header backup mechanics: protected slot naming, non-overwrite/reuse behavior, exact read-back verification, same-disk legacy lookup, and explicit per-slot diagnostics. It has no raw HDD write interface or UI/logging policy.
 - `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
 - `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.
 - `src/hdd_write.c` — PS2-only write-capable transport: raw `HDIOC_WRITESECTOR` packets, write-side DMA/read-back buffers, flushes, byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back verification. It owns mechanics only, not backup/confirmation/signing or transaction ordering.
@@ -65,7 +66,7 @@ Read-only `HDIOC_READSECTOR` transport and active-payload bounds checks now live
 
 Write-capable transport is isolated in `hdd_write.c`: it owns the raw write packet, aligned verification buffers, `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, flushes, payload byte comparison, and final APA/pointer read-back. Its interface intentionally exposes those operations as separate steps rather than a single "install" call.
 
-Pre-write authorization remains in `main.c`: current-header backup, rescue/capacity validation, user confirmation, and MagicGate signing all complete before the transaction sequencer is entered.
+Pre-write authorization remains in `main.c`: it requires successful `header_backup_save()`, rescue/capacity validation, user confirmation, and MagicGate signing before the transaction sequencer is entered. The storage details of creating/reusing/verifying that mandatory header backup live in `header_backup.c`, while `main.c` retains the fail-closed policy and error presentation.
 
 The already-authorized commit phase lives in portable `bootstrap_transaction.c`. Host tests assert `payload -> release -> pointer set -> pointer verify`, assert immediate stop at each injected failure, and specifically prove that pointer exposure never follows a failed payload write/compare. `bootstrap_transaction_ps2.c` only binds those abstract operations to `hdd_write.c`, so the tested policy is independent of PS2SDK.
 

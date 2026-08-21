@@ -42,6 +42,7 @@
 #include "capsule_format.h"
 #include "hdd_limits.h"
 #include "hdd_read.h"
+#include "header_backup.h"
 #include "kelf.h"
 #include "platform.h"
 #include "session_log.h"
@@ -64,22 +65,13 @@
 /* Human-readable diagnostics and logging remain bounded in EE memory. */
 #define TEXT_FILE_LIMIT 32768
 
-/* Backup diagnostics use sentinel values that cannot be mistaken for IOP errors. */
-#define BACKUP_SLOT_COUNT 2
-#define BACKUP_NOT_TRIED 999999
-#define BACKUP_OCCUPIED 999998
-
 /* Application-owned buffers retained across higher-level workflows. */
 static unsigned char header_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));
-static unsigned char backup_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));
 static unsigned char capsule_metadata[RESCUE_CAPSULE_METADATA_SIZE]
     __attribute__((aligned(64)));
 
-/* Per-slot results are displayed verbatim when a mandatory backup fails. */
-static int backup_read_result[BACKUP_SLOT_COUNT];
-static int backup_write_result[BACKUP_SLOT_COUNT];
-static int backup_verify_result[BACKUP_SLOT_COUNT];
-static char backup_diagnostic_path[BACKUP_SLOT_COUNT][64];
+/* Explicit diagnostics returned by the mandatory header-backup storage gate. */
+static header_backup_diagnostics_t backup_diagnostics;
 
 /* Read-only evidence is modeled in boot_chain.h. */
 static boot_chain_info_t boot_chain;
@@ -341,60 +333,11 @@ static void diagnostics_screen(void)
 /* Backup creation and restoration                                           */
 /* ------------------------------------------------------------------------- */
 
-/* Generate one of two non-overwriting backup paths on the selected device. */
-static void backup_path_for_slot(char *path, unsigned int capacity,
-                                 unsigned int storage, unsigned int slot)
-{
-    storage_path(path, capacity, storage,
-                 slot == 0 ? "HDDMBR.BIN" : "HDDMBR2.BIN");
-}
-
-/* Save and read back the current header for standalone use or a write safety gate. */
+/* Run the mandatory non-overwriting header-backup storage gate. */
 static const char *save_backup(void)
 {
-    unsigned int i;
-
-    for (i = 0; i < BACKUP_SLOT_COUNT; i++) {
-        backup_path_for_slot(backup_diagnostic_path[i],
-                             sizeof(backup_diagnostic_path[i]),
-                             storage_selected(), i);
-        backup_read_result[i] = BACKUP_NOT_TRIED;
-        backup_write_result[i] = BACKUP_NOT_TRIED;
-        backup_verify_result[i] = BACKUP_NOT_TRIED;
-    }
-
-    for (i = 0; i < BACKUP_SLOT_COUNT; i++) {
-        iox_stat_t existing_stat;
-
-        memset(&existing_stat, 0, sizeof(existing_stat));
-        backup_read_result[i] =
-            fileXioGetStat(backup_diagnostic_path[i], &existing_stat);
-        if (backup_read_result[i] >= 0) {
-            if (existing_stat.size == APA_HEADER_SIZE &&
-                read_exact_file(backup_diagnostic_path[i], backup_buffer,
-                                APA_HEADER_SIZE) == 0 &&
-                is_standard_apa_header(backup_buffer) &&
-                memcmp(header_buffer, backup_buffer, APA_HEADER_SIZE) == 0)
-                return backup_diagnostic_path[i];
-            backup_write_result[i] = BACKUP_OCCUPIED;
-            continue;
-        }
-
-        backup_write_result[i] =
-            write_whole_file(backup_diagnostic_path[i], header_buffer,
-                             APA_HEADER_SIZE);
-        if (backup_write_result[i] == 0) {
-            backup_verify_result[i] =
-                read_exact_file(backup_diagnostic_path[i], backup_buffer,
-                                APA_HEADER_SIZE);
-            if (backup_verify_result[i] == 0 &&
-                memcmp(header_buffer, backup_buffer, APA_HEADER_SIZE) == 0)
-                return backup_diagnostic_path[i];
-            if (backup_verify_result[i] == 0)
-                backup_verify_result[i] = -1;
-        }
-    }
-    return NULL;
+    return header_backup_save(storage_selected(), header_buffer,
+                              &backup_diagnostics);
 }
 
 /* Generate one of two non-overwriting full rescue-capsule paths. */
@@ -583,7 +526,7 @@ static const char *save_rescue_capsule(void)
     }
 
     rescue_capsule_encode(capsule_metadata, &info);
-    for (slot = 0; slot < BACKUP_SLOT_COUNT; slot++) {
+    for (slot = 0; slot < HEADER_BACKUP_SLOT_COUNT; slot++) {
         iox_stat_t existing;
 
         rescue_path_for_slot(saved_path, sizeof(saved_path), storage_selected(),
@@ -638,7 +581,7 @@ static int find_rescue_capsule(char *found_path, unsigned int path_capacity,
     int saw_header_only = 0;
     int first_error = -200;
 
-    for (slot = 0; slot < BACKUP_SLOT_COUNT; slot++) {
+    for (slot = 0; slot < HEADER_BACKUP_SLOT_COUNT; slot++) {
         char path[64];
         rescue_capsule_info_t candidate;
         unsigned char *candidate_data = NULL;
@@ -693,25 +636,16 @@ static int find_rescue_capsule(char *found_path, unsigned int path_capacity,
     return saw_header_only ? -202 : first_error;
 }
 
-/* Search new names first, then the v0.1.x FHDB compatibility names. */
-static const char *load_backup(void)
+/* Resolve a compatible enabled legacy pointer backup on selected storage. */
+static const char *load_backup(u32 *start_out, u32 *size_out)
 {
-    static const char *const filenames[] = {
-        "HDDMBR.BIN", "HDDMBR2.BIN", "FHDBMBR.BIN", "FHDBMBR2.BIN"
-    };
-    static char found_path[64];
-    unsigned int i;
+    static char found_path[HEADER_BACKUP_PATH_SIZE];
 
-    for (i = 0; i < sizeof(filenames) / sizeof(filenames[0]); i++) {
-        storage_path(found_path, sizeof(found_path), storage_selected(), filenames[i]);
-        if (read_exact_file(found_path, backup_buffer, APA_HEADER_SIZE) == 0 &&
-            is_standard_apa_header(backup_buffer) &&
-            headers_match_same_disk(header_buffer, backup_buffer) &&
-            read_le32(backup_buffer + APA_OSD_START_OFFSET) != 0 &&
-            read_le32(backup_buffer + APA_OSD_SIZE_OFFSET) != 0)
-            return found_path;
-    }
-    return NULL;
+    if (header_backup_find_enabled(
+            storage_selected(), header_buffer, found_path,
+            sizeof(found_path), start_out, size_out) < 0)
+        return NULL;
+    return found_path;
 }
 
 /* Explain why the safety gate stopped before touching the disk. */
@@ -720,20 +654,20 @@ static void backup_error_screen(void)
     unsigned int i;
 
     session_log_line("Mandatory header backup failed; no HDD write was performed");
-    for (i = 0; i < BACKUP_SLOT_COUNT; i++)
+    for (i = 0; i < HEADER_BACKUP_SLOT_COUNT; i++)
         session_log_line("Backup slot %u path=%s read=%d write=%d verify=%d", i,
-                 backup_diagnostic_path[i], backup_read_result[i],
-                 backup_write_result[i], backup_verify_result[i]);
+                 backup_diagnostics.path[i], backup_diagnostics.read_result[i],
+                 backup_diagnostics.write_result[i], backup_diagnostics.verify_result[i]);
     session_log_flush(storage_selected());
 
     scr_clear();
     scr_printf(APP_NAME " v%s\n\n", APP_VERSION);
     scr_printf("ERROR: Backup failed. HDD was NOT modified.\n\n");
-    for (i = 0; i < BACKUP_SLOT_COUNT; i++) {
-        scr_printf("%s\n", backup_diagnostic_path[i]);
+    for (i = 0; i < HEADER_BACKUP_SLOT_COUNT; i++) {
+        scr_printf("%s\n", backup_diagnostics.path[i]);
         scr_printf(" read:%d write:%d verify:%d\n",
-                   backup_read_result[i], backup_write_result[i],
-                   backup_verify_result[i]);
+                   backup_diagnostics.read_result[i], backup_diagnostics.write_result[i],
+                   backup_diagnostics.verify_result[i]);
     }
     scr_printf("\n999998 means an existing file was preserved.\n");
     wait_to_return();
@@ -825,13 +759,14 @@ static void disable_bootstrap(void)
 /* Legacy fallback: restore only a non-zero pointer from an old header backup. */
 static void restore_legacy_pointer(void)
 {
-    const char *backup_path = load_backup();
+    const char *backup_path;
     const char *safety_backup;
     bootstrap_transaction_result_t transaction;
     u32 start;
     u32 size;
     int result;
 
+    backup_path = load_backup(&start, &size);
     if (backup_path == NULL) {
         scr_clear();
         scr_printf("No valid enabled backup was found on %s.\n",
@@ -841,8 +776,6 @@ static void restore_legacy_pointer(void)
         return;
     }
 
-    start = read_le32(backup_buffer + APA_OSD_START_OFFSET);
-    size = read_le32(backup_buffer + APA_OSD_SIZE_OFFSET);
     result = hdd_validate_payload_bounds(start, size);
     if (result < 0) {
         scr_clear();

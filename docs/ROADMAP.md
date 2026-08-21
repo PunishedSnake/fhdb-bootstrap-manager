@@ -21,11 +21,12 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 
 - [x] `platform` — IOP reset, embedded IRX startup, pad DMA lifetime, button-edge input, and confirmation chords.
 - [x] `storage` — storage targets, encapsulated selected-target state, launch-device selection, ROMVER/file helpers, exact/bounded reads, and generic writes.
+- [x] `header_backup` safety storage — mandatory non-overwriting header backup/reuse, exact read-back verification, legacy same-disk lookup, and per-slot diagnostics are outside `main.c`; the application still fails closed when no safe slot exists.
 - [x] `apa` portable core — endian parsing, checksum validation, normal `__mbr` recognition, hybrid-GPT detection, and same-disk header matching; covered by synthetic host tests.
 - [x] `hdd_read` read-only transport — `HDIOC_READSECTOR`, the conservative aligned two-sector read buffer, live `hdd0:__mbr` payload bounds checks, and sector-aligned active-payload acquisition are isolated behind a PS2-only interface that exposes no write, flush, or pointer-update operation.
 - [x] `hdd_write` write-capable transport — `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write-side DMA/read-back buffers, flushes, payload byte comparison, and final pointer verification are isolated behind a PS2-only interface.
 - [x] `bootstrap_transaction` commit policy — portable failure-injected tests cover payload/release/pointer/verify ordering, and the PS2 adapter binds that policy to `hdd_write` without owning pre-write authorization.
-- [ ] higher-level write workflow split — rescue/install validation, backups, user confirmation, MagicGate signing, and UI/error presentation still live in `main.c` and should move only after hardware coverage of the transport+transaction boundary.
+- [ ] higher-level write workflow split — rescue-capsule lifecycle, user confirmation, MagicGate signing, and UI/error presentation still live in `main.c`; mandatory header-backup storage mechanics are now isolated in `header_backup`.
 - [x] `boot_chain` portable core — shared evidence model, CNF parsing, `Skip_HDD`, ROMVER region mapping, OSDMenu/FHDB target parsing, and deterministic family classification.
 - [x] `boot_chain` PS2 read-only scanner — memory-card HDD modules, FMCB settings, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection.
 - [x] `kelf` portable core — endian-safe KELF structural validation and recovery of the unpadded file size from a sector-aligned HDD image, with named stable result codes.
