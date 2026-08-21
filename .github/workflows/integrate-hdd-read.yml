@@ -20,6 +20,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('src/main.c')
           text = path.read_text()
@@ -30,6 +31,13 @@ jobs:
               if count != 1:
                   raise SystemExit(f'{label}: expected exactly one match, found {count}')
               text = text.replace(old, new, 1)
+
+          def replace_regex(pattern, new, label):
+              global text
+              text, count = re.subn(pattern, new, text, count=1,
+                                    flags=re.MULTILINE | re.DOTALL)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one regex match, found {count}')
 
           replace_once(
               '#include "boot_chain_ps2.h"\n#include "boot_report.h"\n',
@@ -55,7 +63,6 @@ jobs:
 
           replace_once('#define HDIOC_READSECTOR_LOCAL 0x6836\n', '',
                        'local raw-read ioctl')
-
           replace_once(
               '/* Argument layout used by the raw read devctl. */\n'
               'typedef struct {\n'
@@ -65,174 +72,50 @@ jobs:
               '',
               'raw transfer struct')
 
-          old_read_header = '''/* Read sectors 0 and 1, which contain the complete APA master header. */
-          static int read_header(unsigned char *destination)
-          {
-              raw_transfer_t transfer;
+          replace_regex(
+              r'/\* Read sectors 0 and 1, which contain the complete APA master header\. \*/\n'
+              r'static int read_header\(unsigned char \*destination\)\n\{.*?\n\}\n',
+              '/* Read sectors 0 and 1 through the shared read-only transport. */\n'
+              'static int read_header(unsigned char *destination)\n'
+              '{\n'
+              '    return hdd_read_raw_sectors(0, 2, destination);\n'
+              '}\n',
+              'read_header')
 
-              transfer.lba = 0;
-              transfer.size = 2;
-              memset(destination, 0, APA_HEADER_SIZE);
-              return fileXioDevctl("hdd0:", HDIOC_READSECTOR_LOCAL,
-                                   &transfer, sizeof(transfer),
-                                   destination, APA_HEADER_SIZE);
-          }
-          '''.replace('          ', '')
-          new_read_header = '''/* Read sectors 0 and 1, which contain the complete APA master header. */
-          static int read_header(unsigned char *destination)
-          {
-              return hdd_read_raw_sectors(0, 2, destination);
-          }
-          '''.replace('          ', '')
-          replace_once(old_read_header, new_read_header, 'read_header')
-
-          old_raw_helpers = '''/* Read a small raw sector range for post-write payload verification. */
-          static int read_raw_sectors(u32 lba, u32 sectors, unsigned char *destination)
-          {
-              raw_transfer_t transfer;
-
-              transfer.lba = lba;
-              transfer.size = sectors;
-              memset(destination, 0, sectors * SECTOR_SIZE);
-              return fileXioDevctl("hdd0:", HDIOC_READSECTOR_LOCAL,
-                                   &transfer, sizeof(transfer), destination,
-                                   sectors * SECTOR_SIZE);
-          }
-
-          /* Validate an active pointer against both policy limits and __mbr capacity. */
-          static int validate_payload_bounds(u32 start, u32 sectors,
-                                             iox_stat_t *mbr_status)
-          {
-              int result;
-
-              if (start == 0 || sectors == 0)
-                  return -170;
-              if (sectors > MAX_MBR_PAYLOAD_SIZE / SECTOR_SIZE)
-                  return -171;
-              if (start < MBR_PAYLOAD_START)
-                  return -172;
-              memset(mbr_status, 0, sizeof(*mbr_status));
-              result = fileXioGetStat("hdd0:__mbr", mbr_status);
-              if (result < 0)
-                  return result;
-              if (mbr_status->private_5 != 0 || start >= mbr_status->size ||
-                  sectors > mbr_status->size - start)
-                  return -173;
-              return 0;
-          }
-
-          /* Read an active sector-aligned payload through the DMA-safe transfer buffer. */
-          static int read_payload_image(u32 start, u32 sectors,
-                                        unsigned char **payload_out,
-                                        unsigned int *bytes_out)
-          {
-              unsigned int bytes;
-              unsigned int offset = 0;
-              u32 sector_offset = 0;
-              unsigned char *payload;
-
-              if (sectors == 0 || sectors > MAX_MBR_PAYLOAD_SIZE / SECTOR_SIZE)
-                  return -174;
-              bytes = sectors * SECTOR_SIZE;
-              payload = malloc(bytes);
-              if (payload == NULL)
-                  return -175;
-              while (sector_offset < sectors) {
-                  u32 chunk_sectors = sectors - sector_offset;
-                  int result;
-
-                  if (chunk_sectors > TRANSFER_SECTORS)
-                      chunk_sectors = TRANSFER_SECTORS;
-                  result = read_raw_sectors(start + sector_offset, chunk_sectors,
-                                            sector_verify_buffer);
-                  if (result < 0) {
-                      free(payload);
-                      return result;
-                  }
-                  memcpy(payload + offset, sector_verify_buffer,
-                         chunk_sectors * SECTOR_SIZE);
-                  sector_offset += chunk_sectors;
-                  offset += chunk_sectors * SECTOR_SIZE;
-              }
-              *payload_out = payload;
-              *bytes_out = bytes;
-              return 0;
-          }
-
-          '''.replace('          ', '')
-          replace_once(old_raw_helpers, '', 'raw read helpers')
+          replace_regex(
+              r'/\* Read a small raw sector range for post-write payload verification\. \*/.*?'
+              r'(?=/\* Update only osdStart/osdSize through ps2hdd and flush its APA cache\. \*/)',
+              '',
+              'raw read helpers')
 
           text = text.replace('result = read_raw_sectors(',
                               'result = hdd_read_raw_sectors(')
 
-          old_analyze = '''/* Read the active payload, fingerprint it, and collect downstream evidence. */
-          static void analyze_boot_chain(boot_chain_info_t *info)
-          {
-              u32 start = read_le32(header_buffer + APA_OSD_START_OFFSET);
-              u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);
-              unsigned char *payload = NULL;
-              unsigned int payload_bytes = 0;
-              iox_stat_t mbr_status;
-
-              memset(info, 0, sizeof(*info));
-              info->skip_hdd[0] = -1;
-              info->skip_hdd[1] = -1;
-              info->skip_hdd[2] = -1;
-              info->payload_read_result = -1;
-              info->payload_kelf_result = -1;
-              read_romver(info->romver);
-              expected_system_folder(info->romver, info->expected_system_folder,
-                                     sizeof(info->expected_system_folder));
-              info->pointer_consistent = ((start == 0) == (sectors == 0));
-
-              if (start != 0 && sectors != 0) {
-                  info->payload_read_result =
-                      validate_payload_bounds(start, sectors, &mbr_status);
-                  if (info->payload_read_result == 0)
-                      info->payload_read_result =
-                          read_payload_image(start, sectors, &payload, &payload_bytes);
-                  if (info->payload_read_result == 0) {
-                      info->payload_bytes = payload_bytes;
-                      sha256_buffer(payload, payload_bytes, info->payload_sha256);
-                      info->payload_kelf_result =
-                          kelf_size_from_disk_image(payload, payload_bytes,
-                                                    &info->kelf_file_bytes);
-                      if (info->payload_kelf_result == 0)
-                          sha256_buffer(payload, info->kelf_file_bytes,
-                                        info->kelf_sha256);
-                  }
-              }
-
-              scan_skip_hdd_settings(info);
-              scan_memory_card_boot_files(info);
-              scan_sysconf_partition(info);
-              scan_system_partition(info);
-              classify_boot_chain(info, start, sectors);
-              free(payload);
-          }
-          '''.replace('          ', '')
-          new_analyze = '''/* Collect active-payload and downstream evidence, then classify it. */
-          static void analyze_boot_chain(boot_chain_info_t *info)
-          {
-              u32 start = read_le32(header_buffer + APA_OSD_START_OFFSET);
-              u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);
-
-              memset(info, 0, sizeof(*info));
-              info->skip_hdd[0] = -1;
-              info->skip_hdd[1] = -1;
-              info->skip_hdd[2] = -1;
-              read_romver(info->romver);
-              expected_system_folder(info->romver, info->expected_system_folder,
-                                     sizeof(info->expected_system_folder));
-              scan_active_payload_evidence(info, start, sectors);
-              scan_skip_hdd_settings(info);
-              scan_memory_card_boot_files(info);
-              scan_sysconf_partition(info);
-              scan_system_partition(info);
-              classify_boot_chain(info, start, sectors);
-          }
-          '''.replace('          ', '')
-          replace_once(old_analyze, new_analyze, 'boot-chain analyzer')
+          replace_regex(
+              r'/\* Read the active payload, fingerprint it, and collect downstream evidence\. \*/\n'
+              r'static void analyze_boot_chain\(boot_chain_info_t \*info\)\n\{.*?\n\}\n'
+              r'(?=/\* Refresh the in-memory evidence and optionally persist both report and log\. \*/)',
+              '/* Collect active-payload and downstream evidence, then classify it. */\n'
+              'static void analyze_boot_chain(boot_chain_info_t *info)\n'
+              '{\n'
+              '    u32 start = read_le32(header_buffer + APA_OSD_START_OFFSET);\n'
+              '    u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);\n'
+              '\n'
+              '    memset(info, 0, sizeof(*info));\n'
+              '    info->skip_hdd[0] = -1;\n'
+              '    info->skip_hdd[1] = -1;\n'
+              '    info->skip_hdd[2] = -1;\n'
+              '    read_romver(info->romver);\n'
+              '    expected_system_folder(info->romver, info->expected_system_folder,\n'
+              '                           sizeof(info->expected_system_folder));\n'
+              '    scan_active_payload_evidence(info, start, sectors);\n'
+              '    scan_skip_hdd_settings(info);\n'
+              '    scan_memory_card_boot_files(info);\n'
+              '    scan_sysconf_partition(info);\n'
+              '    scan_system_partition(info);\n'
+              '    classify_boot_chain(info, start, sectors);\n'
+              '}\n',
+              'boot-chain analyzer')
 
           replace_once('    iox_stat_t mbr_status;\n    int result;\n',
                        '    int result;\n',
@@ -243,18 +126,22 @@ jobs:
           text = text.replace('read_payload_image(start, sectors,',
                               'hdd_read_payload_image(start, sectors,')
 
-          leftovers = [
+          literal_leftovers = [
               'static int read_raw_sectors(',
               'static int validate_payload_bounds(',
               'static int read_payload_image(',
               'HDIOC_READSECTOR_LOCAL',
-              'raw_transfer_t',
-              'validate_payload_bounds(start, sectors',
-              'read_payload_image(start, sectors'
+              'raw_transfer_t'
           ]
-          for token in leftovers:
+          for token in literal_leftovers:
               if token in text:
                   raise SystemExit(f'leftover monolithic token: {token}')
+          if re.search(r'(?<!hdd_)validate_payload_bounds\(', text):
+              raise SystemExit('leftover unqualified validate_payload_bounds call')
+          if re.search(r'(?<!hdd_)read_payload_image\(', text):
+              raise SystemExit('leftover unqualified read_payload_image call')
+          if re.search(r'(?<!hdd_)read_raw_sectors\(', text):
+              raise SystemExit('leftover unqualified read_raw_sectors call')
 
           path.write_text(text)
           PY
