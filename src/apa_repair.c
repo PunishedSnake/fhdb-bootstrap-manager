@@ -33,11 +33,34 @@ static unsigned int bit_count32(uint32_t value)
     return count;
 }
 
+static void apply_known_fixes(unsigned char header[APA_HEADER_SIZE],
+                              uint32_t fixes)
+{
+    if ((fixes & APA_REPAIR_ISSUE_APA_MAGIC) != 0)
+        memcpy(header + APA_MAGIC_OFFSET, canonical_apa_magic,
+               sizeof(canonical_apa_magic));
+    if ((fixes & APA_REPAIR_ISSUE_MBR_ID) != 0)
+        memcpy(header + APA_ID_OFFSET, canonical_mbr_id,
+               sizeof(canonical_mbr_id) - 1);
+    if ((fixes & APA_REPAIR_ISSUE_SONY_MAGIC) != 0)
+        memcpy(header + APA_MBR_MAGIC_OFFSET, canonical_sony_magic,
+               sizeof(canonical_sony_magic) - 1);
+    if ((fixes & APA_REPAIR_ISSUE_MASTER_START) != 0)
+        write_le32_local(header + APA_START_OFFSET, 0);
+    if ((fixes & APA_REPAIR_ISSUE_MASTER_TYPE) != 0)
+        write_le16_local(header + APA_TYPE_OFFSET, APA_MASTER_TYPE_VALUE);
+    if ((fixes & APA_REPAIR_ISSUE_MBR_VERSION) != 0)
+        write_le32_local(header + APA_MBR_VERSION_OFFSET,
+                         APA_MASTER_VERSION_VALUE);
+}
+
 int apa_repair_analyze(const unsigned char header[APA_HEADER_SIZE],
                        apa_repair_plan_t *plan)
 {
     uint32_t identity_issues = 0;
     uint32_t anchor_issues = 0;
+    uint32_t stored_checksum;
+    uint32_t calculated_checksum;
     uint32_t start;
     uint32_t size;
 
@@ -81,7 +104,9 @@ int apa_repair_analyze(const unsigned char header[APA_HEADER_SIZE],
         plan->master_anchor_matches++;
 
     plan->issues = identity_issues | anchor_issues;
-    if (read_le32(header) != apa_checksum(header))
+    stored_checksum = read_le32(header);
+    calculated_checksum = apa_checksum(header);
+    if (stored_checksum != calculated_checksum)
         plan->issues |= APA_REPAIR_ISSUE_CHECKSUM;
 
     start = read_le32(header + APA_OSD_START_OFFSET);
@@ -123,9 +148,27 @@ int apa_repair_analyze(const unsigned char header[APA_HEADER_SIZE],
         }
     }
 
-    if ((plan->issues & APA_REPAIR_ISSUE_CHECKSUM) != 0 &&
-        plan->blockers == 0)
-        plan->safe_header_fixes |= APA_REPAIR_ISSUE_CHECKSUM;
+    /*
+     * Never assume a checksum-only mismatch means the checksum word is bad.
+     * It may instead be protecting corruption in next/prev/length/timestamps or
+     * another field we cannot reconstruct. If one known canonical field is bad
+     * and the source checksum also fails, accept the repair only when replacing
+     * that known field makes the *stored* checksum correct again. This proves
+     * the observed mismatch is fully explained by the proposed canonical fix
+     * under APA's additive checksum model.
+     */
+    if (stored_checksum != calculated_checksum) {
+        if (plan->safe_header_fixes == 0 || plan->blockers != 0) {
+            plan->blockers |= APA_REPAIR_BLOCKER_UNEXPLAINED_CHECKSUM;
+        } else {
+            unsigned char candidate[APA_HEADER_SIZE];
+
+            memcpy(candidate, header, APA_HEADER_SIZE);
+            apply_known_fixes(candidate, plan->safe_header_fixes);
+            if (apa_checksum(candidate) != stored_checksum)
+                plan->blockers |= APA_REPAIR_BLOCKER_UNEXPLAINED_CHECKSUM;
+        }
+    }
 
     plan->header_patch_safe =
         plan->blockers == 0 && plan->safe_header_fixes != 0;
@@ -136,33 +179,14 @@ int apa_repair_build_header(const unsigned char source[APA_HEADER_SIZE],
                             const apa_repair_plan_t *plan,
                             unsigned char repaired[APA_HEADER_SIZE])
 {
-    uint32_t fixes;
-
     if (source == NULL || plan == NULL || repaired == NULL ||
         !plan->header_patch_safe || plan->blockers != 0)
         return -1;
 
-    fixes = plan->safe_header_fixes;
     memcpy(repaired, source, APA_HEADER_SIZE);
+    apply_known_fixes(repaired, plan->safe_header_fixes);
 
-    if ((fixes & APA_REPAIR_ISSUE_APA_MAGIC) != 0)
-        memcpy(repaired + APA_MAGIC_OFFSET, canonical_apa_magic,
-               sizeof(canonical_apa_magic));
-    if ((fixes & APA_REPAIR_ISSUE_MBR_ID) != 0)
-        memcpy(repaired + APA_ID_OFFSET, canonical_mbr_id,
-               sizeof(canonical_mbr_id) - 1);
-    if ((fixes & APA_REPAIR_ISSUE_SONY_MAGIC) != 0)
-        memcpy(repaired + APA_MBR_MAGIC_OFFSET, canonical_sony_magic,
-               sizeof(canonical_sony_magic) - 1);
-    if ((fixes & APA_REPAIR_ISSUE_MASTER_START) != 0)
-        write_le32_local(repaired + APA_START_OFFSET, 0);
-    if ((fixes & APA_REPAIR_ISSUE_MASTER_TYPE) != 0)
-        write_le16_local(repaired + APA_TYPE_OFFSET, APA_MASTER_TYPE_VALUE);
-    if ((fixes & APA_REPAIR_ISSUE_MBR_VERSION) != 0)
-        write_le32_local(repaired + APA_MBR_VERSION_OFFSET,
-                         APA_MASTER_VERSION_VALUE);
-
-    /* Every accepted header repair ends by rebuilding the checksum. */
+    /* Every accepted canonical repair ends by rebuilding the checksum. */
     write_le32_local(repaired, apa_checksum(repaired));
     return 0;
 }
