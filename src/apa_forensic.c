@@ -71,6 +71,9 @@ static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
         APA_FORENSIC_EVIDENCE_MAGIC |
         APA_FORENSIC_EVIDENCE_LENGTH |
         APA_FORENSIC_EVIDENCE_ID;
+    const uint32_t direct_grid_anchor_mask =
+        APA_FORENSIC_EVIDENCE_MAGIC |
+        APA_FORENSIC_EVIDENCE_SELF_START;
     uint32_t evidence = source_evidence;
     uint32_t start = read_le32(header + APA_START_OFFSET);
     uint32_t length = read_le32(header + APA_LENGTH_OFFSET);
@@ -112,6 +115,17 @@ static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
      * at LBA 0, even self-start. Require actual APA-shaped semantic evidence
      * before treating those generic zero values as a candidate header. */
     if ((evidence & semantic_anchor_mask) == 0)
+        score = 0;
+
+    /* A real 2 TB HDL disk exposed a second grid false-positive class: random
+     * game data can accidentally contain a printable byte string, a bounded
+     * length and nsub<=APA_MAX_SUBS, scoring 30 despite having neither APA magic
+     * nor a self-consistent start LBA. Direct grid discovery now requires one of
+     * those two primary anchors. A header reached through a surviving graph
+     * reference may still be retained with weaker anchors so damaged magic/start
+     * fields remain inspectable in degraded read-only recovery. */
+    if ((source_evidence & APA_FORENSIC_EVIDENCE_REFERENCED) == 0 &&
+        (evidence & direct_grid_anchor_mask) == 0)
         score = 0;
 
     *evidence_out = evidence;
@@ -516,7 +530,8 @@ static void evaluate_map(const apa_forensic_result_t *result,
         score -= 10;
 
     map->confidence = clamp_confidence(score);
-    map->repairable = map->node_count >= 2 &&
+    map->repairable = !result->truncated &&
+                      map->node_count >= 2 &&
                       result->nodes[map->order[0]].lba == 0 &&
                       map->confidence >= 85 &&
                       map->conflicts == 0 && map->overlaps == 0;
@@ -632,7 +647,13 @@ int apa_forensic_build_repair_plan(const apa_forensic_result_t *result,
     plan->map_index = map_index;
     map = &result->maps[map_index];
     plan->confidence = map->confidence;
-    if (!map->repairable)
+
+    /* A partial graph has no trustworthy tail. The real-hardware 2 TB scan that
+     * triggered this guard showed why: once the node cap was hit, the visible
+     * tail looked like it should point to zero and the master looked like it
+     * should point back to that visible tail, producing two entirely artificial
+     * speculative patches. Truncation is therefore a hard no-write condition. */
+    if (result->truncated || !map->repairable)
         return 0;
 
     for (i = 0; i < map->node_count; i++) {
@@ -673,10 +694,12 @@ int apa_forensic_build_repair_plan(const apa_forensic_result_t *result,
             plan->speculative_count++;
     }
 
-    plan->automatic_safe = plan->patch_count > 0 &&
+    plan->automatic_safe = !result->truncated &&
+                           plan->patch_count > 0 &&
                            plan->speculative_count == 0 &&
                            map->confidence >= 90;
-    plan->manual_allowed = plan->patch_count > 0 &&
+    plan->manual_allowed = !result->truncated &&
+                           plan->patch_count > 0 &&
                            map->confidence >= 90 &&
                            map->conflicts == 0 && map->overlaps == 0;
     return 0;
