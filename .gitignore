@@ -4,6 +4,7 @@
 *.ELF
 /tests/test_formats
 /tests/test_boot_chain
+/tests/test_boot_payload
 /tests/test_boot_report
 /tests/test_kelf
 
