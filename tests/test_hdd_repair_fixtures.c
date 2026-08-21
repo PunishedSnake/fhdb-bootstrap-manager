@@ -75,6 +75,13 @@ static int read_bytes(const char *directory, const char *name, long offset,
     return 1;
 }
 
+static int master_anchors_match(const unsigned char header[APA_HEADER_SIZE])
+{
+    return read_le32(header + APA_START_OFFSET) == 0 &&
+           read_le16(header + APA_TYPE_OFFSET) == APA_MASTER_TYPE_VALUE &&
+           read_le32(header + APA_MBR_VERSION_OFFSET) == APA_MASTER_VERSION_VALUE;
+}
+
 static expected_repair_t classify_case(const char *directory,
                                        const repair_case_t *test,
                                        int *detail_out)
@@ -97,7 +104,7 @@ static expected_repair_t classify_case(const char *directory,
 
         if (apa_repair_build_header(header, &plan, repaired) != 0 ||
             !is_standard_apa_header(repaired) ||
-            !apa_master_anchors_match(repaired) || is_hybrid_gpt(repaired)) {
+            !master_anchors_match(repaired) || is_hybrid_gpt(repaired)) {
             *detail_out = -2;
             return EXPECT_BLOCKED;
         }
