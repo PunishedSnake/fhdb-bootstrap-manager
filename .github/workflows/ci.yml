@@ -6,10 +6,99 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  extract-portable-apa:
+    if: github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Remove portable APA parsing from main.c
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('src/main.c')
+          text = path.read_text()
+
+          include_anchor = '#include "capsule_format.h"\n#include "platform.h"\n'
+          include_replacement = '#include "apa.h"\n#include "capsule_format.h"\n#include "platform.h"\n'
+          assert text.count(include_anchor) == 1
+          text = text.replace(include_anchor, include_replacement, 1)
+
+          constants = '''/* Application identity and offsets within the 1024-byte APA master header. */
+          #define APP_NAME "PS2 HDD Bootstrap Manager"
+          #define APA_HEADER_SIZE 1024
+          #define APA_MAGIC_OFFSET 0x004
+          #define APA_ID_OFFSET 0x010
+          #define APA_MBR_MAGIC_OFFSET 0x100
+          #define APA_OSD_START_OFFSET 0x130
+          #define APA_OSD_SIZE_OFFSET 0x134
+          #define PC_MBR_SIGNATURE_OFFSET 0x1fe
+          '''
+          constants = '\n'.join(line.lstrip() for line in constants.splitlines()) + '\n'
+          replacement = '''/* Application identity; APA layout constants live in apa.h. */
+          #define APP_NAME "PS2 HDD Bootstrap Manager"
+          '''
+          replacement = '\n'.join(line.lstrip() for line in replacement.splitlines()) + '\n'
+          assert text.count(constants) == 1
+          text = text.replace(constants, replacement, 1)
+
+          start = '/* Read an explicitly little-endian 32-bit value without alignment assumptions. */\n'
+          end = '/* Validate enough KELF structure to reject plain ELFs, truncation, and nonsense. */\n'
+          assert text.count(start) == 1
+          assert text.count(end) == 1
+          left = text.index(start)
+          right = text.index(end, left)
+          text = text[:left] + text[right:]
+
+          text = text.replace(
+              '/* APA header parsing and validation                                         */',
+              '/* KELF payload structure helpers                                          */', 1)
+
+          for forbidden in (
+              'static u32 read_le32(',
+              'static u32 apa_checksum(',
+              'static int is_standard_apa_header(',
+              'static int is_hybrid_gpt(',
+              'static int headers_match_same_disk(',
+              '#define APA_HEADER_SIZE',
+              '#define APA_MAGIC_OFFSET',
+          ):
+              assert forbidden not in text, forbidden
+
+          path.write_text(text)
+          PY
+
+      - name: Run portable APA and format tests
+        run: make test-host
+
+      - name: Cross-build R5900 ELF with extracted APA parser
+        run: >-
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit verified APA extraction and restore normal CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f PS2_HDD_BOOTSTRAP_MANAGER.ELF tests/test_formats
+          git checkout origin/main -- .github/workflows/ci.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main.c .github/workflows/ci.yml
+          git commit -m "Extract portable APA header validation"
+          git push origin HEAD:dev/0.4.0-michishirube
+
   host-tests:
+    if: github.head_ref != 'dev/0.4.0-michishirube' || github.actor == 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,6 +106,7 @@ jobs:
         run: make test-host
 
   ps2-build:
+    if: github.head_ref != 'dev/0.4.0-michishirube' || github.actor == 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
