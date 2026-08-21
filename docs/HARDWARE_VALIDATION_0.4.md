@@ -1,14 +1,43 @@
 # Michishirube 0.4 real-hardware validation log
 
-This document records hardware evidence for the development-only `0.4.0-dev` Michishirube line. It distinguishes directly inspectable artifacts from tester observations and from follow-up code that still requires another hardware pass.
+This document records the physical-PS2 evidence used to promote Michishirube to 0.4.0. It deliberately distinguishes broadly exercised read-only/normal workflows from exceptional raw metadata repair paths that still need independent destructive testing.
 
-## 2026-08-21 — healthy-disk functional pass
+## Release conclusion
 
-### Provenance
+0.4.0 is released with the following split:
 
-The supplied PS2-side artifacts identify themselves as **PS2 HDD Bootstrap Manager v0.4.0-dev**. The text formats do not encode a Git commit SHA, so this record treats source provenance as version-level rather than claiming cryptographic linkage to one exact branch head.
+### Broadly validated on real PS2 hardware
 
-Console ROMVER reported by the manager:
+- startup and normal APA admission;
+- hierarchical GS UI and state-dependent `LOCKED` actions;
+- native 640x224 font/UI rendering;
+- live themes and `HDDMAN.CFG` behavior;
+- VBlank-synchronized live status without the earlier scan-time screen tearing;
+- deferred boot-chain diagnostics / fast dashboard entry;
+- boot-chain/PFS/MC diagnostics;
+- header and full-rescue backup/reuse behavior;
+- report/log persistence;
+- negative fail-closed source-load behavior;
+- healthy large-HDD raw forensic scanning;
+- large-chain capacity/truncation policy;
+- dormant historical free-space classification;
+- zero-patch healthy-map behavior.
+
+### Still experimental in 0.4.0
+
+- direct sectors 0-1 master repair on deliberately corrupted media;
+- physical `prev` / `next` forensic topology writes;
+- multi-header recovery transactions;
+- partial-failure and power-loss behavior on real disks/adapters;
+- broad adapter/HDD/SSD/controller/storage compatibility coverage from independent testers.
+
+The release therefore asks users to test destructive recovery only on sacrificial or fully imaged media and submit evidence.
+
+## 2026-08-21 — healthy-disk baseline
+
+### Console identity
+
+ROMVER reported by the manager:
 
 ```text
 0170JC20030206
@@ -20,7 +49,7 @@ Expected regional FMCB system folder:
 BIEXEC-SYSTEM
 ```
 
-### Supplied artifact hashes
+### Supplied baseline artifacts
 
 ```text
 HDDMBR.BIN
@@ -42,14 +71,14 @@ size 740 bytes
 
 ### `HDDMBR.BIN` inspection
 
-The exact 1024-byte header is internally consistent:
+The 1024-byte master is internally consistent:
 
 ```text
 APA magic        APA\0
 id               __mbr
 start            0x00000000
 length           0x00040000
-type             0x0001 (APA MBR)
+type             0x0001
 flags            0x0000
 nsub             0
 next             0x00040000
@@ -62,17 +91,17 @@ PC 0x55AA        absent
 APA checksum     valid
 ```
 
-Stored APA checksum and a host-side recomputation over words 1..255 both equal:
+Stored and host-recomputed APA checksum:
 
 ```text
 0x1428c7ff
 ```
 
-This is a healthy disabled-bootstrap master and is suitable as the baseline for later controlled metadata-corruption tests.
+This is a healthy disabled-bootstrap master and remains a useful reference state for later fault-injection work.
 
 ### `HDDRESCUE.BIN` inspection
 
-The capsule is valid version-1 `PS2HBRC` metadata followed by one APA header:
+The version-1 rescue capsule is valid and contains the exact same 1024-byte master as `HDDMBR.BIN`.
 
 ```text
 metadata size    256
@@ -87,67 +116,33 @@ family           No active payload
 confidence       certain
 ```
 
-The capsule records the APA SHA-256:
+The embedded APA SHA-256 is:
 
 ```text
 eebab60486774333997266ee13799d8d3b0a2014b95b8a4d49ecbd660402bf5d
 ```
 
-and the embedded 1024-byte APA header is byte-for-byte identical to the supplied `HDDMBR.BIN`.
+### Boot-chain / session behavior
 
-This confirms that the header-only rescue path for a disabled bootstrap produced mutually consistent host-verifiable evidence.
+The supplied reports/logs established:
 
-### Boot-chain report
+- valid disabled APA master admitted;
+- disabled bootstrap pointer;
+- `__sysconf` and `__system` mounted read-only for diagnostics;
+- `OSDMBR.CNF` present with `boot_auto=$HOSDSYS`;
+- no contradictory FHDB/PSBBN/HDD-OSD evidence;
+- report persistence to `mass:`;
+- storage switching between `mc0` and `mass`;
+- matching rescue capsule reuse rather than unnecessary overwrite;
+- successful standalone header/full-rescue backup;
+- missing MBR source failed closed and did not enter a disk write path;
+- controlled power-off path worked.
 
-The supplied report shows:
+## Startup / UI findings
 
-- APA master validation: valid;
-- OSD pointer: disabled;
-- active payload: intentionally not read because the pointer is disabled;
-- FMCB `Skip_HDD`: configuration files not found in the checked locations;
-- no memory-card HDD modules found in either slot;
-- `__sysconf` mounted successfully;
-- `__system` mounted successfully;
-- no FHDB `FREEHDB.CNF` / `BOOT.ELF` evidence;
-- `OSDMBR.CNF` present;
-- `boot_auto=$HOSDSYS`;
-- no characteristic PSBBN partition set;
-- no HOSDMenu/HDD-OSD/legacy osdmain executable evidence;
-- final assessment: no structural contradiction found.
+The first 0.4 hardware pass exposed approximately 1–2 minutes of apparent startup delay. The cause was not simply module initialization: the program was automatically running the full boot-chain diagnostics pass before showing the dashboard.
 
-### Session log
-
-The supplied `HDDMAN.LOG` confirms at least the following operations on hardware:
-
-1. valid disabled APA master admitted;
-2. boot-chain scan completed with `No active payload / certain`;
-3. `BOOTCHAIN.TXT` was written successfully to `mass:`;
-4. storage selection changed to `mc0` and back to `mass`;
-5. a second diagnostics scan/report completed;
-6. an already matching `HDDRESCUE.BIN` was recognized and reused rather than overwritten unnecessarily;
-7. standalone `HDDMBR.BIN` + `HDDRESCUE.BIN` backup completed;
-8. attempted MBR-source loading from `mass:/MBR.XLF` failed with `-4` and did not proceed to installation;
-9. controlled power-off was requested.
-
-The failed source-load case is useful negative-path evidence: the manager remained fail-closed rather than turning a missing/invalid source into an HDD write.
-
-### Tester-observed UI/feature behavior
-
-Tester report for this pass:
-
-- all exercised 0.4 functions appeared to work as intended;
-- hierarchical menu navigation worked;
-- actions incompatible with the current configuration were visibly blocked/disabled rather than executable;
-- no unexpected HDD mutation was observed during the healthy-disk pass;
-- the principal usability problem was startup latency: the application remained in initialization for approximately **1–2 minutes** before becoming interactive.
-
-The 1–2 minute figure is a human observation from this pass, not a timer measurement from the supplied log.
-
-## Follow-up: startup latency instrumentation / fast admission
-
-The pre-fix startup performed a full boot-chain diagnostics refresh before entering the dashboard. That refresh includes memory-card probing, FMCB config checks, read-only PFS mounts for `__sysconf` and `__system`, downstream-file probes, report rendering and report/log persistence.
-
-The development branch now defers that expensive boot-chain evidence scan until Diagnostics or another workflow explicitly requests it. Startup retains the safety-critical admission sequence:
+Michishirube now keeps only the safety-critical admission path before the dashboard:
 
 ```text
 IOP reset
@@ -160,31 +155,119 @@ APA/non-hybrid validation
 dashboard
 ```
 
-A new `Startup timing ms:` log record measures:
+Heavy PFS/MC diagnostics are lazy and run only when requested.
 
-- IOP reset;
-- embedded module loading;
-- service initialization;
-- controller initialization / ANALOG-mode probe;
-- first HDD status call;
-- raw master read;
-- total pre-dashboard startup.
+### GS UI iteration
 
-The initialization screen also names the current phase. The next hardware run should therefore establish whether the former delay was dominated by the now-deferred diagnostics or by `ps2hdd`/DEV9/module startup itself.
+Physical testing found several real display issues during development:
 
-This fast-start change is **not yet hardware-validated** in this record.
+1. mixed libdebug + GS rendering placed the status panel in the lower-right;
+2. standalone `graph_initialize(640x448)` produced a black screen;
+3. virtual 448-line -> physical 224-line scaling destroyed bitmap-font rows;
+4. the full-screen native UI worked, but forensic read telemetry tore visibly because frames were replaced too quickly.
 
-## Next controlled hardware tests
+The final 0.4.0 display contract is:
 
-Use the separate [`HARDWARE_FAULT_INJECTION.md`](HARDWARE_FAULT_INJECTION.md) procedure and return to a fully healthy baseline between every scenario.
+- `init_scr()` only for the proven CRT/read-circuit bootstrap;
+- visible 640x224 FIELD drawing space at VRAM 0;
+- all normal UI rendered through the GS frontend;
+- native 8x8 glyphs with no fractional Y scaling;
+- explicit full-row `LOCKED` states;
+- `aqua`, `amber`, `sakura`, `mono` themes;
+- stable `HDDMAN.CFG` name;
+- VBlank-synchronized status presentation.
 
-Recommended order:
+The VSync build was physically retested: screen tearing during forensic scanning disappeared. The visible status refresh rate is lower by design, while disk I/O itself is not forced to wait for one VBlank per raw read because high-rate read telemetry is coalesced.
 
-1. new fast-start timing pass on the healthy disk;
-2. read-only forensic scan on the healthy disk and comparison with DriveForge's known APA topology;
-3. one-bit deterministic master-magic corruption and recovery;
-4. one-bit interior `next` corruption and forensic topology repair;
-5. exact two-bit interior `next` corruption and forensic topology repair;
-6. only after those pass, design a controlled multi-header physical test.
+## Large-HDD forensic finding #1 — old node-cap truncation
 
-For every anomaly discovered on hardware, add a deterministic host regression before accepting its fix.
+The first healthy large-HDL forensic scan hit the old 512-node capacity. The partial forward map still looked extremely coherent, but the visible tail was not the physical tail. The old evaluator therefore inferred two fake endpoint changes.
+
+The fix became a hard invariant:
+
+```text
+truncated scan => no write plan
+```
+
+It is enforced in:
+
+- portable map policy;
+- portable repair-plan construction;
+- UI authorization;
+- raw PS2 forensic writer.
+
+Capacity was raised to 2048 nodes, direct-grid false-positive admission was tightened, and `FORENSIC.TXT` grew from 64 KiB to 512 KiB. Dedicated regressions cover a healthy 768-header chain and a 2049-header hard-read-only truncation case.
+
+## Large-HDD forensic finding #2 — dormant `__empty` history
+
+The next complete scan discovered 1621 valid APA-shaped headers while the active forward chain contained 1613. Eight extra checksum-valid `__empty` headers lived wholly inside a later, larger active `__empty` extent.
+
+Those records are consistent with historical free-space allocator/coalescing metadata rather than competing active partitions.
+
+The scanner now retains them as forensic evidence marked:
+
+```text
+DORMANT_FREE
+```
+
+but excludes them from active-map confidence and geometry competition only when all narrow containment/canonical checks pass.
+
+## Final healthy forensic release-validation result
+
+The final physical report used for 0.4.0 promotion produced:
+
+```text
+Disk sectors : 0xe8e088b0
+Grid reads   : 14905
+Reference reads: 0
+Unreadable   : 0
+Nodes        : 1621 / 2048 capacity
+Dormant free : 8
+Maps         : 1
+Truncated    : no
+
+MAP 1: forward links
+ confidence=100
+ nodes=1613
+ reciprocal=1612
+ inferred=0
+ conflicts=0
+ overlaps=0
+ repairable=yes
+ patches=0
+ corroborated=0
+ speculative=0
+ automatic=no
+ manual=no
+```
+
+Interpretation:
+
+- the active chain is completely reciprocal;
+- there are no inferred links, conflicts or overlaps;
+- the eight historical free-space remnants are retained but do not reduce confidence;
+- there is no proposed patch and therefore no write authorization.
+
+The `repairable=yes` field in this zero-patch state means the candidate satisfies the structural prerequisites from which a plan *could* be built if a difference existed; it does not mean the healthy disk needs repair. Future report wording may rename this capability-like flag for clarity without changing policy.
+
+## Independent testing requested
+
+0.4.0 intentionally ships exceptional raw recovery with an experimental disclaimer rather than pretending one development console proves every physical combination.
+
+Useful destructive test reports should include:
+
+- console model / ROMVER;
+- HDD/SSD make, model and capacity;
+- adapter/bridge;
+- exact fault introduced;
+- manager version/build hash;
+- `HDDMAN.LOG`;
+- `FORENSIC.TXT`;
+- relevant `HDDRAW`, `HDDMETA`, rescue artifacts;
+- exact previewed patch;
+- raw before/after header bytes where possible;
+- restart and post-restart result.
+
+Use [`HARDWARE_FAULT_INJECTION.md`](HARDWARE_FAULT_INJECTION.md) for the guarded host mutator. The separate DriveForge test HDD can be treated as the sacrificial physical target; the known-good console HDD should remain the healthy baseline.
+
+Every reproducible hardware discrepancy should become a deterministic host regression before the corresponding fix is considered complete.
