@@ -6,10 +6,115 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  modularize-first-pass:
+    if: github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Extract platform and storage blocks from main.c
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('src/main.c')
+          text = path.read_text()
+
+          include_anchor = '#include "capsule_format.h"\n#include "sha256.h"\n#include "version.h"\n'
+          replacement = '#include "capsule_format.h"\n#include "platform.h"\n#include "sha256.h"\n#include "storage.h"\n#include "version.h"\n'
+          assert text.count(include_anchor) == 1
+          text = text.replace(include_anchor, replacement, 1)
+
+          pad_line = 'static unsigned char pad_buffer[256] __attribute__((aligned(64)));\n'
+          assert text.count(pad_line) == 1
+          text = text.replace(pad_line, '', 1)
+
+          def remove_between(source, start, end):
+              assert source.count(start) == 1, start
+              assert source.count(end) == 1, end
+              left = source.index(start)
+              right = source.index(end, left)
+              return source[:left] + source[right:]
+
+          text = remove_between(
+              text,
+              '/* One global storage choice controls backup lookup and the MBR.XLF source path. */\n',
+              '/* Per-slot results are displayed verbatim when a mandatory backup fails. */\n')
+
+          text = remove_between(
+              text,
+              '/* IRX modules embedded into the ELF by the Makefile\'s bin2c rules. */\n',
+              '/* Argument layout used by the raw read devctl. */\n')
+
+          text = remove_between(
+              text,
+              '/* Reset the IOP and enable loading embedded homebrew IRX modules. */\n',
+              '/* Perform a normal PS2 shutdown through the poweroff RPC service. */\n')
+
+          text = remove_between(
+              text,
+              '/* Construct a root-level path for the selected storage device. */\n',
+              '/* Case-insensitive ASCII comparison used by old FMCB-style CNF files. */\n')
+
+          text = text.replace(
+              '/* IOP, controller, storage, and console lifecycle                           */',
+              '/* Console lifecycle and UI                                                */', 1)
+          text = text.replace(
+              '/* File and storage helpers                                                  */',
+              '/* Configuration parsing and higher-level storage workflows                */', 1)
+
+          # The moved definitions must no longer exist in main.c.
+          for forbidden in (
+              'static void reset_iop(void)',
+              'static int load_modules(void)',
+              'static int init_pad(void)',
+              'static u32 wait_for_press(void)',
+              'static int wait_for_chord(u32 chord)',
+              'static void storage_path(',
+              'static void select_launch_storage(',
+              'static int write_whole_file(',
+              'static int append_log_file(',
+              'static int read_exact_file(',
+              'static int read_bounded_file(',
+              'static int path_exists(',
+              'static int read_text_file(',
+              'static int read_romver(',
+          ):
+              assert forbidden not in text, forbidden
+
+          path.write_text(text)
+          PY
+
+      - name: Run portable tests
+        run: make test-host
+
+      - name: Cross-build refactored R5900 ELF
+        run: >-
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit verified extraction and restore normal CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f PS2_HDD_BOOTSTRAP_MANAGER.ELF tests/test_formats
+          git checkout origin/main -- .github/workflows/ci.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main.c .github/workflows/ci.yml
+          git commit -m "Extract platform and storage code from main"
+          git push origin HEAD:dev/0.4.0-michishirube
+
   host-tests:
+    if: github.head_ref != 'dev/0.4.0-michishirube' || github.actor == 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,6 +122,7 @@ jobs:
         run: make test-host
 
   ps2-build:
+    if: github.head_ref != 'dev/0.4.0-michishirube' || github.actor == 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
