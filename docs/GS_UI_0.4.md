@@ -26,9 +26,10 @@ reset; each ordinary frame changes only its draw framebuffer.
 ## Experimental application video mode
 
 **System -> Video mode** can switch the manager itself to a 480p progressive
-output backed by a 640x448 framebuffer. Layout coordinates remain the proven
-640x224 design and are expanded vertically by an exact integer factor of two;
-there is still no fractional glyph scaling or discarded bitmap row.
+output backed by a 720x448 framebuffer. Layout coordinates remain the proven
+640x224 design and expand by the exact 720/640 = 9/8 horizontal ratio and an
+integer factor of two vertically. An 8x8 source glyph therefore becomes exactly
+9x16 pixels; there is no discarded bitmap row.
 
 480p requires a compatible display and video path. The manager therefore shows
 a ten-second confirmation screen after switching. X keeps the mode for the
@@ -105,11 +106,11 @@ A large healthy-disk forensic scan performs thousands of raw reads. Waiting for 
 
 Physical retesting confirmed that visible forensic-scan screen tearing disappeared. The screen updates less frequently during rapid reads, which is intentional.
 
-Each framebuffer reserves 640x448 pixels so the same pair can serve both the
-native 640x224 field and the optional full-height progressive mode. This costs
-about 1.1 MiB more VRAM than the conservative single-buffer 0.4.0 reservation,
-but remains comfortably inside the GS's 4 MiB budget together with the font
-atlas.
+Native output owns two 640x224 buffers; progressive output owns two 720x448
+buffers so the HDTV read circuit receives its correct 720-pixel stride. Together
+with the font atlas, the four buffers use 3.75 MiB of the GS's 4 MiB and leave
+256 KiB free. Separate pairs also let the timed fallback return to a clean
+native-stride frame instead of briefly interpreting progressive rows as 640-wide.
 
 ## Physical validation result
 

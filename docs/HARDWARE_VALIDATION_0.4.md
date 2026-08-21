@@ -182,7 +182,7 @@ The VSync build was physically retested: screen tearing during forensic scanning
 ### Post-release GS optimization pending physical validation
 
 The 0.4.x optimization branch adds true two-framebuffer VBlank swapping and an
-optional application-owned 480p mode backed by a 640x448 framebuffer. The 480p
+optional application-owned 480p mode backed by a 720x448 framebuffer. The 480p
 choice is guarded by a ten-second confirmation timeout and is never persisted.
 
 The following items must be checked on physical hardware before treating that

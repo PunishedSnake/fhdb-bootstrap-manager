@@ -231,7 +231,7 @@ static void video_mode_menu(void)
         {"Native interlaced",
          "Hardware-proven 640x224 FIELD output", 1},
         {"480p progressive (experimental)",
-         "640x448; requires a 480p-capable display and video path", 1}
+         "720x448; requires a 480p-capable display and video path", 1}
     };
     unsigned int selected = (unsigned int)gs_ui_video_mode_current();
     char status[96];
@@ -267,7 +267,7 @@ static void video_mode_menu(void)
             u32 pressed = 0;
 
             snprintf(body, sizeof(body),
-                     "640x448 progressive output is active.\n\n"
+                     "720x448 progressive output is active.\n\n"
                      "Press X to keep it for this session.\n"
                      "Press TRIANGLE to restore native output.\n\n"
                      "Automatic restore in %u second%s.",

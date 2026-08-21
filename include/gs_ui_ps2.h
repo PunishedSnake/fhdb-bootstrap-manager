@@ -28,7 +28,7 @@ int gs_ui_initialize(void);
 int gs_ui_is_ready(void);
 
 /* Video-mode changes affect this application only. The native mode reuses the
- * hardware-proven init_scr() bootstrap; 480p uses a 640x448 framebuffer and is
+ * hardware-proven init_scr() bootstrap; 480p uses a 720x448 framebuffer and is
  * intentionally session-only until confirmed on physical hardware. */
 const char *gs_ui_video_mode_name(gs_ui_video_mode_t mode);
 gs_ui_video_mode_t gs_ui_video_mode_current(void);

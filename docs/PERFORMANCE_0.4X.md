@@ -59,15 +59,16 @@ switcher, timed fallback and double-buffered presentation.
 - compatibility `scr_printf` screens are assembled and submitted once when
   they become interactive instead of rebuilding a full frame per line;
 - blend state and per-string glyph color setup are cached;
-- two 640x448 GS framebuffers are swapped on VBlank, eliminating writes into
-  the buffer currently scanned by the display;
+- dedicated native 640x224 and progressive 720x448 framebuffer pairs are
+  swapped on VBlank, eliminating writes into the buffer currently scanned by
+  the display while preserving the correct stride for each read circuit;
 - stable GS environment registers are not resent on every frame and are
   refreshed only after a display-mode reset;
 - one reusable GIF packet replaces a redundant pair because `end_frame()` waits
   for GS FINISH before returning, releasing 256 KiB of EE heap;
-- experimental 480p renders the existing 640x224 layout into all 448 framebuffer
-  lines through an exact 2x vertical expansion and automatically restores native
-  output unless confirmed within ten seconds.
+- experimental 480p renders the existing 640x224 layout into 720x448 through
+  exact 9/8 horizontal and 2x vertical expansion, and automatically restores
+  native output unless confirmed within ten seconds.
 
 ## Validation
 

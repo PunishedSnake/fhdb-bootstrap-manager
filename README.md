@@ -100,7 +100,7 @@ The physically validated display contract is intentionally conservative:
 Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
 
 The current 0.4.x development branch also exposes **System -> Video mode**. Its
-experimental 480p option renders the manager into a 640x448 progressive
+experimental 480p option renders the manager into a 720x448 progressive
 framebuffer for a steadier, clearer UI. Because the PS2 remains admirably
 uninterested in negotiating modern display capabilities, the mode must be
 confirmed with X within ten seconds. TRIANGLE, no input, or an internal setup

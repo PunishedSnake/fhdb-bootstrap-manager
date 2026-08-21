@@ -37,10 +37,10 @@ Instead:
 
 Physical retesting confirmed that this removed the visible forensic-scan tearing. The status panel refreshes less frequently during rapid reads, as intended, while remaining responsive for write-sensitive transitions.
 
-The two buffers reserve 640x448 pixels apiece so they can also back the optional
-progressive application mode. Native output draws into their upper 224-line
-field. The extra VRAM removes the tearing race without weakening I/O throughput
-and still leaves ample room in the GS's 4 MiB budget.
+The renderer keeps a dedicated 640x224 pair for native output and a dedicated
+720x448 pair for the optional progressive application mode. This preserves the
+correct read-circuit stride in both modes. The 3.75 MiB GS allocation removes
+the tearing race without weakening I/O throughput and leaves 256 KiB free.
 
 ## Current status coverage
 
