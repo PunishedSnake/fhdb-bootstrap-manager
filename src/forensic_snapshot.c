@@ -38,6 +38,7 @@ static int build_snapshot_image(const apa_forensic_result_t *result,
 {
     unsigned int size;
     unsigned int offset;
+    unsigned int one_or_two_bit_count = 0;
     unsigned int i;
     unsigned char *image;
 
@@ -47,6 +48,13 @@ static int build_snapshot_image(const apa_forensic_result_t *result,
         (0xffffffffu - SNAPSHOT_HEADER_BYTES - SNAPSHOT_TRAILER_BYTES) /
             SNAPSHOT_ENTRY_BYTES)
         return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+
+    for (i = 0; i < plan->patch_count; i++) {
+        unsigned int distance =
+            apa_forensic_patch_bit_distance(&plan->patches[i]);
+        if (distance == 1u || distance == 2u)
+            one_or_two_bit_count++;
+    }
 
     size = SNAPSHOT_HEADER_BYTES +
            plan->patch_count * SNAPSHOT_ENTRY_BYTES +
@@ -64,6 +72,11 @@ static int build_snapshot_image(const apa_forensic_result_t *result,
     write_le32_snapshot(image + 24, plan->patch_count);
     write_le32_snapshot(image + 28, plan->corroborated_count);
     write_le32_snapshot(image + 32, plan->speculative_count);
+    /* Offset 36 was reserved in APAMETA1. Fill it with the number of patches
+     * whose topology delta changes exactly one or two bits. The format stays
+     * version 1 because the remaining header bytes were explicitly reserved
+     * and existing development snapshots stored zero here. */
+    write_le32_snapshot(image + 36, one_or_two_bit_count);
 
     offset = SNAPSHOT_HEADER_BYTES;
     for (i = 0; i < plan->patch_count; i++) {
