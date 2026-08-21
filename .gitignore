@@ -3,6 +3,7 @@
 *_irx.c
 *.ELF
 /tests/test_formats
+/tests/test_apa_repair
 /tests/test_boot_chain
 /tests/test_boot_payload
 /tests/test_boot_report
@@ -11,6 +12,7 @@
 /tests/test_rescue_image
 /tests/test_hdd_fixtures
 /tests/test_hdd_mutations
+/tests/test_hdd_repair_fixtures
 /tests/generated_hdds/
 
 # Local release archives and recovered disk headers
@@ -18,6 +20,7 @@
 FHDBMBR*.BIN
 HDDMBR*.BIN
 HDDRESCUE*.BIN
+HDDRAW*.BIN
 HDDMAN.LOG
 BOOTCHAIN.TXT
 
