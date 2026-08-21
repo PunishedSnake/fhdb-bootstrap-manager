@@ -28,6 +28,7 @@
 #include "app_ui_ps2.h"
 #include "bootstrap_signing.h"
 #include "boot_chain.h"
+#include "gs_ui_ps2.h"
 #include "hdd_read.h"
 #include "manager_menu_ps2.h"
 #include "platform.h"
@@ -96,7 +97,16 @@ int main(int argc, char **argv)
     total_start = GetTimerSystemTime();
     select_launch_storage(argc, argv);
 
-    init_scr();
+    /* The GS frontend owns video mode and framebuffer state for the complete
+       application. libdebug remains linked only for its built-in MSX glyph
+       asset and as a toolchain dependency; init_scr() is deliberately not
+       called during normal execution. */
+    result = gs_ui_initialize();
+    if (result < 0) {
+        printf("GS UI initialization failed: %d\n", result);
+        SleepThread();
+    }
+    scr_clear();
     scr_printf(APP_NAME " v%s\n", APP_VERSION);
     scr_printf("Initializing IOP...\n");
 
