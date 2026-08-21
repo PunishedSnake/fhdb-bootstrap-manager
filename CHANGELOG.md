@@ -22,7 +22,8 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - `analyze_boot_chain()` now delegates active-payload evidence acquisition instead of owning raw sector loops and fingerprinting directly.
 - Extracted `BOOTCHAIN.TXT` path/retry/write persistence into PS2-only `boot_report_ps2.c` / `boot_report_ps2.h`; the portable renderer remains completely storage-free.
 - Extracted bounded ordered session buffering plus `HDDMAN.LOG` append/rotation/retry behavior into `session_log.c` / `session_log.h`.
-- Kept only report/log orchestration, the last report-save result used by the diagnostics UI, and the short diagnostics screen in `main.c`.
+- Extracted complete read-only evidence-scan orchestration into `boot_diagnostics_ps2.c` / `boot_diagnostics_ps2.h`; `main.c` no longer initializes/scans/classifies boot-chain evidence itself.
+- Kept only diagnostics timing/presentation, the last report-save result used by the UI, and the short diagnostics screen in `main.c`.
 
 ### Tests
 

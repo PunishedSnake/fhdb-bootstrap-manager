@@ -33,7 +33,8 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 - [x] `boot_report` portable renderer — bounded `BOOTCHAIN.TXT` formatting, assessment text, hashes, and evidence presentation with no device or persistence dependency.
 - [x] `boot_report_ps2` persistence — storage-path construction, complete `BOOTCHAIN.TXT` replacement, and the existing USB write grace period are outside `main.c` while the portable renderer stays storage-free.
 - [x] `session_log` persistence — bounded ordered session buffering, append-only `HDDMAN.LOG`, 128 KiB rotation, per-storage unsaved offsets, and USB retry behavior are outside `main.c`.
-- [ ] `boot_chain` orchestration/UI — `main.c` still combines evidence, decides when to render/persist, retains the last report-save result for display, and owns the short diagnostics screen.
+- [x] `boot_diagnostics_ps2` orchestration — ROMVER initialization, active-payload evidence, FMCB/PFS evidence collection, and final family classification are combined outside `main.c` behind a read-only PS2-specific entry point.
+- [ ] diagnostics presentation/UI — `main.c` still decides when to scan/render/persist, retains the last report-save result for display, and owns the short diagnostics screen.
 - [ ] `rescue` — capsule creation/lookup/validation plus restore orchestration while preserving payload-first/pointer-last semantics.
 - [ ] `ui` — menus, fatal/info screens, logging presentation, and confirmation text after core policy has explicit interfaces.
 
@@ -64,7 +65,7 @@ Portable CI now exercises:
 ### Remaining engineering work
 
 - continue replacing project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly; KELF and read-only payload-bound results are now named without changing their historical numeric values;
-- reduce the remaining diagnostics orchestration/UI state without moving classification policy or storage operations back into `main.c`;
+- reduce the remaining diagnostics presentation/UI state without moving classification policy, evidence acquisition, or storage operations back into `main.c`;
 - only after the read-only boundary and diagnostics split have enough regression/hardware confidence, extract the write-capable APA transport without changing payload-first/pointer-last semantics;
 - add build-size/performance reporting so optimization work is measurable rather than flag-driven;
 - establish a hardware validation matrix across FAT console revisions, storage adapters/HDDs, memory-card layouts, and launch devices;

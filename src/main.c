@@ -36,8 +36,7 @@
 
 #include "apa.h"
 #include "boot_chain.h"
-#include "boot_chain_ps2.h"
-#include "boot_payload_ps2.h"
+#include "boot_diagnostics_ps2.h"
 #include "boot_report.h"
 #include "boot_report_ps2.h"
 #include "capsule_format.h"
@@ -416,37 +415,16 @@ static int write_and_verify_payload(const unsigned char *payload,
 /* Read-only boot-chain inspection                                           */
 /* ------------------------------------------------------------------------- */
 
-/* Filesystem/config scanners live in boot_chain_ps2.c; main only coordinates them. */
-
-/* Collect active-payload and downstream evidence, then classify it. */
-static void analyze_boot_chain(boot_chain_info_t *info)
+/* Refresh the read-only evidence and optionally persist both report and log. */
+static void refresh_boot_chain_report(int save_to_storage)
 {
     u32 start = read_le32(header_buffer + APA_OSD_START_OFFSET);
     u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);
 
-    memset(info, 0, sizeof(*info));
-    info->skip_hdd[0] = -1;
-    info->skip_hdd[1] = -1;
-    info->skip_hdd[2] = -1;
-    read_romver(info->romver);
-    expected_system_folder(info->romver, info->expected_system_folder,
-                           sizeof(info->expected_system_folder));
-    scan_active_payload_evidence(info, start, sectors);
-    scan_skip_hdd_settings(info);
-    scan_memory_card_boot_files(info);
-    scan_sysconf_partition(info);
-    scan_system_partition(info);
-    classify_boot_chain(info, start, sectors);
-}
-/* Refresh the in-memory evidence and optionally persist both report and log. */
-static void refresh_boot_chain_report(int save_to_storage)
-{
-    analyze_boot_chain(&boot_chain);
+    boot_diagnostics_scan(&boot_chain, start, sectors);
     boot_report_length = boot_report_render(
         boot_report, sizeof(boot_report), &boot_chain,
-        read_le32(header_buffer + APA_OSD_START_OFFSET),
-        read_le32(header_buffer + APA_OSD_SIZE_OFFSET),
-        APP_NAME, APP_VERSION);
+        start, sectors, APP_NAME, APP_VERSION);
     session_log_line("Boot-chain scan: family='%s', confidence=%s, payload_read=%d, "
              "kelf=%d", boot_chain.family, boot_chain.confidence,
              boot_chain.payload_read_result, boot_chain.payload_kelf_result);
