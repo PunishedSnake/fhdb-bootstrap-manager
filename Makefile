@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o platform.o storage.o apa.o hdd_read.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_report.o kelf.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o platform.o storage.o apa.o hdd_read.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_report.o boot_report_ps2.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
@@ -80,6 +80,12 @@ boot_payload_ps2.o: src/boot_payload_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 boot_report.o: src/boot_report.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+boot_report_ps2.o: src/boot_report_ps2.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+session_log.o: src/session_log.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 kelf.o: src/kelf.c

@@ -29,7 +29,6 @@
 #include <hdd-ioctl.h>
 #include <libpwroff.h>
 #include <libsecr.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,11 +39,13 @@
 #include "boot_chain_ps2.h"
 #include "boot_payload_ps2.h"
 #include "boot_report.h"
+#include "boot_report_ps2.h"
 #include "capsule_format.h"
 #include "hdd_limits.h"
 #include "hdd_read.h"
 #include "kelf.h"
 #include "platform.h"
+#include "session_log.h"
 #include "sha256.h"
 #include "storage.h"
 #include "version.h"
@@ -62,8 +63,6 @@
     (RESCUE_CAPSULE_METADATA_SIZE + APA_HEADER_SIZE + MAX_MBR_PAYLOAD_SIZE)
 
 /* Human-readable diagnostics and logging remain bounded in EE memory. */
-#define SESSION_LOG_SIZE 16384
-#define SESSION_LOG_ROTATE_SIZE (128 * 1024)
 #define TEXT_FILE_LIMIT 32768
 
 /* Local names keep the source compatible with older PS2SDK header revisions. */
@@ -87,10 +86,6 @@ static unsigned char capsule_metadata[RESCUE_CAPSULE_METADATA_SIZE]
 /* The latest report is kept in memory so it can follow a storage selection. */
 static char boot_report[BOOT_REPORT_SIZE];
 static unsigned int boot_report_length;
-static char session_log[SESSION_LOG_SIZE];
-static unsigned int session_log_length;
-static unsigned int session_log_saved[3];
-static unsigned int session_log_sequence;
 static int last_report_save_result = BACKUP_NOT_TRIED;
 
 /* Per-slot results are displayed verbatim when a mandatory backup fails. */
@@ -111,48 +106,9 @@ static raw_write_packet_t write_packet __attribute__((aligned(64)));
 /* Read-only evidence is modeled in boot_chain.h. */
 static boot_chain_info_t boot_chain;
 
-/* Forward declarations for logging paths used by early fatal screens. */
-static int flush_session_log(unsigned int storage);
+/* Forward declarations for report paths used before diagnostics UI. */
 static int save_boot_chain_report(unsigned int storage);
 static void refresh_boot_chain_report(int save_to_storage);
-
-/* Append formatted text without allowing a report or log buffer to overflow. */
-static void append_text(char *buffer, unsigned int capacity,
-                        unsigned int *length, const char *format, ...)
-{
-    va_list arguments;
-    int written;
-
-    if (*length >= capacity - 1)
-        return;
-    va_start(arguments, format);
-    written = vsnprintf(buffer + *length, capacity - *length,
-                        format, arguments);
-    va_end(arguments);
-    if (written < 0)
-        return;
-    if ((unsigned int)written >= capacity - *length)
-        *length = capacity - 1;
-    else
-        *length += (unsigned int)written;
-}
-
-/* Record an ordered English diagnostic line for the selected-device log. */
-static void log_line(const char *format, ...)
-{
-    char line[256];
-    va_list arguments;
-    int written;
-
-    va_start(arguments, format);
-    written = vsnprintf(line, sizeof(line), format, arguments);
-    va_end(arguments);
-    if (written < 0)
-        return;
-    line[sizeof(line) - 1] = '\0';
-    append_text(session_log, sizeof(session_log), &session_log_length,
-                "[%04u] %s\n", ++session_log_sequence, line);
-}
 
 /* ------------------------------------------------------------------------- */
 /* Console lifecycle and UI                                                */
@@ -161,8 +117,8 @@ static void log_line(const char *format, ...)
 /* Perform a normal PS2 shutdown through the poweroff RPC service. */
 static void shutdown_console(void)
 {
-    log_line("Controlled power-off requested");
-    flush_session_log(selected_storage);
+    session_log_line("Controlled power-off requested");
+    session_log_flush(selected_storage);
     poweroffShutdown();
     SleepThread();
 }
@@ -172,8 +128,8 @@ static void restart_to_browser(void)
 {
     static char *browser_args[] = {"BootBrowser", NULL};
 
-    log_line("Restart to PS2 Browser requested");
-    flush_session_log(selected_storage);
+    session_log_line("Restart to PS2 Browser requested");
+    session_log_flush(selected_storage);
     scr_clear();
     scr_printf("Restarting to the PS2 Browser...\n");
     fileXioDevctl("hdd0:", HDIOC_DEV9OFF, NULL, 0, NULL, 0);
@@ -203,8 +159,8 @@ static void power_menu(void)
 /* Display a fatal diagnostic while allowing a controlled restart or shutdown. */
 static void fatal_screen(const char *message, int code)
 {
-    log_line("FATAL: %s (code %d)", message, code);
-    flush_session_log(selected_storage);
+    session_log_line("FATAL: %s (code %d)", message, code);
+    session_log_flush(selected_storage);
     for (;;) {
         u32 pressed;
 
@@ -241,64 +197,19 @@ static void wait_to_return(void)
 /* Parse FMCB's numeric or textual Skip_HDD setting from one configuration. */
 
 
-/* Append only the unsaved portion of this session to one selected device. */
-static int flush_session_log(unsigned int storage)
-{
-    char path[64];
-    iox_stat_t existing;
-    unsigned int start;
-    int attempts;
-    int truncate = 0;
-    int result;
-
-    if (storage >= STORAGE_TARGET_COUNT || session_log_length == 0)
-        return -1;
-    storage_path(path, sizeof(path), storage, "HDDMAN.LOG");
-    memset(&existing, 0, sizeof(existing));
-    if (fileXioGetStat(path, &existing) >= 0 &&
-        existing.size >= SESSION_LOG_ROTATE_SIZE) {
-        truncate = 1;
-        session_log_saved[storage] = 0;
-    }
-    start = session_log_saved[storage];
-    if (start > session_log_length)
-        start = 0;
-    if (start == session_log_length)
-        return 0;
-    attempts = storage == 2 ? 20 : 1;
-    do {
-        result = append_log_file(path, session_log + start,
-                                 (int)(session_log_length - start), truncate);
-        if (result >= 0)
-            break;
-        DelayThread(250000);
-    } while (--attempts > 0);
-    if (result == 0)
-        session_log_saved[storage] = session_log_length;
-    return result;
-}
-
-/* Save the latest read-only boot-chain report as a separate text file. */
+/* Persist the latest rendered report while retaining UI result state here. */
 static int save_boot_chain_report(unsigned int storage)
 {
-    char path[64];
-    int attempts;
+    int result;
 
     if (storage >= STORAGE_TARGET_COUNT || boot_report_length == 0)
         return -1;
-    storage_path(path, sizeof(path), storage, "BOOTCHAIN.TXT");
-    attempts = storage == 2 ? 20 : 1;
-    do {
-        last_report_save_result =
-            write_whole_file(path, boot_report, (int)boot_report_length);
-        if (last_report_save_result >= 0)
-            break;
-        DelayThread(250000);
-    } while (--attempts > 0);
-    return last_report_save_result;
+    result = boot_report_save(storage, boot_report, boot_report_length);
+    last_report_save_result = result;
+    return result;
 }
 
-/* Load a bounded MBR.XLF into EE memory; USB receives a short mount grace period. */
+/* Load a bounded MBR.XIN/MBR.XLF source; USB receives a short mount grace period. */
 static int load_payload_file(const char *path, unsigned char **data_out,
                              unsigned int *size_out, int retry_usb)
 {
@@ -371,10 +282,10 @@ static void choose_storage(void)
             choice = (choice + 1) % STORAGE_TARGET_COUNT;
         if (pressed & PAD_CROSS) {
             selected_storage = choice;
-            log_line("Selected storage device: %s",
+            session_log_line("Selected storage device: %s",
                      storage_targets[selected_storage].name);
             save_boot_chain_report(selected_storage);
-            flush_session_log(selected_storage);
+            session_log_flush(selected_storage);
             return;
         }
         if (pressed & PAD_TRIANGLE)
@@ -382,7 +293,7 @@ static void choose_storage(void)
     }
 }
 
-/* USB has no MagicGate hardware, so choose which memory card signs MBR.XLF. */
+/* USB has no MagicGate hardware, so choose which memory card signs the bootstrap source. */
 static int choose_signing_card(void)
 {
     unsigned int choice = 0;
@@ -489,7 +400,7 @@ static int write_and_verify_payload(const unsigned char *payload,
         memset(write_packet.data, 0, TRANSFER_BYTES);
         memcpy(write_packet.data, payload + offset, bytes);
         result = hdd_read_raw_sectors(start_sector + sector_offset, sectors,
-                                  sector_verify_buffer);
+                                      sector_verify_buffer);
         if (result < 0)
             return result;
         if (memcmp(write_packet.data, sector_verify_buffer,
@@ -505,23 +416,7 @@ static int write_and_verify_payload(const unsigned char *payload,
 /* Read-only boot-chain inspection                                           */
 /* ------------------------------------------------------------------------- */
 
-/* Map ROMVER's region character to the memory-card system folder family. */
-
-
-/* Inspect all known regional FMCB folders because cross-model cards can mix them. */
-
-
-/* Read the three locations from which FMCB configurations are commonly used. */
-
-
-/* Inspect __sysconf for FHDB and modern OSDMenu configuration evidence. */
-
-
-/* Inspect __system for the executable that a bootstrap is likely to launch. */
-
-
-/* Classify the probable family separately from the directly observed evidence. */
-
+/* Filesystem/config scanners live in boot_chain_ps2.c; main only coordinates them. */
 
 /* Collect active-payload and downstream evidence, then classify it. */
 static void analyze_boot_chain(boot_chain_info_t *info)
@@ -552,15 +447,15 @@ static void refresh_boot_chain_report(int save_to_storage)
         read_le32(header_buffer + APA_OSD_START_OFFSET),
         read_le32(header_buffer + APA_OSD_SIZE_OFFSET),
         APP_NAME, APP_VERSION);
-    log_line("Boot-chain scan: family='%s', confidence=%s, payload_read=%d, "
+    session_log_line("Boot-chain scan: family='%s', confidence=%s, payload_read=%d, "
              "kelf=%d", boot_chain.family, boot_chain.confidence,
              boot_chain.payload_read_result, boot_chain.payload_kelf_result);
     if (save_to_storage) {
         int result = save_boot_chain_report(selected_storage);
 
-        log_line("BOOTCHAIN.TXT save to %s returned %d",
+        session_log_line("BOOTCHAIN.TXT save to %s returned %d",
                  storage_targets[selected_storage].name, result);
-        flush_session_log(selected_storage);
+        session_log_flush(selected_storage);
     }
 }
 
@@ -792,7 +687,7 @@ static const char *save_rescue_capsule(void)
     int result;
 
     if ((start == 0) != (sectors == 0)) {
-        log_line("Rescue capsule rejected inconsistent pointer state");
+        session_log_line("Rescue capsule rejected inconsistent pointer state");
         return NULL;
     }
 
@@ -809,12 +704,12 @@ static const char *save_rescue_capsule(void)
     if (start != 0) {
         result = hdd_validate_payload_bounds(start, sectors);
         if (result < 0) {
-            log_line("Rescue capsule payload bounds failed: %d", result);
+            session_log_line("Rescue capsule payload bounds failed: %d", result);
             return NULL;
         }
         result = hdd_read_payload_image(start, sectors, &payload, &payload_bytes);
         if (result < 0) {
-            log_line("Rescue capsule payload read failed: %d", result);
+            session_log_line("Rescue capsule payload read failed: %d", result);
             return NULL;
         }
         info.flags |= RESCUE_CAPSULE_FLAG_HAS_PAYLOAD;
@@ -837,7 +732,7 @@ static const char *save_rescue_capsule(void)
         if (fileXioGetStat(saved_path, &existing) >= 0) {
             if (rescue_file_matches(saved_path, &info)) {
                 free(payload);
-                log_line("Existing rescue capsule already matches: %s",
+                session_log_line("Existing rescue capsule already matches: %s",
                          saved_path);
                 return saved_path;
             }
@@ -847,7 +742,7 @@ static const char *save_rescue_capsule(void)
         result = write_rescue_file(saved_path, capsule_metadata,
                                    header_buffer, payload, payload_bytes);
         if (result < 0) {
-            log_line("Rescue capsule write failed at %s: %d", saved_path,
+            session_log_line("Rescue capsule write failed at %s: %d", saved_path,
                      result);
             continue;
         }
@@ -859,12 +754,12 @@ static const char *save_rescue_capsule(void)
                    info.payload_sha256, 32) == 0) {
             free(verified_file);
             free(payload);
-            log_line("Rescue capsule saved and verified: %s (%u bytes)",
+            session_log_line("Rescue capsule saved and verified: %s (%u bytes)",
                      saved_path, verified_size);
             return saved_path;
         }
         free(verified_file);
-        log_line("Rescue capsule read-back verification failed: %s (%d)",
+        session_log_line("Rescue capsule read-back verification failed: %s (%d)",
                  saved_path, result);
     }
     free(payload);
@@ -964,12 +859,12 @@ static void backup_error_screen(void)
 {
     unsigned int i;
 
-    log_line("Mandatory header backup failed; no HDD write was performed");
+    session_log_line("Mandatory header backup failed; no HDD write was performed");
     for (i = 0; i < BACKUP_SLOT_COUNT; i++)
-        log_line("Backup slot %u path=%s read=%d write=%d verify=%d", i,
+        session_log_line("Backup slot %u path=%s read=%d write=%d verify=%d", i,
                  backup_diagnostic_path[i], backup_read_result[i],
                  backup_write_result[i], backup_verify_result[i]);
-    flush_session_log(selected_storage);
+    session_log_flush(selected_storage);
 
     scr_clear();
     scr_printf(APP_NAME " v%s\n\n", APP_VERSION);
@@ -995,10 +890,10 @@ static void backup_current_state(void)
     const char *rescue_path;
 
     rescue_path = save_rescue_capsule();
-    log_line("Standalone backup: header=%s rescue=%s",
+    session_log_line("Standalone backup: header=%s rescue=%s",
              backup_path != NULL ? backup_path : "FAILED",
              rescue_path != NULL ? rescue_path : "FAILED");
-    flush_session_log(selected_storage);
+    session_log_flush(selected_storage);
 
     scr_clear();
     scr_printf("Standalone backup result\n\n");
@@ -1053,7 +948,7 @@ static void disable_bootstrap(void)
     if (result < 0)
         fatal_screen("Disable verification failed. Keep the backup.", result);
 
-    log_line("Bootstrap pointer disabled and verified; header backup=%s; "
+    session_log_line("Bootstrap pointer disabled and verified; header backup=%s; "
              "rescue=%s", backup_path,
              rescue_path != NULL ? rescue_path : "unavailable");
     refresh_boot_chain_report(1);
@@ -1089,9 +984,9 @@ static void restore_legacy_pointer(void)
         scr_clear();
         scr_printf("The saved pointer is outside this __mbr area.\n");
         scr_printf("Validation code: %d\n", result);
-        log_line("Legacy restore rejected out-of-bounds pointer from %s: %d",
+        session_log_line("Legacy restore rejected out-of-bounds pointer from %s: %d",
                  backup_path, result);
-        flush_session_log(selected_storage);
+        session_log_flush(selected_storage);
         wait_to_return();
         return;
     }
@@ -1119,7 +1014,7 @@ static void restore_legacy_pointer(void)
     if (result < 0)
         fatal_screen("Restore verification failed.", result);
 
-    log_line("Legacy pointer-only restore completed from %s; safety=%s",
+    session_log_line("Legacy pointer-only restore completed from %s; safety=%s",
              backup_path, safety_backup);
     refresh_boot_chain_report(1);
 
@@ -1151,8 +1046,8 @@ static void restore_rescue_capsule(void)
         scr_printf("A rescue capsule exists but is not safe to restore.\n");
         scr_printf("Validation code: %d\n\n", result);
         scr_printf("It was not replaced by a pointer-only restore.\n");
-        log_line("Rescue capsule load rejected with code %d", result);
-        flush_session_log(selected_storage);
+        session_log_line("Rescue capsule load rejected with code %d", result);
+        session_log_flush(selected_storage);
         wait_to_return();
         return;
     }
@@ -1207,7 +1102,7 @@ static void restore_rescue_capsule(void)
     if (result < 0)
         fatal_screen("Rescue pointer read-back verification failed.", result);
 
-    log_line("Full rescue restored from %s (%u bytes); safety backup=%s",
+    session_log_line("Full rescue restored from %s (%u bytes); safety backup=%s",
              rescue_path, file_size, safety_backup);
     refresh_boot_chain_report(1);
     scr_clear();
@@ -1246,8 +1141,8 @@ static void install_bootstrap(void)
     result = load_payload_file(source_path, &payload, &payload_size,
                                selected_storage == 2);
     if (result < 0) {
-        log_line("MBR.XLF load failed from %s: %d", source_path, result);
-        flush_session_log(selected_storage);
+        session_log_line("MBR.XLF load failed from %s: %d", source_path, result);
+        session_log_flush(selected_storage);
         scr_clear();
         scr_printf("Could not load %s\nCode: %d\n", source_path, result);
         wait_to_return();
@@ -1256,8 +1151,8 @@ static void install_bootstrap(void)
     result = kelf_validate_layout(payload, payload_size);
     if (result < 0) {
         free(payload);
-        log_line("MBR.XLF structural validation failed: %d", result);
-        flush_session_log(selected_storage);
+        session_log_line("MBR.XLF structural validation failed: %d", result);
+        session_log_flush(selected_storage);
         scr_clear();
         scr_printf("MBR.XLF is not a structurally valid KELF.\n");
         scr_printf("Validation code: %d\n", result);
@@ -1272,11 +1167,11 @@ static void install_bootstrap(void)
         mbr_stat.size <= MBR_PAYLOAD_START ||
         sectors > mbr_stat.size - MBR_PAYLOAD_START) {
         free(payload);
-        log_line("MBR.XLF capacity validation failed: getstat=%d, start=0x%08x, "
+        session_log_line("MBR.XLF capacity validation failed: getstat=%d, start=0x%08x, "
                  "size=0x%08x, sectors=%u", result,
                  (unsigned int)mbr_stat.private_5,
                  (unsigned int)mbr_stat.size, sectors);
-        flush_session_log(selected_storage);
+        session_log_flush(selected_storage);
         scr_clear();
         scr_printf("The __mbr reserved payload area is not valid.\n");
         scr_printf("getstat:%d start:0x%08x size:0x%08x\n",
@@ -1304,8 +1199,8 @@ static void install_bootstrap(void)
     scr_printf("Signing MBR.XLF through mc%d...\n", signing_port);
     if (SecrDownloadFile(2 + signing_port, 0, payload) == NULL) {
         free(payload);
-        log_line("MagicGate signing failed through mc%d", signing_port);
-        flush_session_log(selected_storage);
+        session_log_line("MagicGate signing failed through mc%d", signing_port);
+        session_log_flush(selected_storage);
         scr_clear();
         scr_printf("MagicGate signing failed through mc%d.\n", signing_port);
         scr_printf("HDD was NOT modified. Check the PS2 memory card.\n");
@@ -1348,11 +1243,11 @@ static void install_bootstrap(void)
     if (result < 0)
         fatal_screen("Installed pointer verification failed.", result);
 
-    log_line("Bootstrap installed and verified at sector 0x%08x (%u bytes, "
+    session_log_line("Bootstrap installed and verified at sector 0x%08x (%u bytes, "
              "%u sectors)", MBR_PAYLOAD_START, payload_size, sectors);
     refresh_boot_chain_report(1);
     installed_rescue = save_rescue_capsule();
-    flush_session_log(selected_storage);
+    session_log_flush(selected_storage);
 
     scr_clear();
     scr_printf("Bootstrap installed, enabled, and verified.\n\n");
@@ -1407,9 +1302,9 @@ int main(int argc, char **argv)
     if (is_hybrid_gpt(header_buffer))
         fatal_screen("Hybrid APA/GPT layout is not supported.", -102);
 
-    log_line("Session started: %s v%s; launch storage=%s", APP_NAME,
+    session_log_line("Session started: %s v%s; launch storage=%s", APP_NAME,
              APP_VERSION, storage_targets[selected_storage].name);
-    log_line("APA header valid; osdStart=0x%08x; osdSize=0x%08x",
+    session_log_line("APA header valid; osdStart=0x%08x; osdSize=0x%08x",
              (unsigned int)read_le32(header_buffer + APA_OSD_START_OFFSET),
              (unsigned int)read_le32(header_buffer + APA_OSD_SIZE_OFFSET));
     refresh_boot_chain_report(1);
