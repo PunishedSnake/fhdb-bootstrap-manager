@@ -8,7 +8,7 @@ It began after a real console got trapped in a post-uninstall FHDB boot loop: FH
 
 `0.3.1` **Torii** is the current stable release. It keeps the hardware-proven normal pointer workflow, full rescue capsules, boot-chain diagnostics, guarded MagicGate installation, payload-first/pointer-last writes, and Sony-style `MBR.XIN` preference with `MBR.XLF` compatibility.
 
-`0.4.x` **Michishirube** is the active development line. Its purpose is to turn the project into a modular recovery toolkit while preserving Torii's normal write semantics. Michishirube now includes a portable forensic APA graph engine, degraded read-only reconstruction, candidate-map inspection, guarded multi-header topology repair, hierarchical UI, and controller activity indication.
+`0.4.x` **Michishirube** is the active development line. Its purpose is to turn the project into a modular recovery toolkit while preserving Torii's normal write semantics. Michishirube now includes a portable forensic APA graph engine, degraded read-only reconstruction, candidate-map inspection, guarded multi-header topology repair, hierarchical UI, controller activity indication, guarded physical-HDD fault injection for validation, and startup-phase telemetry.
 
 ## What the manager understands
 
@@ -29,7 +29,7 @@ The development branch is explicitly layered:
 - PS2 device/service adapters — `hdd_read`, normal `hdd_write`, exceptional `hdd_repair_ps2`, multi-header `hdd_forensic_repair_ps2`, backup/rescue/forensic snapshot storage, MagicGate, diagnostics acquisition and persistence;
 - application controllers — `bootstrap_controller_ps2`, `diagnostics_controller_ps2`, `repair_controller_ps2`, `forensic_controller_ps2`;
 - shared navigation/presentation/lifecycle — `manager_menu_ps2`, `app_ui_ps2`, and `platform`;
-- `main.c` — startup, normal APA admission, initial diagnostics, and hand-off to the manager dashboard.
+- `main.c` — startup, normal APA admission, lightweight pending diagnostics state, and hand-off to the manager dashboard. Full PFS/MC boot-chain diagnostics are deferred until requested so they do not block ordinary startup.
 
 Portable recovery code decides what evidence means. PS2 adapters perform narrow I/O. Controllers authorize operations and present them. The composition root does not contain disk algorithms or raw write loops.
 
@@ -59,6 +59,8 @@ Full ownership and trust boundaries are documented in [`docs/ARCHITECTURE.md`](d
 - Saves every touched original header in a SHA-256-protected `HDDMETA*.BIN` snapshot before topology repair.
 - Commits non-master headers first and the LBA-0 master last, with flush/read-back verification and a mandatory restart.
 - Tracks one/two-bit link changes explicitly; stale checksum plus independent graph evidence can corroborate an exact two-bit repair.
+- Includes `tools/hardware_fault_injector.py`, a deliberately gated host test utility for controlled master/link corruption on sacrificial or fully backed-up HDDs.
+- Records per-phase pre-dashboard startup timing in `HDDMAN.LOG`.
 
 ## What it deliberately does not do
 
@@ -96,7 +98,7 @@ Contains backup/disable, restore, and sign/install operations. Actions that conf
 
 ### Diagnostics
 
-Runs boot-chain inspection and saves reports through the selected external storage target.
+Runs boot-chain inspection and saves reports through the selected external storage target. In Michishirube development builds this heavy PFS/MC evidence pass is deliberately lazy rather than part of ordinary startup.
 
 ### Recovery
 
@@ -270,6 +272,7 @@ Portable tests do not require PS2SDK:
 
 ```sh
 make test-host
+python3 tools/hardware_fault_injector.py selftest
 ```
 
 The host suite includes:
@@ -282,7 +285,9 @@ The host suite includes:
 - bootstrap transaction ordering/failure injection;
 - rescue validation;
 - **30 deterministic sparse HDD fixtures** for parser/bounds/KELF and mounted repair policy;
-- byte-level mutation tests for normal payload and pointer ordering.
+- **9 sparse 512 MiB raw-HDD forensic E2E fixtures** using production `apa_forensic_scan()` at realistic APA grid LBAs;
+- byte-level mutation tests for normal payload and pointer ordering;
+- guarded hardware fault-injector self-test for one-bit master, one-bit link, exact two-bit link, verified write, and exact restoration.
 
 For the PS2 ELF, use PS2DEV/PS2SDK or the pinned CI container:
 
@@ -297,32 +302,36 @@ Generated binaries and synthetic HDD images are not tracked in the source tree.
 
 The original pointer-disable workflow eliminated a real post-uninstall FHDB boot loop on PlayStation 2 hardware and Torii preserves that normal write behavior.
 
-The following Michishirube additions are **software/CI proven but not yet hardware-proven**:
+Michishirube now also has an initial healthy-disk hardware pass with mutually consistent `HDDMBR.BIN`, `HDDRESCUE.BIN`, `BOOTCHAIN.TXT`, and `HDDMAN.LOG` evidence. See [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md).
 
-- exceptional raw sectors 0-1 master repair;
-- raw forensic scanning across a full physical HDD;
+Controlled destructive validation must use [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md). The fault injector defaults to dry-run and requires a fresh master SHA plus extra confirmation before a physical-drive write.
+
+The following Michishirube additions remain **not yet fully hardware-proven**:
+
+- exceptional raw sectors 0-1 master repair after deliberately injected corruption;
+- raw forensic scanning across the test HDD compared with a known host-side topology;
 - multi-header topology repair and master-last commit behavior;
-- `HDDMETA` snapshot/write/read-back behavior on actual memory cards/USB;
-- ANALOG-lamp activity switching on original and third-party controllers.
+- `HDDMETA` snapshot/write/read-back behavior during destructive recovery;
+- ANALOG-lamp activity switching across original and third-party controllers;
+- the fast-start/timing change that defers full PFS/MC boot-chain diagnostics;
+- controlled interruption/power-loss boundaries.
 
 Host tests cannot prove DEV9/ATA timing, DMA/fileXio behavior, cache durability, APA journaling, adapter quirks, or exact physical power-loss effects. Physical-HDD validation remains the final gate before these paths can be treated as release-ready.
 
 ## Project documentation
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module ownership, trust ladder, normal and recovery write invariants.
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames and engineering milestones.
-- [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — stable rescue capsule format.
-- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — synthetic raw-HDD states, mutation coverage and repair matrix.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, test and review rules for HDD-touching changes.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames, scope boundaries, and engineering milestones.
+- [`docs/FORENSIC_RECOVERY.md`](docs/FORENSIC_RECOVERY.md) — forensic evidence model, shadow maps, `HDDMETA`, confidence and write authorization.
+- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — 30 mounted/deterministic raw images plus 9 full 512 MiB forensic regressions.
+- [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md) — current real-console evidence and hardware gaps.
+- [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded controlled-corruption procedure for sacrificial/backed-up HDDs.
+- [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — full rescue capsule format and restore rules.
+- [`docs/KELF_FORMAT.md`](docs/KELF_FORMAT.md) — KELF validation/signing assumptions.
+- [`docs/BOOT_REPORT.md`](docs/BOOT_REPORT.md) — boot-chain evidence and report semantics.
 
-## License
+## Current development warning
 
-The application source is released under the MIT License. Embedded PS2SDK modules retain the Academic Free License 2.0 terms included in `PS2SDK_LICENSE.txt`.
+`0.4.0-dev` is a hardware-validation build, not a stable release. The normal Torii-compatible write paths retain their existing contract, but Michishirube's exceptional raw recovery paths remain experimental until the destructive validation matrix is complete.
 
-## Acknowledgements
-
-- PS2DEV and PS2SDK contributors for APA, PFS, USB, security and console services.
-- Free McBoot/FHDB contributors for the original signing and MBR installation workflow.
-- OSDMenu, HDD-OSD and PSBBN preservation contributors whose documented layouts make evidence-based identification possible.
-- **Berion (PSX-Place)** for identifying the Sony-style `MBR.XIN` naming and historical `MBR.XLF` installer convention.
-- Hifu Himejima for reproducing the original failure, preserving the disk header, testing on real hardware, and being that one gloriously unhinged developer who decided to correct this great injustice.
+Kitsune ahead. Bring backups.
