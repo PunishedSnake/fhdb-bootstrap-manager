@@ -112,12 +112,22 @@ static int apply_header_repair(unsigned char header[APA_HEADER_SIZE],
 int repair_controller_startup(unsigned char header[APA_HEADER_SIZE],
                               int hdd_status)
 {
+    const uint32_t header_issue_mask =
+        APA_REPAIR_ISSUE_CHECKSUM |
+        APA_REPAIR_ISSUE_APA_MAGIC |
+        APA_REPAIR_ISSUE_MBR_ID |
+        APA_REPAIR_ISSUE_SONY_MAGIC |
+        APA_REPAIR_ISSUE_MASTER_START |
+        APA_REPAIR_ISSUE_MASTER_TYPE |
+        APA_REPAIR_ISSUE_MBR_VERSION;
     apa_repair_plan_t plan;
 
     if (apa_repair_analyze(header, &plan) < 0)
         return REPAIR_CONTROLLER_BLOCKED;
 
-    if (is_standard_apa_header(header) && !plan.header_patch_safe)
+    /* A pointer-only anomaly belongs to the established backup+SETOSDMBR
+       workflow after normal APA startup, not to raw sector-zero recovery. */
+    if ((plan.issues & header_issue_mask) == 0 && plan.blockers == 0)
         return REPAIR_CONTROLLER_NONE;
 
     if (!plan.header_patch_safe) {
