@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o app_ui_ps2.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o platform.o storage.o header_backup.o repair_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o apa_forensic.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o manager_menu_ps2.o app_ui_ps2.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o forensic_controller_ps2.o platform.o storage.o header_backup.o repair_snapshot.o forensic_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o apa_forensic.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o hdd_forensic_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen -Wl,--wrap=fileXioDevctl
@@ -87,10 +87,10 @@ clean:
 	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TESTS)
 	rm -rf $(HOST_HDD_FIXTURE_DIR)
 
-# Keep PS2 objects at the repository root. The legacy PS2SDK sample rules keep
-# SDK include directories in EE_INCS, so custom rules for src/ must pass both
-# EE_CFLAGS and EE_INCS just like the stock compilation rule does.
 main.o: src/main.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+manager_menu_ps2.o: src/manager_menu_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 app_ui_ps2.o: src/app_ui_ps2.c
@@ -100,6 +100,9 @@ bootstrap_controller_ps2.o: src/bootstrap_controller_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 diagnostics_controller_ps2.o: src/diagnostics_controller_ps2.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+forensic_controller_ps2.o: src/forensic_controller_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 platform.o: src/platform.c
@@ -112,6 +115,9 @@ header_backup.o: src/header_backup.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 repair_snapshot.o: src/repair_snapshot.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+forensic_snapshot.o: src/forensic_snapshot.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 rescue_image.o: src/rescue_image.c
@@ -148,6 +154,9 @@ hdd_write.o: src/hdd_write.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 hdd_repair_ps2.o: src/hdd_repair_ps2.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+hdd_forensic_repair_ps2.o: src/hdd_forensic_repair_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 repair_controller_ps2.o: src/repair_controller_ps2.c
@@ -204,8 +213,6 @@ mbr_compat.o: src/mbr_compat.c
 %_irx.c:
 	$(PS2SDK)/bin/bin2c $(PS2SDK)/iop/irx/$*.irx $@ $*_irx
 
-# Only PS2 build goals need the SDK's global rules. This makes `make test-host`
-# and `make clean` useful on an ordinary development machine or CI runner.
 PS2_GOALS := $(filter-out test-host clean,$(MAKECMDGOALS))
 ifeq ($(strip $(MAKECMDGOALS)),)
 include $(PS2SDK)/samples/Makefile.pref
