@@ -14,7 +14,7 @@ The built-in PS2SDK MSX glyph data is converted once into a 128x64 RGBA atlas an
 
 Shared menu navigation now calls `gs_ui_render_menu()` directly, so the manager dashboard and its Bootstrap, Diagnostics, Recovery, Backup & Storage, System, storage-picker and signing-card menus all use the same GS frontend.
 
-Existing controller screens that still build text incrementally with `scr_clear()` / `scr_printf()` are routed through `gs_debug_compat_ps2`. That compatibility object provides those symbols and sends their accumulated text to the GS renderer, so source migration can proceed incrementally without allowing libdebug to draw a second UI into the framebuffer.
+Existing controller screens that still build text incrementally with `scr_clear()` / `scr_printf()` are routed through `gs_debug_compat_ps2`. That compatibility object provides those symbols and sends their accumulated text to the GS renderer, so source migration can proceed incrementally without allowing libdebug to draw a second UI into the framebuffer. The `scr_*` names in those sources are therefore compatibility calls, not evidence that libdebug still owns the screen.
 
 `-ldebug` remains linked for the PS2SDK MSX font asset/toolchain compatibility; it is no longer the normal application renderer.
 
