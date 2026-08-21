@@ -949,7 +949,7 @@ static void restore_rescue_capsule(void)
     scr_clear();
     scr_printf("Restoring and verifying rescue payload...\n");
     result = hdd_write_payload_verified(payload, info.payload_bytes,
-                                      info.payload_start);
+                                        info.payload_start);
     free(file_data);
     if (result < 0)
         fatal_screen("Rescue payload verification failed; pointer remains disabled.",
@@ -958,7 +958,8 @@ static void restore_rescue_capsule(void)
     if (result < 0)
         fatal_screen("Rescue payload verified, but pointer restore failed.",
                      result);
-    result = hdd_write_verify_osd_mbr(header_buffer, info.payload_start, info.payload_sectors);
+    result = hdd_write_verify_osd_mbr(
+        header_buffer, info.payload_start, info.payload_sectors);
     if (result < 0)
         fatal_screen("Rescue pointer read-back verification failed.", result);
 

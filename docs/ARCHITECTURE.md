@@ -6,11 +6,12 @@ PS2 HDD Bootstrap Manager is intentionally conservative: it is allowed to be slo
 
 The `0.4.0-dev` **Michishirube** line is progressively converting the former monolithic EE application into explicit modules. The split is intentionally mechanical first: code moves behind headers without simultaneously changing storage semantics.
 
-- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install workflows, write-capable APA transport, and guarded pointer/write ordering that has not yet been extracted.
+- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install workflows, confirmation/safety policy, and explicit payload-first/pointer-last transaction ordering.
 - `src/platform.c` — IOP reset, embedded IRX startup, pad initialization, button-edge input, and confirmation-chord input.
 - `src/storage.c` — storage target definitions, encapsulated selected-target state, launch-device selection, ROMVER access, and generic fileXio helpers. Callers read/change the selection through validated accessors instead of mutating module state directly.
 - `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
 - `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.
+- `src/hdd_write.c` — PS2-only write-capable transport: raw `HDIOC_WRITESECTOR` packets, write-side DMA/read-back buffers, flushes, byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back verification. It owns mechanics only, not backup/confirmation/signing or transaction ordering.
 - `src/boot_payload.c` — PS2SDK-free conversion of a sector-aligned active payload into byte counts, sector-image SHA-256, KELF structural result/size, and unpadded-KELF SHA-256.
 - `src/boot_payload_ps2.c` — narrow PS2 acquisition adapter that combines `hdd_read` with portable `boot_payload` fingerprinting and fills only payload-derived boot-chain evidence.
 - `src/boot_chain.c` — PS2SDK-free boot-chain evidence model, CNF parsing, ROMVER mapping, target parsing, and family-classification policy.
@@ -38,7 +39,7 @@ Moving code between translation units is easy; proving that initialization, DMA-
 4. complete a warning-clean R5900 release build with the pinned PS2DEV toolchain;
 5. only then consider API cleanup, state encapsulation, or additional optimization.
 
-Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split three ways: portable header logic lives in `apa.c`, read-only raw sector transport and live payload bounds live in `hdd_read.c`, and the write-capable transport/pointer-update transaction remains in `main.c` until a later gated step. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.
+Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split across portable header logic in `apa.c`, read-only raw transport/bounds in `hdd_read.c`, and write-capable transport/read-back mechanics in `hdd_write.c`. The higher-level rescue/install transaction policy remains visibly sequenced in `main.c`, so moving the transport does not hide backup, confirmation, signing, or payload-first/pointer-last ordering. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.
 
 ## Non-negotiable write invariants
 
@@ -60,14 +61,11 @@ An optimization or refactor that changes any of these semantics is a behavior ch
 
 Read-only `HDIOC_READSECTOR` transport and active-payload bounds checks now live in `hdd_read.c`. The module uses its own aligned two-sector read buffer and can only return bytes or validation errors; it cannot flush, write sectors, or update `osdStart`/`osdSize`.
 
-The following operations deliberately remain in the not-yet-extracted write-capable half in `main.c`:
+Write-capable transport is isolated in `hdd_write.c`: it owns the raw write packet, aligned verification buffers, `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, flushes, payload byte comparison, and final APA/pointer read-back. Its interface intentionally exposes those operations as separate steps rather than a single "install" call.
 
-- `HDIOC_WRITESECTOR` packets and the aligned write/verification buffers used by install/restore;
-- `HDIOC_SETOSDMBR` pointer changes and write-cache flushes;
-- post-write sector comparison and final APA-header read-back;
-- rescue/install transaction ordering, including payload-first/pointer-last activation.
+The safety policy still lives in the higher-level workflows in `main.c`: current-header backup, rescue validation, user confirmation, MagicGate signing, and the explicit payload-write/verify before pointer-update/verify sequence. This separation makes the dangerous I/O implementation modular without making transaction order implicit.
 
-Keeping the read boundary separate from the write transaction lets diagnostics reuse one raw-read implementation without turning a parser refactor into an unreviewed rewrite of disk-changing behavior.
+Keeping read-only `hdd_read.c` separate from write-capable `hdd_write.c` also prevents diagnostics from acquiring a write interface merely because both paths need raw-sector read-back.
 
 ## Boot-chain reporting boundary
 

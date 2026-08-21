@@ -25,6 +25,7 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - Extracted complete read-only evidence-scan orchestration into `boot_diagnostics_ps2.c` / `boot_diagnostics_ps2.h`; `main.c` no longer initializes/scans/classifies boot-chain evidence itself.
 - Extracted latest-report buffer/length/save-result state into `boot_report_session.c` / `boot_report_session.h`, preserving save-on-storage-change behavior while keeping rendering and PS2 device persistence in their existing modules.
 - Kept only diagnostics timing/presentation and the short diagnostics screen in `main.c`.
+- Extracted write-capable HDD transport into PS2-only `hdd_write.c` / `hdd_write.h`: raw sector write packets, write-side DMA/read-back buffers, flushes, payload byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back now live behind explicit primitives.
 
 ### Tests
 
@@ -41,10 +42,10 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 ### Safety
 
 - Read-only `HDIOC_READSECTOR`, live payload bounds checks, and active-image acquisition moved behind `hdd_read.c`; the interface exposes no write, flush, or pointer-update operation.
-- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flush/read-back verification, rescue restore, MagicGate signing, and payload-first/pointer-last ordering remain in `main.c` with their Torii semantics unchanged.
+- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flushes, payload comparison, and pointer read-back moved mechanically into `hdd_write.c`; historical numeric diagnostics and the I/O sequence inside those primitives are unchanged. Rescue/install policy, mandatory backup/confirmation, MagicGate signing, and payload-first/pointer-last ordering remain explicit in `main.c`.
 - The new PS2 boot-chain scanner is read-only: it reads memory-card files and mounts PFS partitions with `FIO_MT_RDONLY` but owns no disk-changing operation.
 - KELF modularization changes only structural parsing. MagicGate signing remains PS2-specific and no encryption, signing, payload write, or activation behavior is moved into the portable module.
-- The report renderer cannot access storage. `boot_report_ps2` and `session_log` own only diagnostic-file persistence; active payload acquisition remains behind the read-only `boot_payload_ps2`/`hdd_read` boundary, while `main.c` still owns diagnostics orchestration/UI and every disk-changing transaction.
+- The report renderer cannot access storage. `boot_report_ps2` and `session_log` own only diagnostic-file persistence; active payload acquisition remains behind the read-only `boot_payload_ps2`/`hdd_read` boundary. `main.c` retains diagnostics presentation/timing and higher-level disk-changing transaction policy, while raw write mechanics are isolated in `hdd_write.c`.
 
 ## [0.3.1] - 2026-08-21
 

@@ -23,7 +23,8 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 - [x] `storage` — storage targets, encapsulated selected-target state, launch-device selection, ROMVER/file helpers, exact/bounded reads, and generic writes.
 - [x] `apa` portable core — endian parsing, checksum validation, normal `__mbr` recognition, hybrid-GPT detection, and same-disk header matching; covered by synthetic host tests.
 - [x] `hdd_read` read-only transport — `HDIOC_READSECTOR`, the conservative aligned two-sector read buffer, live `hdd0:__mbr` payload bounds checks, and sector-aligned active-payload acquisition are isolated behind a PS2-only interface that exposes no write, flush, or pointer-update operation.
-- [ ] `apa` write-capable transport half — `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, flush/read-back verification, write-side DMA buffers, and transaction ordering remain in `main.c` until the read-only boundary has wider regression and hardware coverage.
+- [x] `hdd_write` write-capable transport — `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write-side DMA/read-back buffers, flushes, payload byte comparison, and final pointer verification are isolated behind a PS2-only interface.
+- [ ] write transaction policy — backup/confirmation/signing plus payload-first/pointer-last ordering remain explicit in `main.c` until the transport extraction has hardware coverage.
 - [x] `boot_chain` portable core — shared evidence model, CNF parsing, `Skip_HDD`, ROMVER region mapping, OSDMenu/FHDB target parsing, and deterministic family classification.
 - [x] `boot_chain` PS2 read-only scanner — memory-card HDD modules, FMCB settings, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection.
 - [x] `kelf` portable core — endian-safe KELF structural validation and recovery of the unpadded file size from a sector-aligned HDD image, with named stable result codes.
@@ -66,7 +67,7 @@ Portable CI now exercises:
 
 - continue replacing project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly; KELF and read-only payload-bound results are now named without changing their historical numeric values;
 - reduce the remaining diagnostics presentation/UI state without moving classification policy, evidence acquisition, or storage operations back into `main.c`;
-- only after the read-only boundary and diagnostics split have enough regression/hardware confidence, extract the write-capable APA transport without changing payload-first/pointer-last semantics;
+- hardware-validate the new `hdd_write` transport boundary before moving higher-level rescue/install transaction policy; payload-first/pointer-last ordering remains an explicit invariant;
 - add build-size/performance reporting so optimization work is measurable rather than flag-driven;
 - establish a hardware validation matrix across FAT console revisions, storage adapters/HDDs, memory-card layouts, and launch devices;
 - make classification evidence more data-driven so supporting another known environment does not require threading another special case through the UI.
