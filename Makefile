@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o platform.o storage.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
@@ -33,6 +33,12 @@ clean:
 # SDK include directories in EE_INCS, so custom rules for src/ must pass both
 # EE_CFLAGS and EE_INCS just like the stock compilation rule does.
 main.o: src/main.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+platform.o: src/platform.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+storage.o: src/storage.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 sha256.o: src/sha256.c
