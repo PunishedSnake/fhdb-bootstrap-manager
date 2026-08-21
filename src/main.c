@@ -97,13 +97,18 @@ int main(int argc, char **argv)
     total_start = GetTimerSystemTime();
     select_launch_storage(argc, argv);
 
-    /* The GS frontend owns video mode and framebuffer state for the complete
-       application. libdebug remains linked only for its built-in MSX glyph
-       asset and as a toolchain dependency; init_scr() is deliberately not
-       called during normal execution. */
+    /* Hardware validation showed that libdebug's CRT/read-circuit bootstrap is
+       reliable on the physical console while a standalone 640x448 graph setup
+       produced a black screen. Keep init_scr() only for proven video hardware
+       initialization. Linker wrappers route all subsequent scr_clear/printf
+       calls into gs_ui_ps2, so libdebug does not render the application UI. */
+    init_scr();
     result = gs_ui_initialize();
     if (result < 0) {
-        printf("GS UI initialization failed: %d\n", result);
+        /* The hardware bootstrap is alive here, so use the real debug renderer
+           only as the last-resort initialization failure path. */
+        __real_scr_clear();
+        __real_scr_printf("GS UI initialization failed: %d\n", result);
         SleepThread();
     }
     scr_clear();
