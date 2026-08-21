@@ -69,6 +69,14 @@ jobs:
           for index, script in enumerate(scripts):
               path = Path(f'/tmp/hdd-write-step-{index}.sh')
               path.write_text('set -e\n' + script)
+
+          guard = Path('/tmp/hdd-write-step-0.sh')
+          text = guard.read_text()
+          old = "'write_and_verify_payload(', 'set_osd_mbr(', 'verify_values('):"
+          new = "'static int write_and_verify_payload(', 'static int set_osd_mbr(', 'static int verify_values('):"
+          if old not in text:
+              raise SystemExit('legacy-helper guard pattern not found')
+          guard.write_text(text.replace(old, new, 1))
           PY
 
           echo '==> extract transport'
