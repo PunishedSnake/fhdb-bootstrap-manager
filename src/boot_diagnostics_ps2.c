@@ -6,6 +6,7 @@
 #include "boot_chain_ps2.h"
 #include "boot_diagnostics_ps2.h"
 #include "boot_payload_ps2.h"
+#include "disk_status_ps2.h"
 #include "storage.h"
 
 void boot_diagnostics_scan(boot_chain_info_t *info,
@@ -20,13 +21,44 @@ void boot_diagnostics_scan(boot_chain_info_t *info,
     info->skip_hdd[1] = -1;
     info->skip_hdd[2] = -1;
 
+    disk_status_begin_at("Boot-chain diagnostics",
+                         "Reading console identity",
+                         "rom0:ROMVER / expected system folder");
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 0, 6);
     read_romver(info->romver);
     expected_system_folder(info->romver, info->expected_system_folder,
                            sizeof(info->expected_system_folder));
+
+    disk_status_phase_at("Inspecting active bootstrap payload",
+                         start != 0 && sectors != 0
+                             ? "Reserved __mbr payload selected by osdStart/osdSize"
+                             : "APA master pointer is disabled; no active payload");
+    disk_status_io(DISK_STATUS_SCAN, start, sectors, 1, 6);
     scan_active_payload_evidence(info, start, sectors);
+
+    disk_status_phase_at("Checking FMCB Skip_HDD settings",
+                         "Memory cards / FREEMCB.CNF");
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 2, 6);
     scan_skip_hdd_settings(info);
+
+    disk_status_phase_at("Scanning memory-card boot files",
+                         "mc0:/ and mc1:/ system/boot locations");
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 3, 6);
     scan_memory_card_boot_files(info);
+
+    disk_status_phase_at("Inspecting __sysconf boot configuration",
+                         "hdd0:__sysconf / OSDMBR.CNF and related files");
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 4, 6);
     scan_sysconf_partition(info);
+
+    disk_status_phase_at("Inspecting __system HDD boot modules",
+                         "hdd0:__system / HDD OSD, FHDB and PSBBN evidence");
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 5, 6);
     scan_system_partition(info);
+
+    disk_status_phase_at("Classifying collected boot-chain evidence",
+                         "In-memory evidence map; no HDD write");
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 6, 6);
     classify_boot_chain(info, start, sectors);
+    disk_status_end();
 }
