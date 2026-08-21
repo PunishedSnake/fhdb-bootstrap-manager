@@ -64,20 +64,28 @@ jobs:
                   continue
               i += 1
 
-          if len(scripts) != 5:
-              raise SystemExit(f'expected 5 migration run blocks, found {len(scripts)}')
+          if len(scripts) != 3:
+              raise SystemExit(f'expected 3 block migration scripts, found {len(scripts)}')
           for index, script in enumerate(scripts):
               path = Path(f'/tmp/hdd-write-step-{index}.sh')
               path.write_text('set -e\n' + script)
           PY
-          for script in /tmp/hdd-write-step-*.sh; do
-            echo "==> $script"
-            bash "$script"
-          done
+
+          echo '==> extract transport'
+          bash /tmp/hdd-write-step-0.sh
+          echo '==> verify write-order invariants'
+          bash /tmp/hdd-write-step-1.sh
+          echo '==> portable regression suite'
+          make test-host
+          echo '==> R5900 release build'
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
+            sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+          echo '==> commit verified extraction'
+          bash /tmp/hdd-write-step-2.sh
 
       - name: Restore normal CI workflow
         run: |
-          git checkout HEAD~2 -- .github/workflows/ci.yml
+          git checkout 3254738cc72e5eb2dc2a39cbab22d31047ca6ecb -- .github/workflows/ci.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/workflows/ci.yml
