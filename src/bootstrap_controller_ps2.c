@@ -7,6 +7,7 @@
  */
 
 #include <debug.h>
+#include <libpad.h>
 
 #include <stdlib.h>
 
@@ -20,6 +21,7 @@
 #include "hdd_limits.h"
 #include "hdd_read.h"
 #include "header_backup.h"
+#include "platform.h"
 #include "rescue_storage.h"
 #include "session_log.h"
 #include "storage.h"
