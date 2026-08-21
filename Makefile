@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o platform.o storage.o apa.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o platform.o storage.o apa.o boot_chain.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
@@ -13,7 +13,9 @@ IRX_FILES = iomanX.irx fileXio.irx secrman.irx freesio2.irx freepad.irx \
 EE_OBJS += $(IRX_FILES:.irx=_irx.o)
 
 HOST_CC ?= cc
-HOST_TEST = tests/test_formats
+HOST_FORMAT_TEST = tests/test_formats
+HOST_BOOT_CHAIN_TEST = tests/test_boot_chain
+HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_BOOT_CHAIN_TEST)
 
 all: $(EE_BIN)
 
@@ -23,11 +25,15 @@ release: $(EE_BIN)
 # Portable tests deliberately work on a machine that has no PS2SDK installed.
 test-host:
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
-		tests/test_formats.c src/apa.c src/sha256.c src/capsule_format.c -o $(HOST_TEST)
-	./$(HOST_TEST)
+		tests/test_formats.c src/apa.c src/sha256.c src/capsule_format.c \
+		-o $(HOST_FORMAT_TEST)
+	./$(HOST_FORMAT_TEST)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_boot_chain.c src/boot_chain.c -o $(HOST_BOOT_CHAIN_TEST)
+	./$(HOST_BOOT_CHAIN_TEST)
 
 clean:
-	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TEST)
+	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TESTS)
 
 # Keep PS2 objects at the repository root. The legacy PS2SDK sample rules keep
 # SDK include directories in EE_INCS, so custom rules for src/ must pass both
@@ -42,6 +48,9 @@ storage.o: src/storage.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 apa.o: src/apa.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+boot_chain.o: src/boot_chain.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 sha256.o: src/sha256.c
