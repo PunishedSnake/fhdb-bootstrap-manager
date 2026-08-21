@@ -16,6 +16,10 @@ typedef struct {
     unsigned int count;
 } mock_disk_t;
 
+typedef struct {
+    unsigned int node_count;
+} generated_chain_t;
+
 static void write_le16_test(unsigned char *destination, uint16_t value)
 {
     destination[0] = (unsigned char)value;
@@ -86,6 +90,42 @@ static int mock_read(void *context, uint32_t lba, unsigned int sectors,
     return 0;
 }
 
+/* Generate a canonical forward APA chain without storing thousands of 1 KiB
+ * headers in the test harness. This models the shape of a large HDL-heavy disk
+ * that legitimately contains hundreds or thousands of partition headers. */
+static int generated_chain_read(void *context, uint32_t lba,
+                                unsigned int sectors,
+                                unsigned char *destination)
+{
+    generated_chain_t *chain = (generated_chain_t *)context;
+    uint32_t index;
+    uint32_t prev;
+    uint32_t next;
+
+    if (sectors != 2)
+        return -99;
+    memset(destination, 0, APA_HEADER_SIZE);
+    if ((lba % APA_FORENSIC_SCAN_STEP) != 0)
+        return 0;
+    index = lba / APA_FORENSIC_SCAN_STEP;
+    if (index >= chain->node_count)
+        return 0;
+
+    if (index == 0) {
+        uint32_t tail = (chain->node_count - 1u) * APA_FORENSIC_SCAN_STEP;
+        uint32_t first = chain->node_count > 1u ? APA_FORENSIC_SCAN_STEP : 0;
+        make_master(destination, tail, first);
+        return 0;
+    }
+
+    prev = index == 1u ? 0 : (index - 1u) * APA_FORENSIC_SCAN_STEP;
+    next = index + 1u < chain->node_count
+               ? (index + 1u) * APA_FORENSIC_SCAN_STEP : 0;
+    make_header(destination, lba, APA_FORENSIC_SCAN_STEP, prev, next,
+                "PP.TEST-LARGE-HDL", 0x1337);
+    return 0;
+}
+
 static int find_map(const apa_forensic_result_t *result,
                     apa_forensic_map_kind_t kind)
 {
@@ -93,6 +133,17 @@ static int find_map(const apa_forensic_result_t *result,
 
     for (i = 0; i < result->map_count; i++) {
         if (result->maps[i].kind == kind)
+            return (int)i;
+    }
+    return -1;
+}
+
+static int find_node_by_lba(const apa_forensic_result_t *result, uint32_t lba)
+{
+    unsigned int i;
+
+    for (i = 0; i < result->node_count; i++) {
+        if (result->nodes[i].lba == lba)
             return (int)i;
     }
     return -1;
@@ -258,6 +309,142 @@ static int test_referenced_off_grid_subpartition(void)
     return 1;
 }
 
+/* HDL sub-partition headers conventionally have an empty id. The physical
+ * healthy-disk report that motivated this test contains hundreds of exactly
+ * this shape: flags=SUB, valid main/number, type=0x1337 and checksum OK. Empty
+ * id must not turn a canonical sub-partition into weak evidence. */
+static int test_empty_id_hdl_subpartition_is_strong(void)
+{
+    mock_disk_t disk;
+    apa_forensic_result_t result;
+    apa_forensic_repair_plan_t plan;
+    unsigned char header[APA_HEADER_SIZE];
+    int sub;
+    int map;
+
+    memset(&disk, 0, sizeof(disk));
+    make_master(header, 0x80000, 0x40000);
+    add_slot(&disk, 0, header);
+
+    make_header(header, 0x40000, 0x40000, 0, 0x80000,
+                "PP.TEST-HDL-MAIN", 0x1337);
+    write_le32_test(header + APA_NSUB_OFFSET, 1);
+    write_le32_test(header + APA_SUBS_OFFSET, 0x80000);
+    write_le32_test(header + APA_SUBS_OFFSET + 4, 0x40000);
+    finalize_checksum(header);
+    add_slot(&disk, 0x40000, header);
+
+    make_header(header, 0x80000, 0x40000, 0x40000, 0, "", 0x1337);
+    write_le16_test(header + APA_FLAGS_OFFSET, APA_SUB_FLAG_VALUE);
+    write_le32_test(header + APA_MAIN_OFFSET, 0x40000);
+    write_le32_test(header + APA_NUMBER_OFFSET, 1);
+    finalize_checksum(header);
+    add_slot(&disk, 0x80000, header);
+
+    if (apa_forensic_scan(mock_read, &disk, 0xc0000, NULL, NULL, &result) != 0)
+        return 0;
+    sub = find_node_by_lba(&result, 0x80000);
+    if (sub < 0 || result.nodes[sub].confidence != 90 ||
+        result.nodes[sub].id[0] != '\0' ||
+        result.nodes[sub].stored_checksum != result.nodes[sub].calculated_checksum)
+        return 0;
+    map = find_map(&result, APA_FORENSIC_MAP_FORWARD);
+    if (map < 0 || result.maps[map].confidence != 100 ||
+        !result.maps[map].repairable)
+        return 0;
+    if (apa_forensic_build_repair_plan(&result, (unsigned int)map, &plan) != 0 ||
+        plan.patch_count != 0)
+        return 0;
+    return 1;
+}
+
+/* Reproduce the two confidence=30 garbage nodes seen inside real HDL data:
+ * printable id + bounded random length + small nsub used to be just enough to
+ * enter the candidate table even with BAD checksum, no APA magic and start !=
+ * scanned LBA. Direct grid discovery must reject that shape. */
+static int test_grid_false_positive_without_primary_anchor_is_rejected(void)
+{
+    mock_disk_t disk;
+    apa_forensic_result_t result;
+    unsigned char header[APA_HEADER_SIZE];
+
+    memset(&disk, 0, sizeof(disk));
+    make_master(header, 0, 0);
+    add_slot(&disk, 0, header);
+
+    memset(header, 0xa5, sizeof(header));
+    memset(header + APA_ID_OFFSET, 0, APA_ID_SIZE);
+    memcpy(header + APA_ID_OFFSET, "X", 1);
+    write_le32_test(header + APA_START_OFFSET, 0x30000);
+    write_le32_test(header + APA_LENGTH_OFFSET, 0x10000);
+    write_le32_test(header + APA_NSUB_OFFSET, 0);
+    write_le16_test(header + APA_TYPE_OFFSET, 0x0008);
+    write_le32_test(header, 0x12345678);
+    add_slot(&disk, 0x40000, header);
+
+    if (apa_forensic_scan(mock_read, &disk, 0x80000, NULL, NULL, &result) != 0)
+        return 0;
+    return result.node_count == 1 && find_node_by_lba(&result, 0x40000) < 0;
+}
+
+/* 768 valid headers would have truncated the previous 512-node implementation.
+ * This healthy chain must now scan completely and produce no repair plan. */
+static int test_large_healthy_chain_beyond_old_limit(void)
+{
+    static apa_forensic_result_t result;
+    static apa_forensic_repair_plan_t plan;
+    generated_chain_t chain;
+    const unsigned int count = 768;
+    uint32_t total = count * APA_FORENSIC_SCAN_STEP;
+    int map;
+
+    chain.node_count = count;
+    if (APA_FORENSIC_MAX_NODES <= 512u)
+        return 0;
+    if (apa_forensic_scan(generated_chain_read, &chain, total,
+                          NULL, NULL, &result) != 0)
+        return 0;
+    if (result.truncated || result.node_count != count)
+        return 0;
+    map = find_map(&result, APA_FORENSIC_MAP_FORWARD);
+    if (map < 0 || result.maps[map].node_count != count ||
+        result.maps[map].confidence != 100 || !result.maps[map].repairable)
+        return 0;
+    if (apa_forensic_build_repair_plan(&result, (unsigned int)map, &plan) != 0 ||
+        plan.patch_count != 0 || plan.automatic_safe || plan.manual_allowed)
+        return 0;
+    return 1;
+}
+
+/* Exact regression for the real hardware failure mode: if the candidate table
+ * fills before the physical chain ends, master.prev points beyond the visible
+ * set and the last visible node.next points onward. Those missing endpoints
+ * must never be converted into speculative 'repair' patches. */
+static int test_truncated_chain_is_hard_read_only(void)
+{
+    static apa_forensic_result_t result;
+    static apa_forensic_repair_plan_t plan;
+    generated_chain_t chain;
+    uint32_t total;
+    int map;
+
+    chain.node_count = APA_FORENSIC_MAX_NODES + 1u;
+    total = chain.node_count * APA_FORENSIC_SCAN_STEP;
+    if (apa_forensic_scan(generated_chain_read, &chain, total,
+                          NULL, NULL, &result) != 0)
+        return 0;
+    if (!result.truncated || result.node_count != APA_FORENSIC_MAX_NODES)
+        return 0;
+    map = find_map(&result, APA_FORENSIC_MAP_FORWARD);
+    if (map < 0 || result.maps[map].repairable)
+        return 0;
+    if (apa_forensic_build_repair_plan(&result, (unsigned int)map, &plan) != 0)
+        return 0;
+    if (plan.patch_count != 0 || plan.automatic_safe || plan.manual_allowed)
+        return 0;
+    return 1;
+}
+
 static int test_missing_master_never_becomes_writable(void)
 {
     mock_disk_t disk;
@@ -302,6 +489,22 @@ int main(void)
     }
     if (!test_referenced_off_grid_subpartition()) {
         fprintf(stderr, "off-grid referenced subpartition test failed\n");
+        return 1;
+    }
+    if (!test_empty_id_hdl_subpartition_is_strong()) {
+        fprintf(stderr, "empty-id HDL subpartition confidence test failed\n");
+        return 1;
+    }
+    if (!test_grid_false_positive_without_primary_anchor_is_rejected()) {
+        fprintf(stderr, "grid garbage false-positive rejection test failed\n");
+        return 1;
+    }
+    if (!test_large_healthy_chain_beyond_old_limit()) {
+        fprintf(stderr, "large healthy forensic chain test failed\n");
+        return 1;
+    }
+    if (!test_truncated_chain_is_hard_read_only()) {
+        fprintf(stderr, "truncated forensic chain write-lock test failed\n");
         return 1;
     }
     if (!test_missing_master_never_becomes_writable()) {
