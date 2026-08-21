@@ -92,7 +92,11 @@ int main(int argc, char **argv)
     static const char *const repairable[] = {
         "bad_apa_magic",
         "bad_mbr_id",
-        "bad_sony_magic"
+        "bad_sony_magic",
+        "bitflip_apa_magic",
+        "bad_master_start",
+        "bad_master_type",
+        "bad_mbr_version"
     };
     static const char *const pointer_only[] = {
         "pointer_start_only",
