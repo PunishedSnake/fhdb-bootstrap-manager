@@ -64,14 +64,12 @@ int is_hybrid_gpt(const unsigned char *header)
 /* Match a backup to this disk while ignoring checksum and mutable OSD fields. */
 int headers_match_same_disk(const unsigned char *a, const unsigned char *b)
 {
-    unsigned int i;
+    const unsigned int mutable_end = APA_OSD_SIZE_OFFSET + 4u;
 
-    for (i = 0; i < APA_HEADER_SIZE; i++) {
-        if (i < 4 ||
-            (i >= APA_OSD_START_OFFSET && i < APA_OSD_SIZE_OFFSET + 4))
-            continue;
-        if (a[i] != b[i])
-            return 0;
-    }
-    return 1;
+    /* Only checksum and osdStart/osdSize are intentionally mutable. Compare
+       the two immutable spans directly so libc can use aligned word loads on
+       the EE instead of executing a branch for every byte of the header. */
+    return memcmp(a + 4u, b + 4u, APA_OSD_START_OFFSET - 4u) == 0 &&
+           memcmp(a + mutable_end, b + mutable_end,
+                  APA_HEADER_SIZE - mutable_end) == 0;
 }

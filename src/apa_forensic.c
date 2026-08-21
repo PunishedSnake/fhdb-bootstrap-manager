@@ -83,7 +83,8 @@ static unsigned int clamp_confidence(int value)
 static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
                                    uint32_t lba, uint32_t total_sectors,
                                    uint32_t source_evidence,
-                                   uint32_t *evidence_out)
+                                   uint32_t *evidence_out,
+                                   uint32_t *checksum_out)
 {
     const uint32_t semantic_anchor_mask =
         APA_FORENSIC_EVIDENCE_MAGIC |
@@ -99,6 +100,8 @@ static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
     uint16_t type = read_le16(header + APA_TYPE_OFFSET);
     uint64_t end = (uint64_t)start + (uint64_t)length;
     int score = 0;
+
+    *checksum_out = 0;
 
     if (memcmp(header + APA_MAGIC_OFFSET, "APA\0", 4) == 0) {
         evidence |= APA_FORENSIC_EVIDENCE_MAGIC;
@@ -120,9 +123,14 @@ static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
         *evidence_out = evidence;
         return 0;
     }
-    if (read_le32(header) == apa_checksum(header)) {
-        evidence |= APA_FORENSIC_EVIDENCE_CHECKSUM;
-        score += 20;
+    {
+        uint32_t checksum = apa_checksum(header);
+
+        *checksum_out = checksum;
+        if (read_le32(header) == checksum) {
+            evidence |= APA_FORENSIC_EVIDENCE_CHECKSUM;
+            score += 20;
+        }
     }
     if (length != 0 && start < total_sectors && end <= total_sectors) {
         evidence |= APA_FORENSIC_EVIDENCE_LENGTH;
@@ -213,6 +221,7 @@ static int add_candidate(forensic_index_t *index,
     apa_forensic_result_t *result = index->result;
     unsigned char header[APA_HEADER_SIZE];
     uint32_t evidence;
+    uint32_t calculated_checksum;
     unsigned int confidence;
     int existing;
     int read_result;
@@ -234,7 +243,8 @@ static int add_candidate(forensic_index_t *index,
     }
 
     confidence = inspect_header(header, lba, total_sectors,
-                                source_evidence, &evidence);
+                                source_evidence, &evidence,
+                                &calculated_checksum);
     if (confidence < 30 && !(lba == 0 && confidence >= 20))
         return 0;
 
@@ -247,7 +257,7 @@ static int add_candidate(forensic_index_t *index,
     memset(node, 0, sizeof(*node));
     node->lba = lba;
     node->stored_checksum = read_le32(header);
-    node->calculated_checksum = apa_checksum(header);
+    node->calculated_checksum = calculated_checksum;
     node->next = read_le32(header + APA_NEXT_OFFSET);
     node->prev = read_le32(header + APA_PREV_OFFSET);
     node->start = read_le32(header + APA_START_OFFSET);
