@@ -1,161 +1,366 @@
 # Architecture and safety invariants
 
-PS2 HDD Bootstrap Manager is intentionally conservative: it may be slower or refuse ambiguous repairs rather than turn uncertain metadata into authoritative disk state. The `0.4.x` **Michishirube** line separates portable policy, PS2-specific device mechanics, application controllers, and UI so that dangerous behavior can be tested independently from the console services that execute it.
+PS2 HDD Bootstrap Manager deliberately separates **evidence**, **policy**, **device mechanics**, and **authorization**. The `0.4.x` **Michishirube** line is designed so that uncertain metadata can be inspected aggressively while write authority remains conservative.
+
+The central rule is simple:
+
+> Read-only reconstruction may form hypotheses. Write paths may only commit explicitly authorized, bounded changes whose source bytes and postconditions are verified.
 
 ## Layer model
 
 ### 1. Portable policy and format core
 
-These modules compile and run without PS2SDK and must not perform device I/O:
+These modules compile without PS2SDK and perform no device I/O:
 
-- `apa.c` — little-endian APA parsing, checksum, standard `__mbr` recognition, conservative hybrid guard, and same-disk identity comparison.
-- `apa_repair.c` — fail-closed planning for narrowly reconstructable APA master fields. It does not write anything.
-- `repair_health.c` — combines the header repair plan with already-evaluated pointer bounds and optional active-payload evidence to decide whether normal pointer clear should be recommended.
-- `hdd_bounds.c` — deterministic payload pointer/geometry policy and stable error ordering.
+- `apa.c` — little-endian APA parsing, additive checksum, standard master recognition, conservative hybrid guard, and same-disk identity checks.
+- `apa_repair.c` — fail-closed planning for narrowly reconstructable canonical master fields.
+- `apa_forensic.c` — raw-evidence graph reconstruction, candidate-map scoring, topology repair planning, checksum corroboration, and bit-distance classification.
+- `repair_health.c` — mounted-disk pointer/payload health policy and pointer-clear recommendation.
+- `hdd_bounds.c` — deterministic OSD pointer/geometry rules and stable error ordering.
 - `kelf.c` — structural KELF parsing and recovery of unpadded size from sector images.
-- `bootstrap_transaction.c` — already-authorized payload-first/pointer-last sequencing with stage reporting and failure injection.
-- `rescue_image.c` and `capsule_format.c` — rescue image validation and endian-stable serialization.
-- `boot_chain.c`, `boot_payload.c`, and `boot_report.c` — evidence classification, payload fingerprinting, and report rendering.
-- `sha256.c` — portable hashing used by rescue and diagnostics.
+- `bootstrap_transaction.c` — payload-first/pointer-last sequencing and failure-stage reporting.
+- `rescue_image.c`, `capsule_format.c` — rescue validation and endian-stable serialization.
+- `boot_chain.c`, `boot_payload.c`, `boot_report.c` — evidence classification, fingerprinting, and report rendering.
+- `sha256.c` — portable hashing used by rescue, diagnostics, and forensic snapshots.
 
-Portable code may say **what is valid**, **what is repairable**, or **what operation should follow**. It cannot reach the HDD, memory cards, PFS, MagicGate, or the controller.
+Portable code may decide **what the evidence supports**, **what repair plan is safe**, or **what operation should follow**. It cannot touch HDD, memory-card, USB, PFS, MagicGate, or controller APIs.
 
 ### 2. PS2 device/service adapters
 
 These modules bind narrow operations to PS2SDK:
 
-- `hdd_read.c` — read-only `HDIOC_READSECTOR`, active-payload acquisition, and live `__mbr` geometry. It exposes no write, flush, or pointer update.
-- `hdd_write.c` — normal bootstrap payload write/flush/read-back plus `HDIOC_SETOSDMBR` pointer update/verification. It owns mechanics, not authorization.
-- `hdd_repair_ps2.c` — exceptional raw sectors 0-1 writer used only for planner-approved master recovery; it validates the proposed finished header, flushes, and requires exact read-back.
-- `header_backup.c` — mandatory normal-operation header backup mechanics.
-- `repair_snapshot.c` — exact non-overwriting `HDDRAW*.BIN` snapshot used before exceptional master-header recovery.
-- `rescue_storage.c` — PS2-side rescue file lifecycle and payload acquisition.
-- `bootstrap_source.c` — MBR.XIN/XLF-compatible source loading and pre-sign validation.
-- `bootstrap_signing.c` — MagicGate signing and immediate post-sign KELF validation.
-- `bootstrap_transaction_ps2.c` — thin binding from portable transaction sequencing to `hdd_write`.
-- `boot_chain_ps2.c`, `boot_payload_ps2.c`, `boot_diagnostics_ps2.c`, `boot_report_ps2.c`, and `boot_report_session.c` — read-only evidence acquisition and report persistence.
-- `storage.c`, `platform.c`, and `session_log.c` — launch/storage state, IOP/pad lifecycle, and bounded session logging.
-- `hdd_recovery_wrap.c` — intercepts exactly the first `hdd0:` `HDIOC_STATUS` so a raw-readable but invalid master can enter guarded recovery before the normal admission gate rejects it.
+- `hdd_read.c` — read-only raw sector/payload acquisition and live `__mbr` geometry.
+- `hdd_write.c` — normal bootstrap payload write/flush/read-back plus `HDIOC_SETOSDMBR` pointer updates.
+- `hdd_repair_ps2.c` — exceptional two-sector APA master writer for deterministic startup recovery.
+- `hdd_forensic_repair_ps2.c` — multi-header topology writer; validates source stability, writes non-master headers before LBA 0, flushes, reads back, and re-verifies every touched header.
+- `header_backup.c` — mandatory normal-operation master backup mechanics.
+- `repair_snapshot.c` — exact `HDDRAW*.BIN` snapshot before single-master raw recovery.
+- `forensic_snapshot.c` — versioned `HDDMETA*.BIN` preservation of every pre-repair header touched by a forensic topology plan, including per-header SHA-256 and complete snapshot digest.
+- `rescue_storage.c` — PS2-side rescue file lifecycle.
+- `bootstrap_source.c` — MBR.XIN/XLF-compatible source preparation.
+- `bootstrap_signing.c` — MagicGate signing and post-sign structural validation.
+- `bootstrap_transaction_ps2.c` — PS2 binding for the portable normal transaction sequencer.
+- `boot_chain_ps2.c`, `boot_payload_ps2.c`, `boot_diagnostics_ps2.c`, `boot_report_ps2.c`, `boot_report_session.c` — read-only evidence acquisition and report persistence.
+- `storage.c`, `platform.c`, `session_log.c` — storage state, IOP/pad lifecycle, and ordered logging.
+- `hdd_recovery_wrap.c` — intercepts exactly the first `hdd0:` `HDIOC_STATUS` so a raw-readable invalid master can enter guarded startup recovery before normal admission fails.
 
-A PS2 adapter may execute an operation, but it should not silently invent policy that belongs in the portable layer or the controllers.
+A device adapter performs mechanics. It must not invent higher-level recovery policy.
 
-### 3. Application controllers and UI
+### 3. Controllers and presentation
 
-Michishirube no longer concentrates high-level workflows in `main.c`:
+High-level flows are split from device and format logic:
 
-- `bootstrap_controller_ps2.c` — backup, disable, restore, and install authorization/error flow. It composes backup/rescue/source/signing/transaction modules but does not implement their formats or raw transport.
-- `diagnostics_controller_ps2.c` — refreshes and presents boot-chain diagnostics.
-- `repair_controller_ps2.c` — guarded startup/health repair presentation. Canonical repair policy comes from `apa_repair`; mounted-disk pointer-health policy comes from `repair_health`.
-- `app_ui_ps2.c` — shared fatal/info/power/storage/signing-card presentation and lifecycle helpers.
+- `bootstrap_controller_ps2.c` — normal backup, disable, restore, and install authorization/error flow.
+- `diagnostics_controller_ps2.c` — boot-chain refresh, report save, and presentation.
+- `repair_controller_ps2.c` — deterministic startup/master repair and mounted structure-health presentation.
+- `forensic_controller_ps2.c` — raw forensic scan, candidate-map browsing, report export, repair-plan preview, snapshot gate, and forensic topology write authorization.
+- `manager_menu_ps2.c` — hierarchical dashboard/navigation and state-dependent feature availability.
+- `app_ui_ps2.c` — shared fatal/info/power/storage/signing-card presentation.
+- `platform.c` — pad initialization/input and best-effort activity-mode control.
 
-`main.c` is the composition root: initialization, the normal APA admission gate, top-level menu state, and dispatch. New disk formats, repair algorithms, MagicGate mechanics, backup formats, or write loops do not belong there.
+### 4. Composition root
 
-## Normal write-path invariants
+`main.c` owns only:
 
-The Torii-compatible backup/disable/restore/install paths preserve these rules:
+1. launch storage selection;
+2. screen/IOP/fileXio/power/signing/pad initialization;
+3. first HDD status / startup recovery opportunity;
+4. normal APA admission;
+5. initial session diagnostics;
+6. hand-off to `manager_menu_ps2`.
 
-1. `ps2hdd` must accept the device and the current master must pass standard APA/checksum/non-hybrid validation.
-2. A current 1024-byte header backup must be saved and read back before an HDD-changing operation.
-3. The user must authorize the specific operation with its multi-button confirmation chord.
-4. Raw writes are confined to the reserved `__mbr` bootstrap program area beginning at sector `0x2000`; normal workflows do **not** raw-write sectors 0-1.
-5. A new/restored payload is written, flushed, and compared before it can be exposed through the OSD pointer.
-6. `osdStart`/`osdSize` are changed through `HDIOC_SETOSDMBR`, then the resulting header/pointer is read back and verified.
-7. A damaged or wrong-disk rescue capsule is an error, not permission to silently fall back to a weaker restore.
+New recovery algorithms, snapshot formats, write loops, UI sections, or device protocols do not belong in `main.c`.
 
-These are behavior invariants, not implementation suggestions.
+## Hierarchical UI contract
 
-## Exceptional APA master recovery invariants
+Michishirube no longer uses one global controller button per feature. The dashboard exposes five sections:
 
-Master recovery is deliberately a separate contract because its purpose is to help when rule 1 above cannot be satisfied.
+```text
+Bootstrap
+Diagnostics
+Recovery
+Backup & Storage
+System
+```
 
-The only raw sectors 0-1 write path is `hdd_repair_ps2`, reached through `hdd_recovery_wrap` / `repair_controller_ps2`. It is allowed only when all applicable gates succeed:
+Normal navigation is `UP/DOWN`, `X`, `TRIANGLE`. Destructive operations still use explicit confirmation chords after a preview/snapshot stage.
 
-1. Raw sectors 0-1 must be readable even if normal `HDIOC_STATUS`/APA admission fails.
-2. `apa_repair` must identify a narrowly reconstructable canonical defect. Current automatic repair is restricted to one known master identity/anchor field (`APA\0`, `__mbr`, Sony MBR marker, master `start`, MBR type, or MBR version) under sufficient independent identity evidence.
-3. The original checksum must be mismatched and correcting only that known field must restore the **old stored checksum**. A checksum-valid noncanonical header is not accepted automatically because additive checksum errors can cancel each other.
-4. GPT/protective-MBR or insufficient-identity states are hard blockers.
-5. The exact original 1024 bytes must be saved and read back as a non-overwriting `HDDRAW*.BIN` snapshot before any raw write.
-6. The user must explicitly confirm the proposed repair.
-7. The proposed 1024-byte result must itself pass complete standard APA/master/non-hybrid validation before `HDIOC_WRITESECTOR` is issued.
-8. Exactly sectors 0-1 are written, the drive is flushed, both sectors are read back, and all 1024 bytes must compare exactly.
-9. A successful master repair requires a restart so `ps2hdd` reinitializes from repaired on-disk state instead of continuing with pre-repair cached metadata.
+An unavailable operation remains visible with a reason. This prevents feature growth from consuming additional controller buttons and makes application state explicit.
 
-Pointer-only anomalies, out-of-bounds OSD pointers, and active invalid KELFs do **not** use raw master repair. `repair_health` routes them to the established normal backup + `HDIOC_SETOSDMBR(0,0)` disable path.
+## Controller activity indication
 
-## Why checksum-valid corruption is not enough evidence
+The DualShock/DS2 red **ANALOG** lamp follows the controller's main digital/analog mode; it is not exposed as an independent LED.
 
-APA uses an additive 32-bit checksum. It detects many accidental changes but is not collision-resistant. Two independent changes can have equal and opposite deltas, leaving the stored checksum apparently valid.
+Therefore Michishirube does not blink it. `platform` implements a best-effort nested activity state:
 
-Therefore Michishirube distinguishes:
+- idle requests digital mode / lamp off;
+- activity requests analog mode / lamp on;
+- nested activity remains on until the outer operation finishes;
+- restart/power-off restores the initial controller mode;
+- unsupported pads fall back to screen-only progress without blocking the operation.
 
-- **single known-field bit flip with stale checksum** — potentially automatically repairable when the candidate correction exactly restores the stored checksum;
-- **checksum-only mismatch** — diagnostic only, because the corrupt word might be anywhere;
-- **checksum-valid but semantically wrong canonical field** — ambiguous and blocked from automatic raw repair;
-- **multiple/unknown corruption** — blocked from automatic raw repair and a candidate for forensic reconstruction instead.
+The screen is the authoritative activity indicator. Lamp behavior remains a hardware-validation item.
 
-The synthetic regression suite contains an explicit checksum-collision case so future cleanup cannot accidentally weaken this rule.
+## Normal Torii-compatible write invariants
 
-## Degraded / forensic read-only recovery (planned boundary)
+The stable normal paths preserve these rules:
 
-A disk that cannot pass normal APA admission does not automatically become unreadable at the block level. `HDIOC_READSECTOR` can still provide raw sectors when the drive itself is accessible. This makes a future **forensic read-only** mode technically useful and substantially safer than speculative repair.
+1. `ps2hdd` accepts the disk and the current master passes standard APA/checksum/non-hybrid validation.
+2. A current 1024-byte master backup is saved and read back before HDD mutation.
+3. The user explicitly authorizes the operation.
+4. Raw writes stay inside the reserved `__mbr` program area beginning at sector `0x2000`; normal workflows do **not** raw-write sectors 0-1.
+5. New/restored payload is written, flushed, and compared before pointer exposure.
+6. `osdStart`/`osdSize` changes use `HDIOC_SETOSDMBR` and are read back.
+7. A damaged or wrong-disk rescue capsule blocks fallback to a weaker restore.
 
-That mode should not pretend the disk is healthy. It should expose a reconstructed **candidate partition map** with confidence/evidence for each entry. A proposed scanner can combine several independent signals:
+These invariants remain authoritative even as the UI and module layout evolve.
 
-- valid or near-valid APA headers discovered at candidate LBAs;
-- each header's `start`, `length`, `type`, flags, `main`, sub-partition table, `next`, and `prev` fields;
-- forward and backward link agreement;
-- reciprocal `next`/`prev` relationships between neighboring headers;
-- main-partition references to sub-partition LBAs and matching sub headers;
-- partition alignment, power-of-two sizing rules, disk bounds, and absence of impossible overlaps;
-- checksum validity or a bounded set of plausible one/two-bit corrections;
-- known system partition IDs/types where they provide supporting rather than decisive evidence;
-- optional filesystem-level evidence such as readable PFS metadata after a candidate APA extent has been established.
+## Exceptional deterministic master recovery
 
-The result should be a graph/constraint problem rather than a single guessed linked list. Multiple plausible maps may coexist. The UI can present candidates such as `A`, `B`, and `C`, explain which headers/links disagree, and allow export of the raw evidence without writing the HDD.
+This path exists only because a damaged LBA-0 master can prevent rule 1 above from starting.
 
-A degraded read-only map may then be used to:
+The path is:
 
-- list likely partitions even when `ps2hdd` refuses the master;
-- dump candidate partition extents to external storage;
-- inspect PFS or known system content through a deliberately read-only adapter where feasible;
-- generate a reconstruction report that can later inform a separately authorized repair.
+```text
+first HDIOC_STATUS
+    -> raw sectors 0-1
+    -> apa_repair policy
+    -> HDDRAW snapshot
+    -> explicit confirmation
+    -> hdd_repair_ps2
+    -> flush + exact readback
+    -> mandatory restart
+```
 
-It must **not** silently feed speculative geometry into normal write-capable `pfs`/APA paths. Read-only reconstruction and on-disk repair are separate trust levels.
+Automatic repair remains narrow:
 
-## Multi-header / heavy-corruption repair direction
+- one known canonical master identity/anchor field;
+- sufficient independent identity evidence;
+- stale checksum mismatch;
+- correcting only that field restores the old stored checksum;
+- no GPT/protective-MBR signal;
+- completed candidate master passes full standard validation.
 
-Repair beyond the current single-field master case is possible in principle because APA metadata is redundant across the disk. PS2SDK's own `hdck` logic already walks the partition list forward and backward, compares reciprocal links, repairs some `prev`/`next` inconsistencies, and can reconstruct certain sub-partition headers when their main partition still records the sub extent. That demonstrates that recovery can use neighboring headers rather than treating sector zero as the sole source of truth.
+Checksum-valid noncanonical state, checksum-only mismatch, low identity, or unexplained multiple corruption are not automatically legalized by recalculating a checksum.
 
-For Michishirube, broader repair should be staged:
+## Why additive checksum is only supporting evidence
 
-1. **scan only** — raw-read candidate headers and construct all plausible maps;
-2. **score/compare** — rank candidates using independent constraints, never checksum alone;
-3. **preview** — show exactly which headers/fields would change for each reconstruction variant;
-4. **snapshot** — export the original master plus every header that would be touched, ideally with a manifest/hash;
-5. **repair one metadata unit at a time** — write/flush/read-back each header while preserving enough information to roll back;
-6. **re-scan from raw disk** — require the repaired graph to become internally consistent before normal writable mounting is allowed.
+APA protects a header with a 32-bit additive checksum. It is useful for accidental-change evidence but is not collision-resistant.
 
-A user-selectable reconstruction variant is reasonable when evidence cannot prove a unique map, but such a choice must be labelled as a hypothesis. An interactive choice is not evidence by itself.
+Two independent changes can cancel mathematically. Consequently:
 
-## Read-only versus writable trust levels
+- a matching checksum does not prove a suspicious structure is healthy;
+- a stale checksum can corroborate an exact externally derived correction;
+- checksum-only mismatch cannot identify the damaged word;
+- checksummed semantic corruption remains ambiguous unless other graph evidence resolves it.
 
-The project should treat recovery states as an explicit ladder:
+This distinction applies to both single-master and multi-header recovery.
 
-1. **Raw readable** — sectors can be read; no structural claims.
-2. **Forensic candidate map** — one or more plausible APA graphs reconstructed; still no writes.
-3. **Read-only validated map** — sufficient independent consistency to expose partitions read-only through recovery tooling.
-4. **Repair candidate** — exact proposed metadata changes and backups exist.
-5. **Repaired + raw revalidated** — on-disk graph passes the recovery validator.
-6. **Normal ps2hdd admitted** — standard manager write paths may be enabled again.
+## Implemented forensic / degraded read-only recovery
 
-Calling levels 2-3 "healthy" would be misleading. The useful feature is that data can remain inspectable even while the standard driver correctly refuses to trust the metadata.
+Forensic recovery is no longer a future concept. `apa_forensic` implements a raw read-only scanner and graph builder.
 
-## Regression and hardware gates
+### Discovery
 
-`make test-host` covers portable format/policy modules, transaction failure injection, rescue validation, generated raw HDD states, byte-level payload/pointer mutation, and the repair matrix. Repair tests verify postconditions, not only classification.
+The scanner:
 
-The R5900 release build is warning-clean with the pinned PS2DEV toolchain. Host tests cannot emulate DEV9/ATA timing, fileXio RPC/DMA behavior, cache durability, APA journaling, or an actual power failure. Physical-HDD validation remains mandatory before a newly introduced write path is considered hardware-proven.
+1. raw-reads LBA 0;
+2. samples the standard APA allocation grid at `0x40000`-sector intervals (128 MiB);
+3. rejects blank/no-anchor sectors rather than scoring technically valid zeros;
+4. follows surviving `next`, `prev`, `main`, and `subs[]` references directly, including off-grid subpartitions;
+5. records source evidence, checksum state, identity, geometry, type, flags, subpartition metadata, and confidence for every discovered node.
+
+The scanner is intentionally read-only and can operate even when normal `ps2hdd` admission is not trustworthy.
+
+### Candidate maps
+
+Up to three independent maps are generated:
+
+- **forward links** — follows `next` plus unique reciprocal evidence;
+- **reverse links** — reconstructs from `prev`/master-tail evidence;
+- **geometry order** — sorts credible extents by LBA.
+
+Each map records:
+
+- node count;
+- reciprocal links;
+- inferred links;
+- conflicts;
+- overlaps;
+- confidence;
+- whether it is structurally eligible to become a repair candidate.
+
+Multiple plausible maps may coexist. The UI exposes them rather than silently choosing one.
+
+### Shadow APA / degraded read-only state
+
+A candidate map exists only in RAM. It does not patch `ps2hdd` status and does not make the disk writable.
+
+The forensic controller can browse map nodes and export `FORENSIC.TXT`, including:
+
+- discovered LBA and ID;
+- start/length;
+- `prev`/`next`;
+- type/flags;
+- `main`/`nsub`;
+- checksum state;
+- confidence/evidence;
+- map statistics;
+- proposed topology changes.
+
+This is the project's **shadow APA**: a read-only interpretation of the raw disk, not a claim that the physical metadata is healthy.
+
+## Forensic topology repair
+
+Broader repair is intentionally limited to topology that the candidate graph can reconstruct.
+
+Current writeable fields are only:
+
+```text
+prev
+next
+checksum
+```
+
+The engine does not synthesize arbitrary IDs, lengths, timestamps, passwords, PFS metadata, or missing content.
+
+### Repair-plan classes
+
+For each changed header, the plan records:
+
+- original and proposed `prev`;
+- original and proposed `next`;
+- bit distance between old/new link values;
+- whether restoring the graph-derived value also restores the old stored checksum.
+
+A plan can be:
+
+- **automatic-safe** — high-confidence map, no conflicts/overlaps, all changes checksum-corroborated;
+- **manual expert** — high-confidence structurally coherent map but at least one topology correction lacks independent checksum corroboration;
+- **not writable** — map confidence/evidence is insufficient or structural conflicts remain.
+
+User selection of a candidate map is authorization to consider a hypothesis, not evidence that makes it true.
+
+## Exact two-bit recovery contract
+
+The engine does not brute-force all two-bit combinations across the disk.
+
+Instead:
+
+1. neighboring/reciprocal graph evidence derives the expected exact link value;
+2. the current and expected values are compared;
+3. bit distance is recorded;
+4. if the source checksum is stale, applying exactly that graph-derived change must restore the old stored checksum.
+
+The host suite contains an explicit two-bit link corruption case and requires:
+
+- correct candidate reconstruction;
+- `bit_distance == 2`;
+- checksum corroboration;
+- automatic-safe classification.
+
+This generalizes naturally to exact graph-derived changes with more than two altered bits, although the UI/report specifically highlights one/two-bit cases because they are strong physical-corruption evidence.
+
+## `HDDMETA` forensic snapshot
+
+Before any forensic topology write, `forensic_snapshot` saves every original header the plan intends to touch.
+
+The versioned snapshot contains:
+
+- format magic/version;
+- disk sector count;
+- selected map index/confidence;
+- patch count and corroboration statistics;
+- one/two-bit correction count;
+- for every patch: LBA, SHA-256, exact original 1024-byte header;
+- SHA-256 over the complete snapshot payload.
+
+Files are non-overwriting slots:
+
+```text
+HDDMETA.BIN
+HDDMETA2.BIN
+```
+
+Snapshot creation itself is write/read-back verified before any HDD metadata change is authorized.
+
+## Multi-header commit invariants
+
+`hdd_forensic_repair_ps2` follows these rules:
+
+1. Plan and scan source must be internally consistent.
+2. Immediately before each write, the current raw header must still equal the exact bytes seen by the scan. If not, the transaction stops with a source-changed failure.
+3. Each repaired header is built by the portable core; the writer does not invent fields.
+4. Non-master headers are written first.
+5. Each header write is followed by flush and exact raw read-back comparison.
+6. LBA 0 is written **last**.
+7. The master candidate must remain a complete standard non-hybrid APA master.
+8. After all writes, every touched header is raw-read again and compared with the planned final bytes.
+9. Any success or partial failure requires restart before further HDD work.
+
+Master-last is the topology equivalent of the normal payload-first/pointer-last rule: do not advertise repaired root metadata until the subordinate structure has already been committed and verified.
+
+## Trust ladder
+
+Recovery state is explicit:
+
+1. **Raw readable** — sectors can be read; no structure claimed.
+2. **Forensic candidate map** — one or more plausible graphs exist.
+3. **Read-only shadow map** — candidate is coherent enough for browsing/reporting, still no HDD writes.
+4. **Repair candidate** — exact field-level plan and complete pre-repair snapshot exist.
+5. **Repaired + raw revalidated** — every touched header matches the planned final bytes.
+6. **Normal ps2hdd admitted after restart** — standard manager write paths may be considered again.
+
+Calling levels 2-3 “healthy” is intentionally avoided.
+
+## Filesystem boundary
+
+APA topology recovery can recover **where partitions are and how they are linked** when sufficient headers survive. It cannot recreate sectors that are genuinely missing.
+
+PFS/HDL/game/file recovery is a separate problem. A future read-only filesystem adapter may consume a shadow APA extent for inspection or export, but speculative geometry must never be silently injected into normal writable PFS/APA services.
+
+## Regression gates
+
+`make test-host` covers:
+
+- APA/capsule/SHA-256 formats;
+- deterministic master repair policy;
+- forensic graph reconstruction;
+- healthy graph, stale-checksum broken link, checksummed heuristic-only link, off-grid subpartition discovery, missing-master write gate, and exact two-bit corruption;
+- boot-chain/payload/report/KELF suites;
+- transaction failure injection;
+- rescue validation;
+- generated raw-HDD parser/bounds/KELF states;
+- normal payload/pointer mutation semantics;
+- mounted `repair_health` policy and repair postconditions.
+
+The R5900 release build is warning-clean under the pinned PS2DEV toolchain.
+
+## Hardware gate
+
+Host/CI cannot prove:
+
+- DEV9/ATA timing;
+- fileXio RPC/DMA behavior;
+- write-cache durability;
+- APA journal interaction;
+- adapter/controller quirks;
+- physical power-loss boundaries.
+
+Therefore the following remain hardware-unproven until explicitly tested on real PS2 HDD setups:
+
+- raw sectors 0-1 deterministic master recovery;
+- full-disk forensic scan behavior/performance;
+- multi-header topology repair and master-last commit ordering;
+- `HDDMETA` storage behavior;
+- ANALOG-lamp activity mode across original and third-party pads.
 
 ## Commenting rule
 
-Comments should explain ownership, safety evidence, hardware constraints, failure ordering, and why an operation is allowed or refused. They should not merely narrate C syntax. In particular, comments that say "never write sector zero" must qualify the statement as applying to **normal** Torii-compatible workflows; the guarded Michishirube master-recovery exception is part of the architecture and must never be hidden by stale documentation.
+Comments should explain ownership, evidence, safety gates, hardware constraints, and failure ordering. They should not narrate C syntax.
+
+In particular:
+
+- “normal paths never write sector zero” must be qualified as a **normal Torii-compatible invariant**;
+- deterministic raw master recovery and forensic topology recovery are explicit exceptions with their own gates;
+- a forensic candidate must never be described in code comments as a healthy or mounted disk unless normal admission has actually occurred.
