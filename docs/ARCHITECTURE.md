@@ -6,10 +6,14 @@ PS2 HDD Bootstrap Manager is intentionally conservative: it is allowed to be slo
 
 The `0.4.0-dev` **Michishirube** line is progressively converting the former monolithic EE application into explicit modules. The split is intentionally mechanical first: code moves behind headers without simultaneously changing storage semantics.
 
-- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install preconditions, backup/confirmation, MagicGate signing, and user-facing error policy.
+- `src/main.c` — application state machine, diagnostics presentation/timing, write authorization/confirmation, operation-specific user-facing error policy, and composition of narrow subsystem interfaces.
 - `src/platform.c` — IOP reset, embedded IRX startup, pad initialization, button-edge input, and confirmation-chord input.
 - `src/storage.c` — storage target definitions, encapsulated selected-target state, launch-device selection, ROMVER access, and generic fileXio helpers. Callers read/change the selection through validated accessors instead of mutating module state directly.
 - `src/header_backup.c` — PS2 storage-side mandatory/legacy APA-header backup mechanics: protected slot naming, non-overwrite/reuse behavior, exact read-back verification, same-disk legacy lookup, and explicit per-slot diagnostics. It has no raw HDD write interface or UI/logging policy.
+- `src/rescue_image.c` — PS2SDK-free validation of one complete rescue image: metadata decode, APA/payload SHA-256 verification, APA structure/flag checks, optional KELF-size consistency, and protected-slot state identity comparison.
+- `src/rescue_storage.c` — PS2-only rescue lifecycle: protected `HDDRESCUE*.BIN` slots, USB retry/file I/O, active-payload acquisition through `hdd_read`, save/read-back verification, same-disk lookup, and preservation of the damaged/wrong-disk no-silent-fallback rule.
+- `src/bootstrap_source.c` — PS2-only pre-sign installation-source preparation: writable `MBR.XLF` path for the `MBR.XIN` compatibility shim, bounded/USB-retried load, pre-sign KELF validation, sector count, and live `__mbr` reserved-capacity check. It cannot sign or write the HDD.
+- `src/bootstrap_signing.c` — PS2-only security adapter: one-time `SecrInit`, `SecrDownloadFile` through the selected memory-card port, and post-sign structural KELF validation. It owns no card-selection UI, storage, or HDD transaction.
 - `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
 - `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.
 - `src/hdd_write.c` — PS2-only write-capable transport: raw `HDIOC_WRITESECTOR` packets, write-side DMA/read-back buffers, flushes, byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back verification. It owns mechanics only, not backup/confirmation/signing or transaction ordering.
@@ -25,11 +29,11 @@ The `0.4.0-dev` **Michishirube** line is progressively converting the former mon
 - `src/boot_report_session.c` — owns the latest rendered report buffer, length, and last save result while delegating formatting to `boot_report.c` and device I/O to `boot_report_ps2.c`.
 - `src/session_log.c` — bounded ordered session logging plus `HDDMAN.LOG` append/rotation/USB-retry persistence. It owns no boot-chain classification or HDD write transaction.
 - `src/kelf.c` — portable structural KELF parser and recovery of the real file length from a sector-padded HDD image. It reads the PS2SDK-defined wire fields explicitly as little-endian bytes rather than relying on a target-native struct cast.
-- `src/mbr_compat.c` — narrow `MBR.XIN` / `MBR.XLF` filename compatibility interposition.
+- `src/mbr_compat.c` — narrow `MBR.XIN` / `MBR.XLF` filename compatibility interposition used by `bootstrap_source`.
 - `src/sha256.c` — portable SHA-256 used for rescue integrity and payload fingerprints.
 - `src/capsule_format.c` — endian-stable rescue capsule serialization.
 - `include/` — module interfaces shared by the EE build and, where practical, host tests.
-- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, boot-payload, boot-report, bootstrap-transaction ordering/failure injection, and malformed KELF regression cases.
+- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, boot-payload, boot-report, rescue-image validation, bootstrap-transaction ordering/failure injection, and malformed KELF regression cases.
 - `docs/` — format, architecture, and roadmap documentation.
 
 ### Modularization rule
@@ -42,7 +46,7 @@ Moving code between translation units is easy; proving that initialization, DMA-
 4. complete a warning-clean R5900 release build with the pinned PS2DEV toolchain;
 5. only then consider API cleanup, state encapsulation, or additional optimization.
 
-Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split across portable header logic in `apa.c`, read-only raw transport/bounds in `hdd_read.c`, write-capable transport/read-back mechanics in `hdd_write.c`, and a portable `bootstrap_transaction.c` sequencer with a narrow PS2 adapter. `main.c` still owns all pre-write authorization gates—validation, backup, confirmation, and signing—while the tested sequencer owns only the already-authorized payload-first/pointer-last commit phase. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.
+The dangerous path is now layered instead of concentrated in `main.c`. `header_backup` owns the mandatory backup storage mechanics; `rescue_image`/`rescue_storage` own rescue validation and lifecycle; `bootstrap_source` prepares an installable KELF and validates capacity; `bootstrap_signing` contains the console security operation; `hdd_write` owns raw write/flush/read-back mechanics; and portable `bootstrap_transaction` owns only the already-authorized commit order. `main.c` still decides whether an operation is allowed, asks the user for confirmation, selects the signing card when necessary, maps subsystem failures to user-facing behavior, and decides which transaction to invoke. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.
 
 ## Non-negotiable write invariants
 
@@ -58,19 +62,25 @@ Every HDD-changing path must preserve these rules:
 
 An optimization or refactor that changes any of these semantics is a behavior change, not a cleanup.
 
-## APA module boundary
+## APA and write-transaction boundary
 
 `apa.c` is deliberately portable and has no fileXio or PS2SDK dependency. Synthetic host tests construct a valid 1024-byte `__mbr` header, verify the checksum and pointer decoding, exercise hybrid-GPT detection, reject corrupted identity data, and confirm that same-disk matching ignores only the checksum and mutable `osdStart`/`osdSize` fields.
 
-Read-only `HDIOC_READSECTOR` transport and active-payload bounds checks now live in `hdd_read.c`. The module uses its own aligned two-sector read buffer and can only return bytes or validation errors; it cannot flush, write sectors, or update `osdStart`/`osdSize`.
+Read-only `HDIOC_READSECTOR` transport and active-payload bounds checks live in `hdd_read.c`. The module uses its own aligned two-sector read buffer and can only return bytes or validation errors; it cannot flush, write sectors, or update `osdStart`/`osdSize`.
 
 Write-capable transport is isolated in `hdd_write.c`: it owns the raw write packet, aligned verification buffers, `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, flushes, payload byte comparison, and final APA/pointer read-back. Its interface intentionally exposes those operations as separate steps rather than a single "install" call.
 
-Pre-write authorization remains in `main.c`: it requires successful `header_backup_save()`, rescue/capacity validation, user confirmation, and MagicGate signing before the transaction sequencer is entered. The storage details of creating/reusing/verifying that mandatory header backup live in `header_backup.c`, while `main.c` retains the fail-closed policy and error presentation.
+Pre-write authorization remains application policy. `main.c` requires successful header backup, completed source/rescue validation, the appropriate signing result, and the explicit confirmation chord before entering the commit sequencer. The mechanics behind those checks are delegated to narrow modules, so `main.c` no longer needs file layouts, raw write packets, MagicGate calls, or payload-write loops to enforce the policy.
 
-The already-authorized commit phase lives in portable `bootstrap_transaction.c`. Host tests assert `payload -> release -> pointer set -> pointer verify`, assert immediate stop at each injected failure, and specifically prove that pointer exposure never follows a failed payload write/compare. `bootstrap_transaction_ps2.c` only binds those abstract operations to `hdd_write.c`, so the tested policy is independent of PS2SDK.
+The already-authorized commit phase lives in portable `bootstrap_transaction.c`. Host tests assert `payload -> release -> pointer set -> pointer verify`, assert immediate stop at each injected failure, and specifically prove that pointer exposure never follows a failed payload write/compare. `bootstrap_transaction_ps2.c` only binds those abstract operations to `hdd_write.c`, so the tested ordering policy is independent of PS2SDK.
 
 Keeping read-only `hdd_read.c` separate from write-capable `hdd_write.c` also prevents diagnostics from acquiring a write interface merely because both paths need raw-sector read-back.
+
+## Rescue and installation preparation boundary
+
+The stable rescue wire format remains in `capsule_format.c`. `rescue_image.c` consumes a complete in-memory file and checks metadata, hashes, APA validity, and KELF-size consistency without PS2SDK. This makes corruption behavior host-testable without inventing a fake fileXio environment. `rescue_storage.c` owns device paths, slot protection, current-payload acquisition, read/write retry behavior, same-disk selection, and file lifetime. `main.c` receives a validated `rescue_storage_entry_t`, applies the existing live bounds and mandatory-backup gates, shows the confirmation UI, then passes the payload to `bootstrap_transaction`.
+
+Manual installation follows the same separation. `bootstrap_source.c` loads the source, preserves `MBR.XIN`/`MBR.XLF` compatibility through the existing wrapper, validates the unsigned KELF, calculates its sectors, and checks current reserved capacity. `bootstrap_signing.c` performs the console-side MagicGate mutation and immediately re-validates the signed KELF. Only then does `main.c` show the final install confirmation and enter the transaction sequencer. Neither source preparation nor signing can write the HDD.
 
 ## Boot-chain reporting boundary
 
@@ -92,7 +102,7 @@ The detailed text contract and non-goals are documented in [`BOOT_REPORT.md`](BO
 
 The parser deliberately does **not** decrypt, identify, sign, or execute a KELF. It only verifies the structural conditions already enforced by Torii and recovers the unpadded KELF length from a sector-aligned payload image. Stable named result enums preserve Torii's numeric validation codes so existing diagnostics do not silently change meaning during the extraction.
 
-Host fixtures cover normal low/high flag layouts, the length-prefixed variable area, the maximum 63-entry BIT table, plain-ELF rejection, truncated or impossible headers, BIT-table overflow, missing variable/key areas, and sector-padding recovery. MagicGate signing itself remains in the PS2-specific installation workflow because that operation depends on `secrman`, a real memory card, and console security hardware.
+Host fixtures cover normal low/high flag layouts, the length-prefixed variable area, the maximum 63-entry BIT table, plain-ELF rejection, truncated or impossible headers, BIT-table overflow, missing variable/key areas, and sector-padding recovery. The actual console-side signing operation lives in PS2-specific `bootstrap_signing.c`, which calls the portable KELF parser again after `SecrDownloadFile()` mutates the image.
 
 ## EE / IOP boundary
 
@@ -100,7 +110,7 @@ Raw HDD operations use `fileXioDevctl()` and DMA-safe aligned buffers. The two-s
 
 PFS partitions are mounted read-only for boot-chain evidence. Configuration scanning and family classification are advisory diagnostics; encrypted KELFs are structurally validated and fingerprinted, not identified from imaginary plaintext signatures.
 
-`platform.c` now owns the lifetime-sensitive pad DMA buffer and embedded IRX startup order. The IRX dependency order is intentionally unchanged from Torii and should be treated as behavior until independently tested otherwise.
+`platform.c` owns the lifetime-sensitive pad DMA buffer and embedded IRX startup order. The IRX dependency order is intentionally unchanged from Torii and should be treated as behavior until independently tested otherwise.
 
 ## R5900 optimization policy
 
