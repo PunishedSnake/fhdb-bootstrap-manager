@@ -13,10 +13,13 @@
 #include "app_identity.h"
 #include "app_ui_ps2.h"
 #include "boot_report_session.h"
+#include "gs_ui_ps2.h"
 #include "platform.h"
 #include "session_log.h"
 #include "storage.h"
 #include "version.h"
+
+#define APP_UI_MAX_MENU_ITEMS 12u
 
 static void print_error_details(app_error_domain_t fallback_domain,
                                 int code, int consume)
@@ -57,8 +60,10 @@ void app_ui_restart_to_browser(void)
        Restore the user's initial mode before leaving this application's pad
        ownership rather than leaking our activity-indicator mode into OSD. */
     pad_activity_restore();
-    scr_clear();
-    scr_printf("Restarting to the PS2 Browser...\n");
+    gs_ui_render_message("Restarting",
+                         "Returning control to the PS2 Browser.",
+                         "DEV9 will be shut down before ExecOSD.",
+                         GS_UI_TONE_INFO);
     fileXioDevctl("hdd0:", HDIOC_DEV9OFF, NULL, 0, NULL, 0);
     ExecOSD(1, browser_args);
 }
@@ -68,6 +73,9 @@ static void app_ui_shutdown_console(void)
     session_log_line("Controlled power-off requested");
     session_log_flush(storage_selected());
     pad_activity_restore();
+    gs_ui_render_message("Power off",
+                         "Shutting down the console through the poweroff RPC.",
+                         NULL, GS_UI_TONE_WARNING);
     poweroffShutdown();
     SleepThread();
 }
@@ -127,29 +135,28 @@ int app_ui_menu_select(const char *title, const char *status,
                        unsigned int item_count,
                        unsigned int *selection)
 {
+    const char *labels[APP_UI_MAX_MENU_ITEMS];
+    const char *hints[APP_UI_MAX_MENU_ITEMS];
+    unsigned char enabled[APP_UI_MAX_MENU_ITEMS];
     unsigned int current;
+    unsigned int i;
 
-    if (items == NULL || item_count == 0 || selection == NULL)
+    if (items == NULL || item_count == 0 || selection == NULL ||
+        item_count > APP_UI_MAX_MENU_ITEMS)
         return -1;
     current = *selection < item_count ? *selection : 0;
 
+    for (i = 0; i < item_count; i++) {
+        labels[i] = items[i].label;
+        hints[i] = items[i].hint;
+        enabled[i] = items[i].enabled ? 1u : 0u;
+    }
+
     for (;;) {
         u32 pressed;
-        unsigned int i;
 
-        scr_clear();
-        scr_printf(APP_NAME " v%s\n", APP_VERSION);
-        scr_printf("%s\n", title != NULL ? title : "Menu");
-        if (status != NULL && status[0] != '\0')
-            scr_printf("%s\n", status);
-        scr_printf("\n");
-        for (i = 0; i < item_count; i++) {
-            scr_printf("%s %s%s\n", i == current ? ">" : " ",
-                       items[i].enabled ? "" : "[--] ", items[i].label);
-            if (i == current && items[i].hint != NULL)
-                scr_printf("    %s\n", items[i].hint);
-        }
-        scr_printf("\nUP/DOWN Select   X Open   TRIANGLE Back\n");
+        gs_ui_render_menu(title, status, labels, hints, enabled,
+                          item_count, current);
         pressed = wait_for_press();
         if (pressed & PAD_UP)
             current = (current + item_count - 1u) % item_count;
@@ -168,11 +175,10 @@ int app_ui_menu_select(const char *title, const char *status,
 
 void app_ui_activity_message(const char *title, const char *message)
 {
-    scr_clear();
-    scr_printf("%s\n\n", title != NULL ? title : "Working");
-    if (message != NULL)
-        scr_printf("%s\n", message);
-    scr_printf("\nActivity: screen + ANALOG lamp when supported.\n");
+    gs_ui_render_message(title != NULL ? title : "Working",
+                         message != NULL ? message : "Operation in progress.",
+                         "Activity is also reflected by the ANALOG lamp when supported.",
+                         GS_UI_TONE_INFO);
 }
 
 void app_ui_choose_storage(void)
