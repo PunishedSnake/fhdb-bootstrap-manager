@@ -16,12 +16,13 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - Extracted manual-install source preparation into `bootstrap_source.c` / `bootstrap_source.h`: MBR.XIN/XLF-compatible loading, payload size limits, pre-sign KELF validation, sector calculation, and current `__mbr` capacity validation no longer live in `main.c`.
 - Extracted console-side security mechanics into `bootstrap_signing.c` / `bootstrap_signing.h`: one-time `SecrInit`, `SecrDownloadFile`, and post-sign KELF validation are isolated from card-selection UI and HDD writes.
 - Extracted portable APA master-header parsing into `apa.c` / `apa.h`.
+- Extracted pointer-shape and explicit `__mbr` geometry validation into PS2SDK-free `hdd_bounds.c` / `hdd_bounds.h`; `hdd_read` keeps Torii's pre-`fileXioGetStat` error precedence and delegates only the deterministic policy.
 - Extracted the shared boot-chain evidence model, CNF parsing, ROMVER mapping, target parsing, and family-classification policy into PS2SDK-free `boot_chain.c` / `boot_chain.h`.
 - Extracted memory-card, FMCB, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection into read-only `boot_chain_ps2.c` / `boot_chain_ps2.h`.
 - Added a portable `kelf.c` / `kelf.h` structural parser. KELF size, flags, and BIT-count fields are decoded explicitly from their little-endian wire layout instead of relying on a native `SecrKELFHeader_t` cast.
 - Named the existing KELF validation and sector-image result codes while preserving their Torii numeric values and behavior.
 - Extracted bounded `BOOTCHAIN.TXT` formatting into PS2SDK-free `boot_report.c` / `boot_report.h`. The renderer consumes an already-completed evidence snapshot and has no fileXio, PFS, memory-card, logging, or raw-HDD side effects.
-- Extracted read-only `HDIOC_READSECTOR` transport, live `hdd0:__mbr` payload bounds checks, and sector-aligned active-payload reads into PS2-only `hdd_read.c` / `hdd_read.h`.
+- Extracted read-only `HDIOC_READSECTOR` transport, live `hdd0:__mbr` geometry acquisition, and sector-aligned active-payload reads into PS2-only `hdd_read.c` / `hdd_read.h`.
 - Extracted payload hashing and KELF-size/structure conversion into portable `boot_payload.c` / `boot_payload.h`, with `boot_payload_ps2.c` / `boot_payload_ps2.h` providing the narrow PS2 acquisition adapter.
 - Extracted `BOOTCHAIN.TXT` path/retry/write persistence into PS2-only `boot_report_ps2.c` / `boot_report_ps2.h`; the portable renderer remains completely storage-free.
 - Extracted bounded ordered session buffering plus `HDDMAN.LOG` append/rotation/retry behavior into `session_log.c` / `session_log.h`.
@@ -34,10 +35,12 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 ### Tests
 
 - Added synthetic APA fixtures covering valid/corrupt headers, checksum and pointer decoding, hybrid-GPT detection, and same-disk matching with mutable OSD fields.
+- Added `tools/generate_hdd_fixtures.py` plus `tests/test_hdd_fixtures.c`; `make test-host` now regenerates 16 sparse 16 MiB logical HDD images covering valid disabled/enabled APA, valid/garbage KELF payloads, checksum/signature corruption, inconsistent and out-of-range pointers, deterministic garbage, PC-MBR-signature-only APA, GPT-only media, and a checksummed hybrid APA/GPT image.
+- Synthetic HDD tests track the current conservative `0x55AA` hybrid guard separately from the actual `EFI PART` GPT signature at LBA 1 so a future GPT parser cannot silently change existing behavior.
 - Added a separate portable boot-chain suite covering CNF comments/whitespace/CRLF, exact-key matching, bounded output, current/legacy `Skip_HDD` spellings, conflicting-key precedence, OSDMenu targets, FHDB auto-target order, and ROMVER regions.
 - Added classification fixtures for inconsistent/disabled pointers, unreadable payloads, invalid KELFs, explicit OSDMenu targets, FHDB, HOSDMenu, PSBBN, HDD-OSD, and unknown KELFs.
 - Added deliberately conflicting evidence fixtures to ensure explicit OSDMenu `boot_auto` targets continue to outrank stale partition/executable evidence.
-- Added malformed KELF fixtures covering low/high flag layouts, the optional length-prefixed header section, the maximum 63-entry BIT table, plain ELF rejection, invalid size relationships, BIT-table overflow, missing variable/key areas, and sector-padding recovery.
+- Added malformed KELF fixtures covering low/high flag layouts, the optional length-prefixed header section, the maximum 63-entry BIT table, plain-ELF rejection, invalid size relationships, BIT-table overflow, missing variable/key areas, and sector-padding recovery.
 - Added a byte-for-byte golden `BOOTCHAIN.TXT` fixture for a disabled bootstrap plus active-payload/hash, OSDMenu/module-evidence, assessment-precedence, and bounded-truncation fixtures.
 - Added portable `boot_payload` fixtures covering a valid sector-padded KELF, invalid-KELF sector-image hashing, and reset behavior for empty input.
 - Added complete rescue-image fixtures covering valid payload/header-only images, APA corruption, payload-hash corruption, and the protected-slot identity contract.
@@ -47,7 +50,7 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
 ### Safety
 
-- Read-only `HDIOC_READSECTOR`, live payload bounds checks, and active-image acquisition remain behind `hdd_read.c`; the interface exposes no write, flush, or pointer-update operation.
+- Read-only `HDIOC_READSECTOR`, live geometry acquisition, and active-image acquisition remain behind `hdd_read.c`; the interface exposes no write, flush, or pointer-update operation. Portable `hdd_bounds` owns only deterministic pointer/geometry policy and preserves the stable `-170..-173` results used by the PS2 path.
 - `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flushes, payload comparison, and pointer read-back are isolated in `hdd_write.c`; historical numeric diagnostics and primitive I/O behavior are unchanged. Portable `bootstrap_transaction` enforces the already-authorized payload-first/pointer-last commit sequence and host tests prove that payload failure cannot expose a pointer.
 - Mandatory header-backup storage mechanics live in `header_backup.c`, while `main.c` still fails closed when no verified backup exists.
 - Rescue-file corruption, same-disk checks, and protected-slot behavior are split between `rescue_image` and `rescue_storage`; a damaged or wrong-disk full capsule still blocks silent fallback to pointer-only restore.
