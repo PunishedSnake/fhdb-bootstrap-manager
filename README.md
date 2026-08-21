@@ -334,6 +334,6 @@ Host tests cannot prove DEV9/ATA timing, DMA/fileXio behavior, cache durability,
 
 `0.4.0-dev` is a hardware-validation build, not a stable release. The normal Torii-compatible write paths retain their existing contract, but Michishirube's exceptional raw recovery paths remain experimental until the destructive validation matrix is complete.
 
-Current final software gate: branch head `c97c9818bee102cb96a3d19069ceec27593fd2f2`, **CI #322 / run `32495436417`**, host tests + fault-injector self-test + PS2DEV R5900 build all PASS.
+Current final software gate: branch head `c8359422b17cf621497f8bea28d65ca330cd163d`, **CI #323 / run `32495714384`**, host tests + fault-injector self-test + PS2DEV R5900 build all PASS.
 
 Kitsune ahead. Bring backups.
