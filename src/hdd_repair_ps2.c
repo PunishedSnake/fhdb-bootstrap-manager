@@ -69,8 +69,9 @@ int hdd_repair_write_master_header_verified(
         return HDD_REPAIR_UNSAFE_HEADER;
     }
 
-    disk_status_begin("Exceptional APA master repair",
-                      "Writing repaired sectors 0-1");
+    disk_status_begin_at("Exceptional APA master repair",
+                         "Writing repaired sectors 0-1",
+                         "APA master header / physical sectors 0-1");
     pad_activity_begin();
     repair_packet.lba = 0;
     repair_packet.size = 2;
@@ -84,7 +85,8 @@ int hdd_repair_write_master_header_verified(
                                   "HDIOC_WRITESECTOR sectors 0-1");
     }
 
-    disk_status_phase("Flushing repaired APA master");
+    disk_status_phase_at("Flushing repaired APA master",
+                         "ATA write cache / sectors 0-1 commit");
     disk_status_io(DISK_STATUS_FLUSH, 0, 2, 2, 2);
     result = fileXioDevctl("hdd0:", HDIOC_FLUSH_LOCAL,
                            NULL, 0, NULL, 0);
@@ -94,7 +96,8 @@ int hdd_repair_write_master_header_verified(
                                   "HDIOC_FLUSH repaired master");
     }
 
-    disk_status_phase("Reading sectors 0-1 back for exact verification");
+    disk_status_phase_at("Reading sectors 0-1 back for exact verification",
+                         "APA master header / physical sectors 0-1");
     disk_status_io(DISK_STATUS_VERIFY, 0, 2, 2, 2);
     result = hdd_read_raw_sectors(0, 2, repair_verify);
     if (result < 0) {
