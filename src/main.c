@@ -39,14 +39,13 @@
 #include "boot_chain.h"
 #include "boot_diagnostics_ps2.h"
 #include "boot_report_session.h"
-#include "capsule_format.h"
 #include "hdd_limits.h"
 #include "hdd_read.h"
 #include "header_backup.h"
 #include "kelf.h"
+#include "rescue_storage.h"
 #include "platform.h"
 #include "session_log.h"
-#include "sha256.h"
 #include "storage.h"
 #include "version.h"
 
@@ -59,16 +58,12 @@
 #define TRANSFER_SECTORS HDD_TRANSFER_SECTORS
 #define TRANSFER_BYTES HDD_TRANSFER_BYTES
 #define MAX_MBR_PAYLOAD_SIZE HDD_MAX_MBR_PAYLOAD_SIZE
-#define MAX_RESCUE_CAPSULE_SIZE \
-    (RESCUE_CAPSULE_METADATA_SIZE + APA_HEADER_SIZE + MAX_MBR_PAYLOAD_SIZE)
 
 /* Human-readable diagnostics and logging remain bounded in EE memory. */
 #define TEXT_FILE_LIMIT 32768
 
 /* Application-owned buffers retained across higher-level workflows. */
 static unsigned char header_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));
-static unsigned char capsule_metadata[RESCUE_CAPSULE_METADATA_SIZE]
-    __attribute__((aligned(64)));
 
 /* Explicit diagnostics returned by the mandatory header-backup storage gate. */
 static header_backup_diagnostics_t backup_diagnostics;
@@ -340,300 +335,12 @@ static const char *save_backup(void)
                               &backup_diagnostics);
 }
 
-/* Generate one of two non-overwriting full rescue-capsule paths. */
-static void rescue_path_for_slot(char *path, unsigned int capacity,
-                                 unsigned int storage, unsigned int slot)
-{
-    storage_path(path, capacity, storage,
-                 slot == 0 ? "HDDRESCUE.BIN" : "HDDRESCUE2.BIN");
-}
-
-/* Write one complete capsule with a short USB-mount grace period if needed. */
-static int write_rescue_file(const char *path, const unsigned char *metadata,
-                             const unsigned char *apa_header,
-                             const unsigned char *payload,
-                             unsigned int payload_bytes)
-{
-    int attempts = storage_selected() == 2 ? 20 : 1;
-    int fd = -1;
-    const unsigned char *parts[3];
-    unsigned int sizes[3];
-    unsigned int part;
-
-    while (attempts-- > 0) {
-        fd = fileXioOpen(path, FIO_O_WRONLY | FIO_O_CREAT | FIO_O_TRUNC,
-                         0666);
-        if (fd >= 0)
-            break;
-        DelayThread(250000);
-    }
-    if (fd < 0)
-        return fd;
-
-    parts[0] = metadata;
-    parts[1] = apa_header;
-    parts[2] = payload;
-    sizes[0] = RESCUE_CAPSULE_METADATA_SIZE;
-    sizes[1] = APA_HEADER_SIZE;
-    sizes[2] = payload_bytes;
-    for (part = 0; part < 3; part++) {
-        unsigned int total = 0;
-
-        while (total < sizes[part]) {
-            int written = fileXioWrite(fd, parts[part] + total,
-                                       sizes[part] - total);
-
-            if (written <= 0) {
-                fileXioClose(fd);
-                return written < 0 ? written : -180;
-            }
-            total += (unsigned int)written;
-        }
-    }
-    fileXioClose(fd);
-    return 0;
-}
-
-/* Decode a capsule and verify both embedded SHA-256 digests before use. */
-static int load_rescue_file(const char *path, rescue_capsule_info_t *info,
-                            unsigned char **file_data_out,
-                            unsigned int *file_size_out)
-{
-    unsigned char *data = NULL;
-    unsigned int size = 0;
-    unsigned char digest[32];
-    const unsigned char *saved_header;
-    const unsigned char *saved_payload;
-    int result;
-
-    result = read_bounded_file(path, MAX_RESCUE_CAPSULE_SIZE, &data, &size);
-    if (result < 0)
-        return result;
-    if (size < RESCUE_CAPSULE_METADATA_SIZE + APA_HEADER_SIZE) {
-        free(data);
-        return -181;
-    }
-    memcpy(capsule_metadata, data, RESCUE_CAPSULE_METADATA_SIZE);
-    result = rescue_capsule_decode(capsule_metadata, size, info);
-    if (result < 0) {
-        free(data);
-        return -190 + result;
-    }
-
-    saved_header = data + RESCUE_CAPSULE_METADATA_SIZE;
-    saved_payload = saved_header + APA_HEADER_SIZE;
-    sha256_buffer(saved_header, APA_HEADER_SIZE, digest);
-    if (memcmp(digest, info->apa_sha256, sizeof(digest)) != 0 ||
-        !is_standard_apa_header(saved_header) ||
-        (info->flags & RESCUE_CAPSULE_FLAG_VALID_APA) == 0) {
-        free(data);
-        return -182;
-    }
-    if ((info->flags & RESCUE_CAPSULE_FLAG_HAS_PAYLOAD) != 0) {
-        unsigned int kelf_bytes = 0;
-
-        sha256_buffer(saved_payload, info->payload_bytes, digest);
-        if (memcmp(digest, info->payload_sha256, sizeof(digest)) != 0) {
-            free(data);
-            return -183;
-        }
-        if ((info->flags & RESCUE_CAPSULE_FLAG_VALID_KELF) != 0 &&
-            (kelf_size_from_disk_image(saved_payload, info->payload_bytes,
-                                       &kelf_bytes) < 0 ||
-             kelf_bytes != info->kelf_file_bytes)) {
-            free(data);
-            return -184;
-        }
-    }
-    *file_data_out = data;
-    *file_size_out = size;
-    return 0;
-}
-
-/* Check whether an existing protected slot already contains this exact state. */
-static int rescue_file_matches(const char *path,
-                               const rescue_capsule_info_t *expected)
-{
-    rescue_capsule_info_t existing;
-    unsigned char *data = NULL;
-    unsigned int size = 0;
-    int result = load_rescue_file(path, &existing, &data, &size);
-
-    (void)size;
-    if (result < 0)
-        return 0;
-    result = existing.flags == expected->flags &&
-             existing.payload_start == expected->payload_start &&
-             existing.payload_sectors == expected->payload_sectors &&
-             existing.payload_bytes == expected->payload_bytes &&
-             memcmp(existing.apa_sha256, expected->apa_sha256, 32) == 0 &&
-             memcmp(existing.payload_sha256,
-                    expected->payload_sha256, 32) == 0;
-    free(data);
-    return result;
-}
-
-/* Save header plus exact active payload sectors and verify the resulting file. */
+/* Save the current versioned rescue state through the isolated lifecycle. */
 static const char *save_rescue_capsule(void)
 {
-    static char saved_path[64];
-    rescue_capsule_info_t info;
-    rescue_capsule_info_t verified_info;
-    unsigned char *payload = NULL;
-    unsigned char *verified_file = NULL;
-    unsigned int payload_bytes = 0;
-    unsigned int kelf_file_bytes = 0;
-    unsigned int verified_size = 0;
-    unsigned int slot;
-    u32 start = read_le32(header_buffer + APA_OSD_START_OFFSET);
-    u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);
-    int result;
-
-    if ((start == 0) != (sectors == 0)) {
-        session_log_line("Rescue capsule rejected inconsistent pointer state");
-        return NULL;
-    }
-
-    memset(&info, 0, sizeof(info));
-    info.flags = RESCUE_CAPSULE_FLAG_VALID_APA;
-    info.payload_start = start;
-    info.payload_sectors = sectors;
-    snprintf(info.romver, sizeof(info.romver), "%s", boot_chain.romver);
-    snprintf(info.family, sizeof(info.family), "%s", boot_chain.family);
-    snprintf(info.confidence, sizeof(info.confidence), "%s",
-             boot_chain.confidence);
-    sha256_buffer(header_buffer, APA_HEADER_SIZE, info.apa_sha256);
-
-    if (start != 0) {
-        result = hdd_validate_payload_bounds(start, sectors);
-        if (result < 0) {
-            session_log_line("Rescue capsule payload bounds failed: %d", result);
-            return NULL;
-        }
-        result = hdd_read_payload_image(start, sectors, &payload, &payload_bytes);
-        if (result < 0) {
-            session_log_line("Rescue capsule payload read failed: %d", result);
-            return NULL;
-        }
-        info.flags |= RESCUE_CAPSULE_FLAG_HAS_PAYLOAD;
-        info.payload_bytes = payload_bytes;
-        sha256_buffer(payload, payload_bytes, info.payload_sha256);
-        if (kelf_size_from_disk_image(payload, payload_bytes,
-                                      &kelf_file_bytes) == 0) {
-            info.kelf_file_bytes = kelf_file_bytes;
-            info.flags |= RESCUE_CAPSULE_FLAG_VALID_KELF;
-        }
-    }
-
-    rescue_capsule_encode(capsule_metadata, &info);
-    for (slot = 0; slot < HEADER_BACKUP_SLOT_COUNT; slot++) {
-        iox_stat_t existing;
-
-        rescue_path_for_slot(saved_path, sizeof(saved_path), storage_selected(),
-                             slot);
-        memset(&existing, 0, sizeof(existing));
-        if (fileXioGetStat(saved_path, &existing) >= 0) {
-            if (rescue_file_matches(saved_path, &info)) {
-                free(payload);
-                session_log_line("Existing rescue capsule already matches: %s",
-                         saved_path);
-                return saved_path;
-            }
-            continue;
-        }
-
-        result = write_rescue_file(saved_path, capsule_metadata,
-                                   header_buffer, payload, payload_bytes);
-        if (result < 0) {
-            session_log_line("Rescue capsule write failed at %s: %d", saved_path,
-                     result);
-            continue;
-        }
-        result = load_rescue_file(saved_path, &verified_info, &verified_file,
-                                  &verified_size);
-        if (result == 0 && verified_info.flags == info.flags &&
-            memcmp(verified_info.apa_sha256, info.apa_sha256, 32) == 0 &&
-            memcmp(verified_info.payload_sha256,
-                   info.payload_sha256, 32) == 0) {
-            free(verified_file);
-            free(payload);
-            session_log_line("Rescue capsule saved and verified: %s (%u bytes)",
-                     saved_path, verified_size);
-            return saved_path;
-        }
-        free(verified_file);
-        session_log_line("Rescue capsule read-back verification failed: %s (%d)",
-                 saved_path, result);
-    }
-    free(payload);
-    return NULL;
-}
-
-/* Locate the first valid same-disk capsule, distinguishing absence from damage. */
-static int find_rescue_capsule(char *found_path, unsigned int path_capacity,
-                               rescue_capsule_info_t *info,
-                               unsigned char **file_data,
-                               unsigned int *file_size)
-{
-    unsigned int slot;
-    int saw_existing = 0;
-    int saw_invalid = 0;
-    int saw_header_only = 0;
-    int first_error = -200;
-
-    for (slot = 0; slot < HEADER_BACKUP_SLOT_COUNT; slot++) {
-        char path[64];
-        rescue_capsule_info_t candidate;
-        unsigned char *candidate_data = NULL;
-        unsigned int candidate_size = 0;
-        const unsigned char *candidate_header;
-        int result;
-
-        rescue_path_for_slot(path, sizeof(path), storage_selected(), slot);
-        if (!path_exists(path))
-            continue;
-        saw_existing = 1;
-        result = load_rescue_file(path, &candidate, &candidate_data,
-                                  &candidate_size);
-        if (result < 0) {
-            saw_invalid = 1;
-            if (first_error == -200 || first_error == -202)
-                first_error = result;
-            continue;
-        }
-        candidate_header = candidate_data + RESCUE_CAPSULE_METADATA_SIZE;
-        if (!headers_match_same_disk(header_buffer, candidate_header)) {
-            free(candidate_data);
-            saw_invalid = 1;
-            if (first_error == -200 || first_error == -202)
-                first_error = -201;
-            continue;
-        }
-        if ((candidate.flags & RESCUE_CAPSULE_FLAG_HAS_PAYLOAD) == 0) {
-            free(candidate_data);
-            saw_header_only = 1;
-            if (first_error == -200)
-                first_error = -202;
-            continue;
-        }
-        if ((candidate.flags & RESCUE_CAPSULE_FLAG_VALID_KELF) == 0) {
-            free(candidate_data);
-            saw_invalid = 1;
-            if (first_error == -200 || first_error == -202)
-                first_error = -203;
-            continue;
-        }
-        snprintf(found_path, path_capacity, "%s", path);
-        *info = candidate;
-        *file_data = candidate_data;
-        *file_size = candidate_size;
-        return 0;
-    }
-    if (!saw_existing)
-        return -200;
-    if (saw_invalid)
-        return first_error;
-    return saw_header_only ? -202 : first_error;
+    return rescue_storage_save_current(
+        storage_selected(), header_buffer, boot_chain.romver,
+        boot_chain.family, boot_chain.confidence);
 }
 
 /* Resolve a compatible enabled legacy pointer backup on selected storage. */
@@ -826,18 +533,15 @@ static void restore_legacy_pointer(void)
 /* Restore a verified payload first and expose it to ROM only after read-back. */
 static void restore_rescue_capsule(void)
 {
-    char rescue_path[64];
-    rescue_capsule_info_t info;
-    unsigned char *file_data = NULL;
-    unsigned int file_size = 0;
+    rescue_storage_entry_t rescue;
     const unsigned char *payload;
     const char *safety_backup;
     bootstrap_transaction_result_t transaction;
     int result;
 
-    result = find_rescue_capsule(rescue_path, sizeof(rescue_path), &info,
-                                 &file_data, &file_size);
-    if (result == -200 || result == -202) {
+    result = rescue_storage_find(storage_selected(), header_buffer, &rescue);
+    if (result == RESCUE_STORAGE_NOT_FOUND ||
+        result == RESCUE_STORAGE_HEADER_ONLY) {
         restore_legacy_pointer();
         return;
     }
@@ -852,9 +556,10 @@ static void restore_rescue_capsule(void)
         return;
     }
 
-    result = hdd_validate_payload_bounds(info.payload_start, info.payload_sectors);
+    result = hdd_validate_payload_bounds(rescue.info.payload_start,
+                                         rescue.info.payload_sectors);
     if (result < 0) {
-        free(file_data);
+        rescue_storage_entry_release(&rescue);
         scr_clear();
         scr_printf("Rescue payload does not fit this __mbr area.\n");
         scr_printf("Validation code: %d\n", result);
@@ -863,34 +568,38 @@ static void restore_rescue_capsule(void)
     }
     safety_backup = save_backup();
     if (safety_backup == NULL) {
-        free(file_data);
+        rescue_storage_entry_release(&rescue);
         backup_error_screen();
         return;
     }
 
-    payload = file_data + RESCUE_CAPSULE_METADATA_SIZE + APA_HEADER_SIZE;
+    payload = rescue_storage_payload(&rescue);
     scr_clear();
-    scr_printf("Full rescue restore from\n%s\n\n", rescue_path);
-    scr_printf("Family  : %s (%s)\n", info.family, info.confidence);
-    scr_printf("Target  : 0x%08x\n", (unsigned int)info.payload_start);
+    scr_printf("Full rescue restore from\n%s\n\n", rescue.path);
+    scr_printf("Family  : %s (%s)\n", rescue.info.family,
+               rescue.info.confidence);
+    scr_printf("Target  : 0x%08x\n",
+               (unsigned int)rescue.info.payload_start);
     scr_printf("Payload : %u bytes / 0x%x sectors\n",
-               (unsigned int)info.payload_bytes,
-               (unsigned int)info.payload_sectors);
+               (unsigned int)rescue.info.payload_bytes,
+               (unsigned int)rescue.info.payload_sectors);
     scr_printf("Safety  : %s\n\n", safety_backup);
     scr_printf("The payload will be written and compared first.\n");
     scr_printf("Its pointer will be enabled only after verification.\n\n");
     scr_printf("Hold L1+R1 and press SQUARE to confirm.\n");
     scr_printf("Press TRIANGLE to cancel.\n");
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_SQUARE)) {
-        free(file_data);
+        rescue_storage_entry_release(&rescue);
         return;
     }
 
     scr_clear();
     scr_printf("Restoring and verifying rescue payload...\n");
     result = bootstrap_transaction_ps2_activate(
-        header_buffer, payload, info.payload_bytes, info.payload_start,
-        info.payload_sectors, free, file_data, &transaction);
+        header_buffer, payload, rescue.info.payload_bytes,
+        rescue.info.payload_start, rescue.info.payload_sectors,
+        free, rescue.file_data, &transaction);
+    rescue.file_data = NULL;
     if (result < 0) {
         if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_PAYLOAD)
             fatal_screen(
@@ -905,12 +614,13 @@ static void restore_rescue_capsule(void)
                          result);
     }
 
-    session_log_line("Full rescue restored from %s (%u bytes); safety backup=%s",
-             rescue_path, file_size, safety_backup);
+    session_log_line(
+        "Full rescue restored from %s (%u bytes); safety backup=%s",
+        rescue.path, rescue.file_size, safety_backup);
     refresh_boot_chain_report(1);
     scr_clear();
     scr_printf("Payload and pointer restored and verified.\n\n");
-    scr_printf("Source: %s\n", rescue_path);
+    scr_printf("Source: %s\n", rescue.path);
     wait_to_return();
 }
 
