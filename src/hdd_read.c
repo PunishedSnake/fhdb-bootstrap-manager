@@ -1,10 +1,11 @@
 /*
  * PS2-specific, read-only raw HDD transport.
  *
- * This module deliberately owns only HDIOC_READSECTOR and read-only __mbr
- * bounds checks. It cannot write sectors, flush write caches, or change the
- * ROM bootstrap pointer. The two-sector transfer size is the same conservative
- * fileXio RPC size used by the Torii write-verification path.
+ * This module deliberately owns only HDIOC_READSECTOR and live __mbr geometry
+ * acquisition. Portable pointer/bounds policy lives in hdd_bounds.c. It cannot
+ * write sectors, flush write caches, or change the ROM bootstrap pointer. The
+ * two-sector transfer size is the same conservative fileXio RPC size used by
+ * the Torii write-verification path.
  */
 
 #define NEWLIB_PORT_AWARE
@@ -14,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "hdd_bounds.h"
 #include "hdd_limits.h"
 #include "hdd_read.h"
 
@@ -45,21 +47,19 @@ int hdd_validate_payload_bounds(unsigned int start, unsigned int sectors)
     iox_stat_t mbr_status;
     int result;
 
-    if (start == 0 || sectors == 0)
-        return HDD_PAYLOAD_ERR_EMPTY_POINTER;
-    if (sectors > HDD_MAX_MBR_PAYLOAD_SIZE / HDD_SECTOR_SIZE)
-        return HDD_PAYLOAD_ERR_TOO_LARGE;
-    if (start < HDD_MBR_PAYLOAD_START)
-        return HDD_PAYLOAD_ERR_BEFORE_RESERVED_AREA;
+    /* Preserve Torii's error precedence before asking the IOP for geometry. */
+    result = hdd_validate_payload_shape(start, sectors);
+    if (result < 0)
+        return result;
 
     memset(&mbr_status, 0, sizeof(mbr_status));
     result = fileXioGetStat("hdd0:__mbr", &mbr_status);
     if (result < 0)
         return result;
-    if (mbr_status.private_5 != 0 || start >= mbr_status.size ||
-        sectors > mbr_status.size - start)
-        return HDD_PAYLOAD_ERR_OUTSIDE_MBR;
-    return 0;
+
+    return hdd_validate_payload_bounds_geometry(
+        start, sectors, (unsigned int)mbr_status.private_5,
+        (unsigned int)mbr_status.size);
 }
 
 int hdd_read_payload_image(unsigned int start, unsigned int sectors,
