@@ -112,6 +112,18 @@ static int test_header_only_image(void)
            decoded.flags == RESCUE_CAPSULE_FLAG_VALID_APA;
 }
 
+static int test_rejects_stale_capsule_version(void)
+{
+    unsigned char image[TEST_FILE_SIZE];
+    rescue_capsule_info_t source;
+    rescue_capsule_info_t decoded;
+    unsigned int size = make_payload_capsule(image, &source);
+
+    /* Version is a little-endian u32 at metadata offset 8. */
+    memset(image + 8, 0, 4);
+    return rescue_image_validate(image, size, &decoded) == -192;
+}
+
 static int test_state_identity_contract(void)
 {
     rescue_capsule_info_t a;
@@ -133,7 +145,18 @@ static int test_state_identity_contract(void)
     if (!rescue_image_state_matches(&a, &b))
         return 0;
 
+    b = a;
     b.payload_start++;
+    if (rescue_image_state_matches(&a, &b))
+        return 0;
+
+    /* A capsule from another disk or another payload must never be reused. */
+    b = a;
+    b.apa_sha256[0] ^= 1u;
+    if (rescue_image_state_matches(&a, &b))
+        return 0;
+    b = a;
+    b.payload_sha256[0] ^= 1u;
     return !rescue_image_state_matches(&a, &b);
 }
 
@@ -155,9 +178,13 @@ int main(void)
         fprintf(stderr, "Header-only rescue image was rejected.\n");
         return 4;
     }
+    if (!test_rejects_stale_capsule_version()) {
+        fprintf(stderr, "Stale rescue capsule version was not rejected.\n");
+        return 5;
+    }
     if (!test_state_identity_contract()) {
         fprintf(stderr, "Rescue slot identity contract changed.\n");
-        return 5;
+        return 6;
     }
 
     puts("All rescue image validation tests passed.");
