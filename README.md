@@ -51,7 +51,7 @@ The former debug renderer had a different logical coordinate convention. libdraw
 
 Existing controller screens that still construct text incrementally with `scr_clear()` / `scr_printf()` are intercepted by `gs_debug_compat_ps2` and rendered through the same GS frontend. Those names therefore remain in some controller source while libdebug itself no longer draws application pixels. The debug library is currently retained only for its built-in MSX font asset/toolchain compatibility.
 
-Full ownership and trust boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Full ownership and trust boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The physical UI migration and validation checklist live in [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md).
 
 ## Main features
 
@@ -320,10 +320,40 @@ Generated binaries and synthetic HDD images are not tracked in the source tree.
 
 The original pointer-disable workflow eliminated a real post-uninstall FHDB boot loop on PlayStation 2 hardware and Torii preserves that normal write behavior.
 
-Michishirube still requires physical validation for its exceptional recovery paths and the new application-wide GS frontend. The first UI hardware gate should verify full-screen placement, PAL/NTSC field geometry, readable text scaling, menu selection state and live-HDD updates without the former mixed-renderer offset.
+Michishirube now also has an initial healthy-disk hardware pass with mutually consistent `HDDMBR.BIN`, `HDDRESCUE.BIN`, `BOOTCHAIN.TXT`, and `HDDMAN.LOG` evidence. See [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md).
 
-For destructive recovery testing, use a sacrificial or fully backed-up APA HDD and capture the original raw headers externally before injecting corruption.
+Controlled destructive validation must use [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md). The fault injector defaults to dry-run and requires a fresh master SHA plus extra confirmation before a physical-drive write.
 
-## License
+The following Michishirube additions remain **not yet fully hardware-proven**:
 
-MIT. See [`LICENSE`](LICENSE).
+- exceptional raw sectors 0-1 master repair after deliberately injected corruption;
+- raw forensic scanning across the test HDD compared with a known host-side topology;
+- multi-header topology repair and master-last commit behavior;
+- `HDDMETA` snapshot/write/read-back behavior during destructive recovery;
+- ANALOG-lamp activity switching across original and third-party controllers;
+- the fast-start/timing change that defers full PFS/MC boot-chain diagnostics;
+- application-wide GS frontend full-screen placement, PAL/NTSC geometry, font scaling, long-screen clipping, and live-HDD rendering after removal of the mixed libdebug/GS path;
+- controlled interruption/power-loss boundaries.
+
+Host tests cannot prove DEV9/ATA timing, DMA/fileXio behavior, cache durability, APA journaling, adapter quirks, exact physical display timing, or power-loss effects. Physical-HDD validation remains the final gate before these paths can be treated as release-ready.
+
+## Project documentation
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module ownership, trust ladder, normal and recovery write invariants.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames, scope boundaries, and engineering milestones.
+- [`docs/FORENSIC_RECOVERY.md`](docs/FORENSIC_RECOVERY.md) — forensic evidence model, shadow maps, `HDDMETA`, confidence and write authorization.
+- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — 30 mounted/deterministic raw images plus 9 full 512 MiB forensic regressions.
+- [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md) — current real-console evidence and hardware gaps.
+- [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded controlled-corruption procedure for sacrificial/backed-up HDDs.
+- [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — application-wide Graphics Synthesizer frontend and physical display validation gate.
+- [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — full rescue capsule format and restore rules.
+- [`docs/KELF_FORMAT.md`](docs/KELF_FORMAT.md) — KELF validation/signing assumptions.
+- [`docs/BOOT_REPORT.md`](docs/BOOT_REPORT.md) — boot-chain evidence and report semantics.
+
+## Current development warning
+
+`0.4.0-dev` is a hardware-validation build, not a stable release. The normal Torii-compatible write paths retain their existing contract, but Michishirube's exceptional raw recovery paths remain experimental until the destructive validation matrix is complete.
+
+Exact current branch/CI identity is intentionally kept in PR metadata rather than embedded here, because putting a branch SHA inside a file changes that SHA again.
+
+Kitsune ahead. Bring backups.
