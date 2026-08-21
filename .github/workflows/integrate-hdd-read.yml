@@ -113,25 +113,31 @@ jobs:
               '}\n',
               'boot-chain analyzer')
 
-          replace_once(
-              '    u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);\n'
-              '    iox_stat_t mbr_status;\n'
-              '    int result;\n',
-              '    u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);\n'
-              '    int result;\n',
-              'rescue local mbr status')
-          replace_once('result = validate_payload_bounds(start, sectors, &mbr_status);',
-                       'result = hdd_validate_payload_bounds(start, sectors);',
-                       'rescue bounds call')
-          text = text.replace('read_payload_image(start, sectors,',
-                              'hdd_read_payload_image(start, sectors,')
+          # The remaining three users are rescue-save, legacy pointer restore,
+          # and full rescue restore. They all need the same read-only __mbr
+          # capacity policy and never consume the returned iox_stat_t directly.
+          text, count = re.subn(
+              r'validate_payload_bounds\(\s*([^,]+?),\s*([^,]+?),\s*&mbr_status\)',
+              r'hdd_validate_payload_bounds(\1, \2)', text,
+              flags=re.MULTILINE | re.DOTALL)
+          if count != 3:
+              raise SystemExit(f'payload bounds calls: expected 3, found {count}')
+          text, count = re.subn(r'^    iox_stat_t mbr_status;\n', '', text,
+                                flags=re.MULTILINE)
+          if count != 3:
+              raise SystemExit(f'mbr_status locals: expected 3, found {count}')
+
+          replace_once('read_payload_image(start, sectors, &payload, &payload_bytes)',
+                       'hdd_read_payload_image(start, sectors, &payload, &payload_bytes)',
+                       'rescue payload image read')
 
           literal_leftovers = [
               'static int read_raw_sectors(',
               'static int validate_payload_bounds(',
               'static int read_payload_image(',
               'HDIOC_READSECTOR_LOCAL',
-              'raw_transfer_t'
+              'raw_transfer_t',
+              'mbr_status'
           ]
           for token in literal_leftovers:
               if token in text:
