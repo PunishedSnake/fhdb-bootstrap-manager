@@ -36,3 +36,5 @@ Before treating this UI path as hardware-proven, validate on real consoles/displ
 - visible tearing or field artifacts under rapid event updates.
 
 If tearing is visible, presentation synchronization/double-buffering should be addressed without reintroducing HDD-event throttling.
+
+This UI validation is additive to the existing Michishirube hardware gates in `HARDWARE_VALIDATION_0.4.md` and `HARDWARE_FAULT_INJECTION.md`; it does not replace the destructive recovery validation matrix.
