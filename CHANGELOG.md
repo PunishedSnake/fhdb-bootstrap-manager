@@ -16,6 +16,8 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - Extracted memory-card, FMCB, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection into read-only `boot_chain_ps2.c` / `boot_chain_ps2.h`.
 - Added a portable `kelf.c` / `kelf.h` structural parser. KELF size, flags, and BIT-count fields are now decoded explicitly from their little-endian wire layout instead of relying on a native `SecrKELFHeader_t` cast.
 - Named the existing KELF validation and sector-image result codes while preserving their Torii numeric values and behavior.
+- Extracted bounded `BOOTCHAIN.TXT` formatting into PS2SDK-free `boot_report.c` / `boot_report.h`. The renderer consumes an already-completed evidence snapshot and has no fileXio, PFS, memory-card, logging, or raw-HDD side effects.
+- Kept report persistence and the short diagnostics UI in `main.c`; only presentation formatting moved, so existing save/log behavior remains outside the portable layer.
 
 ### Tests
 
@@ -24,6 +26,8 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - Added classification fixtures for inconsistent/disabled pointers, unreadable payloads, invalid KELFs, explicit OSDMenu targets, FHDB, HOSDMenu, PSBBN, HDD-OSD, and unknown KELFs.
 - Added deliberately conflicting evidence fixtures to ensure explicit OSDMenu `boot_auto` targets continue to outrank stale partition/executable evidence.
 - Added malformed KELF fixtures covering low/high flag layouts, the optional length-prefixed header section, the maximum 63-entry BIT table, plain ELF rejection, invalid size relationships, BIT-table overflow, missing variable/key areas, and sector-padding recovery.
+- Added a byte-for-byte golden `BOOTCHAIN.TXT` fixture for a disabled bootstrap plus active-payload/hash, OSDMenu/module-evidence, assessment-precedence, and bounded-truncation fixtures.
+- Report tests verify the external-HDD-module/`Skip_HDD` advisory text and guarantee NUL termination even when the supplied output buffer is deliberately too small.
 - Every physical extraction from `main.c` is accepted only after the portable suite and pinned PS2DEV v2.0.0 R5900 release build pass; final trees are rechecked with normal CI.
 
 ### Safety
@@ -31,7 +35,7 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - `HDIOC_READSECTOR`, `HDIOC_WRITESECTOR`, live payload bounds checks, aligned raw-transfer buffers, `HDIOC_SETOSDMBR`, flush/read-back verification, rescue restore, MagicGate signing, and payload-first/pointer-last ordering remain unchanged in `main.c`.
 - The new PS2 boot-chain scanner is read-only: it reads memory-card files and mounts PFS partitions with `FIO_MT_RDONLY` but owns no disk-changing operation.
 - KELF modularization changes only structural parsing. MagicGate signing remains PS2-specific and no encryption, signing, payload write, or activation behavior is moved into the portable module.
-- `analyze_boot_chain()` remains beside raw payload transport for now instead of creating a misleading dependency from the read-only scanner into write-capable APA infrastructure.
+- The new report renderer cannot access storage. `analyze_boot_chain()` still owns raw payload acquisition, while `main.c` still owns `BOOTCHAIN.TXT` persistence, `HDDMAN.LOG` updates, and diagnostics-screen presentation.
 
 ## [0.3.1] - 2026-08-21
 
