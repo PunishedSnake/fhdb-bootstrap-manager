@@ -1,10 +1,12 @@
 /*
  * Application-wide 2D frontend rendered through the PlayStation 2 GS.
  *
- * Michishirube no longer shares libdebug's framebuffer or coordinate state.
- * This module owns CRT/framebuffer setup through PS2SDK graph, keeps one ASCII
- * atlas resident in VRAM, and renders menus, messages, compatibility console
- * screens and live HDD telemetry as GS primitives/textured sprites over GIF DMA.
+ * Physical testing proved the existing PS2SDK/libdebug CRT bootstrap on the
+ * target console, while a standalone graph_initialize(640x448) path produced a
+ * black screen. The bootstrap therefore remains responsible only for CRT/read-
+ * circuit setup. This module owns every application pixel afterward, using the
+ * proven framebuffer at VRAM 0, a resident ASCII atlas, GS primitives and GIF
+ * DMA. A virtual 640x448 UI is mapped onto the 640x224 field coordinate space.
  */
 
 #include <kernel.h>
@@ -26,6 +28,8 @@
 
 #define GS_UI_WIDTH 640
 #define GS_UI_HEIGHT 448
+#define GS_UI_FIELD_HEIGHT 224
+#define GS_UI_Y_SCALE 0.5f
 #define GS_UI_FONT_SRC_W 8
 #define GS_UI_FONT_SRC_H 8
 #define GS_UI_GLYPH_W 8
@@ -53,6 +57,11 @@ static char console_buffer[GS_UI_CONSOLE_BYTES];
 static unsigned int console_used;
 static int renderer_ready;
 
+static float field_y(float virtual_y)
+{
+    return virtual_y * GS_UI_Y_SCALE;
+}
+
 static void set_color(color_t *color, unsigned int r, unsigned int g,
                       unsigned int b, unsigned int a)
 {
@@ -71,10 +80,10 @@ static qword_t *filled_rect(qword_t *q, float x0, float y0,
     rect_t rect;
 
     rect.v0.x = x0;
-    rect.v0.y = y0;
+    rect.v0.y = field_y(y0);
     rect.v0.z = 1;
     rect.v1.x = x1;
-    rect.v1.y = y1;
+    rect.v1.y = field_y(y1);
     rect.v1.z = 1;
     set_color(&rect.color, r, g, b, 0x80);
     draw_disable_blending();
@@ -89,10 +98,10 @@ static qword_t *outline_rect(qword_t *q, float x0, float y0,
     rect_t rect;
 
     rect.v0.x = x0;
-    rect.v0.y = y0;
+    rect.v0.y = field_y(y0);
     rect.v0.z = 1;
     rect.v1.x = x1;
-    rect.v1.y = y1;
+    rect.v1.y = field_y(y1);
     rect.v1.z = 1;
     set_color(&rect.color, r, g, b, 0x80);
     draw_disable_blending();
@@ -112,10 +121,10 @@ static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
     glyph_y = ((unsigned int)ch >> 4) * GS_UI_FONT_SRC_H;
 
     glyph.v0.x = x;
-    glyph.v0.y = y;
+    glyph.v0.y = field_y(y);
     glyph.v0.z = 2;
     glyph.v1.x = x + GS_UI_GLYPH_W;
-    glyph.v1.y = y + GS_UI_GLYPH_H;
+    glyph.v1.y = field_y(y + GS_UI_GLYPH_H);
     glyph.v1.z = 2;
     glyph.t0.u = (float)glyph_x;
     glyph.t0.v = (float)glyph_y;
@@ -195,16 +204,20 @@ static int setup_environment(void)
 {
     packet_t *packet;
     qword_t *q;
-    int frame_address;
+    int reserved_frame;
     int texture_address;
 
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
 
+    /* init_scr() has already configured the physical display to read from VRAM
+       address 0. Reset only the allocator bookkeeping, reserve exactly that
+       framebuffer footprint so later textures cannot overlap it, then allocate
+       the atlas after it. No CRT/read-circuit registers are changed here. */
     graph_vram_clear();
-    frame_address = graph_vram_allocate(GS_UI_WIDTH, GS_UI_HEIGHT,
-                                        GS_PSM_32, GRAPH_ALIGN_PAGE);
-    if (frame_address < 0)
+    reserved_frame = graph_vram_allocate(GS_UI_WIDTH, GS_UI_HEIGHT,
+                                         GS_PSM_32, GRAPH_ALIGN_PAGE);
+    if (reserved_frame != 0)
         return -1;
 
     texture_address = graph_vram_allocate(GS_UI_ATLAS_W, GS_UI_ATLAS_H,
@@ -212,7 +225,7 @@ static int setup_environment(void)
     if (texture_address < 0)
         return -2;
 
-    frame.address = (unsigned int)frame_address;
+    frame.address = 0;
     frame.width = GS_UI_WIDTH;
     frame.height = GS_UI_HEIGHT;
     frame.psm = GS_PSM_32;
@@ -226,16 +239,17 @@ static int setup_environment(void)
     zbuffer.zsm = GS_ZBUF_32;
     zbuffer.mask = 1;
 
-    /* graph_initialize owns SetGsCrt/read-circuit setup. From this point onward
-       there is one application framebuffer and one full 640x448 coordinate
-       space. draw2d already adds the GS +2048 primitive bias internally. */
-    graph_initialize(frame.address, frame.width, frame.height, frame.psm, 0, 0);
-
     packet = packet_init(64, PACKET_NORMAL);
     if (packet == NULL)
         return -3;
     q = packet->data;
     q = draw_setup_environment(q, GS_UI_CONTEXT, &frame, &zbuffer);
+    /* libdraw's draw2d primitives already add +2048. The previous hardware-
+       visible HUD additionally used XYOFFSET 1728/1936, which displaced it by
+       exactly +320/+112. Keep the proven video mode but correct that offset. */
+    q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
+    q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
+                          0, GS_UI_FIELD_HEIGHT - 1);
     q = draw_finish(q);
     dma_wait_fast();
     dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
@@ -321,11 +335,9 @@ static qword_t *begin_frame(packet_t **packet_out)
     q = packet->data;
 
     q = draw_framebuffer(q, GS_UI_CONTEXT, &frame);
-    /* libdraw's draw2d primitives add +2048 themselves. The correct GS offset
-       for ordinary application coordinates is therefore exactly 2048,2048. */
     q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
     q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
-                          0, GS_UI_HEIGHT - 1);
+                          0, GS_UI_FIELD_HEIGHT - 1);
     q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
     q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
     q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
@@ -676,7 +688,7 @@ void gs_ui_render_disk_status(const char *operation,
 
     q = filled_rect(q, 0, 414, GS_UI_WIDTH, GS_UI_HEIGHT, 11, 15, 23);
     q = text_string_box(q, 28, 425, 612, 444,
-                        "GS / GIF DMA frontend - full-screen application renderer",
+                        "GS / GIF DMA frontend - full-screen field renderer",
                         126, 145, 170);
     end_frame(packet, q);
 }
