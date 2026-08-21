@@ -82,9 +82,11 @@ static int run_scan(void)
 
     forensic_scan_valid = 1;
     session_log_line(
-        "APA forensic scan: sectors=0x%08x nodes=%u maps=%u grid=%u refs=%u unreadable=%u truncated=%d",
+        "APA forensic scan: sectors=0x%08x nodes=%u dormant_free=%u maps=%u grid=%u refs=%u unreadable=%u truncated=%d",
         (unsigned int)forensic_scan_result.total_sectors,
-        forensic_scan_result.node_count, forensic_scan_result.map_count,
+        forensic_scan_result.node_count,
+        forensic_scan_result.dormant_free_nodes,
+        forensic_scan_result.map_count,
         forensic_scan_result.grid_reads, forensic_scan_result.reference_reads,
         forensic_scan_result.unreadable_reads, forensic_scan_result.truncated);
     if (forensic_scan_result.truncated) {
@@ -136,10 +138,15 @@ static int save_report(void)
                   forensic_scan_result.reference_reads,
                   forensic_scan_result.unreadable_reads);
     report_append(&used,
-                  "Nodes        : %u / %u capacity\nMaps         : %u\nTruncated    : %s\n",
+                  "Nodes        : %u / %u capacity\nDormant free : %u\nMaps         : %u\nTruncated    : %s\n",
                   forensic_scan_result.node_count, APA_FORENSIC_MAX_NODES,
+                  forensic_scan_result.dormant_free_nodes,
                   forensic_scan_result.map_count,
                   forensic_scan_result.truncated ? "YES" : "no");
+    if (forensic_scan_result.dormant_free_nodes != 0) {
+        report_append(&used,
+                      "Dormant free note: checksum-valid historical __empty headers wholly covered by an active coalesced __empty extent; retained as evidence, excluded from active-map confidence\n");
+    }
     if (forensic_scan_result.truncated) {
         report_append(&used,
                       "Write planning: LOCKED - scan is incomplete; visible tail is not physical tail\n");
@@ -172,9 +179,11 @@ static int save_report(void)
     for (i = 0; i < forensic_scan_result.node_count; i++) {
         const apa_forensic_node_t *node = &forensic_scan_result.nodes[i];
         report_append(&used,
-                      "[%u] LBA=0x%08x id='%s' confidence=%u evidence=0x%08x\n",
+                      "[%u] LBA=0x%08x id='%s' confidence=%u evidence=0x%08x%s\n",
                       i, (unsigned int)node->lba, node->id,
-                      node->confidence, (unsigned int)node->evidence);
+                      node->confidence, (unsigned int)node->evidence,
+                      (node->evidence & APA_FORENSIC_EVIDENCE_DORMANT_FREE)
+                          ? " DORMANT_FREE" : "");
         report_append(&used,
                       " start=0x%08x length=0x%08x prev=0x%08x next=0x%08x type=0x%04x flags=0x%04x\n",
                       (unsigned int)node->start,
@@ -375,6 +384,9 @@ static int map_screen(unsigned int map_index)
         scr_printf("Reciprocal:%u inferred:%u conflicts:%u overlaps:%u\n",
                    map->reciprocal_links, map->inferred_links,
                    map->conflicts, map->overlaps);
+        if (forensic_scan_result.dormant_free_nodes != 0)
+            scr_printf("Dormant free remnants: %u (history only)\n",
+                       forensic_scan_result.dormant_free_nodes);
         if (forensic_scan_result.truncated)
             scr_printf("Completeness: PARTIAL - WRITES LOCKED\n\n");
         else
@@ -426,6 +438,8 @@ int forensic_controller_screen(void)
                    (unsigned int)forensic_scan_result.total_sectors);
         scr_printf("Headers found: %u / %u\n",
                    forensic_scan_result.node_count, APA_FORENSIC_MAX_NODES);
+        scr_printf("Dormant free : %u\n",
+                   forensic_scan_result.dormant_free_nodes);
         scr_printf("Maps built   : %u\n", forensic_scan_result.map_count);
         scr_printf("Unreadable   : %u\n", forensic_scan_result.unreadable_reads);
         if (forensic_scan_result.truncated) {
