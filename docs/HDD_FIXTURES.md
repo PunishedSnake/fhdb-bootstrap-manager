@@ -1,14 +1,17 @@
 # Synthetic HDD fixture and repair suite
 
-Michishirube exercises portable APA, KELF, pointer-bounds, mutation, health, deterministic repair, and forensic graph policy without requiring a physical PlayStation 2 HDD. Synthetic raw-disk fixtures are generated deterministically by `tools/generate_hdd_fixtures.py` and are deliberately **not** committed to Git.
+Michishirube exercises portable APA, KELF, pointer-bounds, mutation, health, deterministic repair, and forensic graph policy without requiring a physical PlayStation 2 HDD. Synthetic raw-disk fixtures are generated deterministically and are deliberately **not** committed to Git.
 
-`make test-host` regenerates the raw fixture suite under `tests/generated_hdds/`. Every generated raw image has a logical size of 16 MiB so sector `0x2000` exists, while sparse allocation keeps physical host storage small where supported.
+There are now two complementary raw-image laboratories:
 
-The generator also writes `manifest.json`. Executable C regression tables remain authoritative for expected behavior; the manifest exists for inspection and future tooling.
+- `tools/generate_hdd_fixtures.py` creates **30 sparse 16 MiB images** for APA master, bootstrap pointer, KELF, interrupted-state, mutation, and mounted repair-policy coverage under `tests/generated_hdds/`;
+- `tools/generate_forensic_fixtures.py` creates **9 sparse 512 MiB images** for end-to-end forensic graph reconstruction on realistic 128 MiB APA grid LBAs under `tests/generated_forensic_hdds/`.
 
-## Current raw-image matrix
+Both generators write a `manifest.json`. Executable C regression tables remain authoritative for expected behavior; manifests exist for inspection and future tooling. Sparse allocation keeps physical host storage small where supported even though the forensic images have a 512 MiB logical size.
 
-The generated suite currently contains **30 raw HDD fixtures**.
+## Current 30-image mounted/deterministic matrix
+
+The original generated suite contains **30 raw HDD fixtures**.
 
 | Fixture | Disk state | Mounted/deterministic repair policy |
 |---|---|---|
@@ -75,13 +78,13 @@ This complements `tests/test_hdd_mutations.c`, which separately verifies the ori
 
 ## Portable forensic graph suite
 
-Broader forensic reconstruction has a separate regression suite in `tests/test_apa_forensic.c`. It deliberately uses an abstract raw-reader callback instead of PS2SDK so graph policy can be tested independently of hardware transport.
+Broader forensic reconstruction has a regression suite in `tests/test_apa_forensic.c`. It deliberately uses an abstract raw-reader callback instead of PS2SDK so graph policy can be tested independently of hardware transport.
 
 Current graph cases include:
 
 ### Healthy linked graph
 
-A valid master and two linked partitions must produce a complete forward map with maximum confidence and no repair plan.
+A valid master and linked partitions must produce a complete forward map with maximum confidence and no repair plan.
 
 ### Physical-style stale-checksum broken link
 
@@ -111,9 +114,31 @@ A link value has **exactly two flipped bits** relative to the graph-derived expe
 
 The implementation does not brute-force arbitrary two-bit combinations. The graph derives an exact expected value first; bit distance and checksum are evidence about that candidate.
 
+## 9-image sparse forensic raw-HDD E2E suite
+
+`tests/test_forensic_fixtures.c` runs the **same production `apa_forensic_scan()`** against actual file-backed sparse raw HDD images rather than mock header slots. Each image is logically 512 MiB, putting primary partitions at realistic APA grid LBAs `0x40000`, `0x80000`, and `0xC0000` while keeping the files sparse on CI storage.
+
+The nine cases are:
+
+| Fixture | Forensic contract |
+|---|---|
+| `healthy_chain.raw` | complete forward graph, 100% confidence, no repair |
+| `broken_next_stale_checksum.raw` | one graph-derived checksum-corroborated link repair |
+| `two_bit_next_stale_checksum.raw` | exact two-bit link delta, checksum corroboration, automatic-safe |
+| `checksummed_wrong_next.raw` | high-confidence topology but manual/expert only |
+| `offgrid_subpartition.raw` | `subs[]` reference chase discovers LBA `0x48000` outside the coarse grid |
+| `missing_master.raw` | useful read-only nodes, no writeable candidate |
+| `overlapping_geometry.raw` | overlap must be exposed and every affected retained map remains non-writeable |
+| `two_header_link_damage.raw` | geometry reconstruction produces two checksum-corroborated patches |
+| `conflicting_live_target.raw` | live-link conflict must be exposed and every affected retained map remains non-writeable |
+
+Candidate maps with identical node order are intentionally deduplicated by production code. Tests therefore verify **safety properties of the retained hypothesis** (overlap/conflict detected and write blocked) rather than requiring a redundant map-kind label to survive deduplication.
+
+This raw-image suite closes an important gap between small portable mock graphs and physical hardware: it proves real seek offsets, sparse blank-space rejection, 128 MiB grid discovery, direct off-grid reference chasing, map deduplication behavior, repair-plan classification, and multi-header corruption on complete raw-disk files. It still cannot model DEV9/ATA/fileXio/DMA/cache/journal timing.
+
 ## Forensic write postconditions
 
-The portable graph suite validates plan construction and exact patched-header bytes. The PS2-only writer adds runtime gates that host raw-image tests cannot emulate:
+The portable graph and sparse raw-image suites validate scan/plan construction and exact patched-header semantics. The PS2-only writer adds runtime gates that host raw-image tests cannot emulate:
 
 - every current header must still match the bytes observed during the scan immediately before write;
 - non-master headers are written before LBA 0;
@@ -122,7 +147,7 @@ The portable graph suite validates plan construction and exact patched-header by
 - every touched header is re-read after the whole transaction;
 - restart is mandatory after success or partial failure.
 
-Before those writes, `forensic_snapshot` creates `HDDMETA.BIN` / `HDDMETA2.BIN` containing every exact pre-repair header plus SHA-256 evidence.
+Before those writes, `forensic_snapshot` creates `HDDMETA.BIN` / `HDDMETA2.BIN` containing every exact pre-repair header plus SHA-256 evidence. The APAMETA1 header also records how many planned topology patches change exactly one or two bits.
 
 ## Why checksum-valid corruption is not automatically repaired
 
