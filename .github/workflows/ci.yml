@@ -34,3 +34,4 @@ jobs:
           path: |
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+            MICHISHIRUBE.CFG
