@@ -1,15 +1,14 @@
 name: Clean up post-extraction comments
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize]
+  push:
+    branches: [dev/0.4.0-michishirube]
 
 permissions:
   contents: write
 
 jobs:
   cleanup-comments:
-    if: github.head_ref == 'dev/0.4.0-michishirube'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
