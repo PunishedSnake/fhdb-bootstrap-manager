@@ -4,6 +4,8 @@
 *.ELF
 /tests/test_formats
 /tests/test_apa_repair
+/tests/test_apa_forensic
+/tests/test_forensic_fixtures
 /tests/test_boot_chain
 /tests/test_boot_payload
 /tests/test_boot_report
@@ -14,6 +16,7 @@
 /tests/test_hdd_mutations
 /tests/test_hdd_repair_fixtures
 /tests/generated_hdds/
+/tests/generated_forensic_hdds/
 
 # Local release archives and recovered disk headers
 *.zip
@@ -21,8 +24,10 @@ FHDBMBR*.BIN
 HDDMBR*.BIN
 HDDRESCUE*.BIN
 HDDRAW*.BIN
+HDDMETA*.BIN
 HDDMAN.LOG
 BOOTCHAIN.TXT
+FORENSIC.TXT
 
 # Editor and operating-system noise
 .DS_Store
