@@ -1,64 +1,133 @@
 # PS2 HDD Bootstrap Manager
 
-PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, backing up, disabling, restoring, installing, and—on the Michishirube development line—narrowly repairing the HDD OSD bootstrap and APA master metadata without formatting the disk.
+PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, backing up, disabling, restoring, installing, diagnosing, and recovering the HDD OSD bootstrap and APA metadata without formatting the disk.
 
 It began after a real console got trapped in a post-uninstall FHDB boot loop: FHDB was gone, but the bootstrap pointer was still enabled, so the machine faithfully rebooted into software that no longer existed. Apparently uninstalling a program and persuading the console to stop launching it were separate premium features.
 
 ## Release status
 
-`0.3.1` **Torii** is the current stable release. It keeps the complete rescue capsule, boot-chain diagnostics, guarded MagicGate installation, payload-first/pointer-last writes, and Sony-style `MBR.XIN` preference with `MBR.XLF` compatibility.
+`0.3.1` **Torii** is the current stable release. It keeps the hardware-proven normal pointer workflow, full rescue capsules, boot-chain diagnostics, guarded MagicGate installation, payload-first/pointer-last writes, and Sony-style `MBR.XIN` preference with `MBR.XLF` compatibility.
 
-`0.4.x` **Michishirube** is the active development line. Its goal is not to turn the program into a disk editor with a hero complex; it is to split policy, device mechanics, controllers, UI, diagnostics, and recovery into testable boundaries while preserving Torii's proven normal write semantics.
+`0.4.x` **Michishirube** is the active development line. Its purpose is to turn the project into a modular recovery toolkit while preserving Torii's normal write semantics. Michishirube now includes a portable forensic APA graph engine, degraded read-only reconstruction, candidate-map inspection, guarded multi-header topology repair, hierarchical UI, and controller activity indication.
 
-## Why this exists
+## What the manager understands
 
 The PS2 ROM decides whether to launch an HDD update from two fields in the APA master header:
 
 - `osdStart` — starting sector of the signed HDD bootstrap program;
 - `osdSize` — program size in sectors.
 
-If removal software deletes FHDB but leaves those fields populated, the ROM still sees an enabled update and can repeatedly launch a missing or unusable payload. The manager can back up the current state, clear only that pointer, restore a verified payload, or sign/install a replacement MBR program without touching partition contents.
+If uninstall software removes FHDB but leaves those fields populated, the ROM can repeatedly launch a missing or unusable payload. The manager can back up the current state, clear only that pointer, restore a verified payload, or sign/install a replacement MBR program without touching unrelated partition contents.
 
-A 1024-byte header backup preserves the pointer but not the program it references. Torii therefore added a rescue capsule containing the APA master header, exact sector-aligned active payload, metadata, and SHA-256 digests. Restoration writes and verifies the payload first and exposes it through `osdStart`/`osdSize` only afterward.
+A 1024-byte header backup preserves metadata but not the program referenced by the OSD pointer. Full rescue capsules therefore contain the APA master header, the exact sector-aligned active payload, metadata, and SHA-256 digests. Restoration writes and verifies the payload first and exposes it through `osdStart`/`osdSize` only afterward.
 
 ## Michishirube architecture
 
-The development branch is now explicitly layered:
+The development branch is explicitly layered:
 
-- portable policy/format core — `apa`, `apa_repair`, `repair_health`, `hdd_bounds`, `kelf`, `bootstrap_transaction`, rescue/boot-report formats and hashing;
-- PS2 device/service adapters — `hdd_read`, `hdd_write`, `hdd_repair_ps2`, backup/rescue storage, MagicGate, diagnostics acquisition and persistence;
-- application controllers — `bootstrap_controller_ps2`, `diagnostics_controller_ps2`, and `repair_controller_ps2`;
-- shared presentation/lifecycle — `app_ui_ps2`;
-- `main.c` — startup, normal APA admission, top-level menu state, and dispatch only.
+- portable policy/format core — `apa`, `apa_repair`, `apa_forensic`, `repair_health`, `hdd_bounds`, `kelf`, `bootstrap_transaction`, rescue/report formats and SHA-256;
+- PS2 device/service adapters — `hdd_read`, normal `hdd_write`, exceptional `hdd_repair_ps2`, multi-header `hdd_forensic_repair_ps2`, backup/rescue/forensic snapshot storage, MagicGate, diagnostics acquisition and persistence;
+- application controllers — `bootstrap_controller_ps2`, `diagnostics_controller_ps2`, `repair_controller_ps2`, `forensic_controller_ps2`;
+- shared navigation/presentation/lifecycle — `manager_menu_ps2`, `app_ui_ps2`, and `platform`;
+- `main.c` — startup, normal APA admission, initial diagnostics, and hand-off to the manager dashboard.
 
-The normal manager and exceptional recovery paths deliberately do not share authority merely because they both eventually touch the HDD. Full ownership and trust boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Portable recovery code decides what evidence means. PS2 adapters perform narrow I/O. Controllers authorize operations and present them. The composition root does not contain disk algorithms or raw write loops.
 
-## Features
+Full ownership and trust boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+## Main features
 
 - Validates the complete 1024-byte APA `__mbr` master header and checksum.
 - Rejects hybrid/protective APA/GPT layouts on write-capable paths.
-- Shows `osdStart`, `osdSize`, detected bootstrap family, and report status.
-- Selects `mc0:`, `mc1:`, or `mass:` for backups, rescue data, logs, reports, and raw recovery snapshots.
-- Creates and verifies non-overwriting 1024-byte header backups.
-- Creates versioned full rescue capsules containing the current header and exact active payload sectors.
-- Protects rescue metadata/header/payload identity with SHA-256 and read-back verification.
-- Restores a full payload before enabling its pointer.
+- Creates non-overwriting verified header backups and full rescue capsules.
+- Restores full payloads before exposing their OSD pointer.
 - Disables only the HDD bootstrap pointer through `HDIOC_SETOSDMBR(0,0)`.
 - Restores compatible `HDDMBR*.BIN` / legacy `FHDBMBR*.BIN` pointer backups.
 - Structurally validates and MagicGate-signs stock MBR KELFs.
-- Prefers `MBR.XIN` and accepts `MBR.XLF` as the historical compatibility name.
+- Prefers `MBR.XIN` and accepts historical `MBR.XLF` as a compatibility name.
 - Writes normal bootstrap payloads only inside the reserved `__mbr` program area beginning at sector `0x2000`.
 - Produces `HDDMAN.LOG` and `BOOTCHAIN.TXT` diagnostics.
 - Fingerprints sector images and unpadded KELFs with SHA-256.
 - Inspects FMCB HDD-skip settings/modules and characteristic FHDB, OSDMenu, PSBBN, HOSDMenu, HDD-OSD, and custom downstream evidence.
-- Provides `L2` **HDD structure health / repair** in the normal menu.
-- On Michishirube only, provides a separately gated raw APA master recovery path for narrowly provable metadata corruption.
+- Provides deterministic mounted-disk structure health/repair policy through portable `repair_health`.
+- Provides narrowly proven exceptional APA master recovery with exact `HDDRAW*.BIN` snapshots.
+- Provides raw read-only APA forensic reconstruction independent of normal `ps2hdd` admission.
+- Builds forward-link, reverse-link, and geometry candidate maps with explicit confidence/evidence.
+- Allows read-only browsing of a reconstructed shadow APA map without pretending the physical disk is healthy.
+- Exports `FORENSIC.TXT` with discovered headers, geometry, links, checksums, candidate maps, confidence, and proposed topology changes.
+- Builds guarded multi-header repair plans limited to reconstructable `prev`/`next` topology and checksum changes.
+- Saves every touched original header in a SHA-256-protected `HDDMETA*.BIN` snapshot before topology repair.
+- Commits non-master headers first and the LBA-0 master last, with flush/read-back verification and a mandatory restart.
+- Tracks one/two-bit link changes explicitly; stale checksum plus independent graph evidence can corroborate an exact two-bit repair.
 
 ## What it deliberately does not do
 
-The stable/normal manager does not format a disk, create arbitrary APA partitions, repair PFS contents, recreate deleted games/files, or invent missing filesystem data.
+The manager does not format a disk, create arbitrary APA partitions, recreate deleted games/files, or manufacture missing filesystem data.
 
-The current automatic raw master repair also does **not** guess arbitrary fields. It repairs only a single canonical master identity/anchor field when independent evidence proves the exact correction. Heavier reconstruction from multiple partition headers is documented as a future forensic/recovery direction, not silently enabled as a write path.
+Forensic reconstruction is about **metadata and topology**. It can infer where intact partitions probably are when redundant APA headers survive. It cannot recreate PFS inodes, directory blocks, game data, or other sectors that are physically gone.
+
+A candidate map is not automatically considered healthy. Read-only reconstruction and write authorization are separate trust levels.
+
+## UI model
+
+Michishirube no longer assigns one feature to every spare DualShock button. The main screen is a dashboard with five sections:
+
+```text
+Bootstrap
+Diagnostics
+Recovery
+Backup & Storage
+System
+```
+
+Normal navigation is consistent:
+
+```text
+UP / DOWN   select
+X           enter / execute
+TRIANGLE    back
+```
+
+Unavailable operations remain visible with an explanation instead of disappearing. Confirmation chords are still used for destructive operations, but feature discovery and navigation no longer consume `R1`, `L2`, `START`, `SELECT`, etc. as global one-action shortcuts.
+
+### Bootstrap
+
+Contains backup/disable, restore, and sign/install operations. Actions that conflict with the current pointer state are shown disabled with a reason.
+
+### Diagnostics
+
+Runs boot-chain inspection and saves reports through the selected external storage target.
+
+### Recovery
+
+Contains two deliberately different trust paths:
+
+1. **Deterministic structure health / repair** — canonical master repair and safe pointer-clear recommendations.
+2. **APA forensic / degraded read-only** — raw scan, candidate maps, shadow-map browsing, `FORENSIC.TXT`, and separately authorized topology repair.
+
+### Backup & Storage
+
+Creates full rescue data and selects `mc0:`, `mc1:`, or `mass:`.
+
+### System
+
+Controlled restart/power actions and application information.
+
+## Controller ANALOG lamp as activity indication
+
+Michishirube includes a best-effort controller activity mode for supported DualShock-compatible pads.
+
+The red **ANALOG** lamp is not an independently addressable LED. On a DualShock 2 it follows the controller's main digital/analog mode, so repeatedly blinking it would also repeatedly switch the input report mode. Michishirube therefore does **not** strobe the lamp.
+
+Instead:
+
+- idle manager state requests digital mode / lamp off;
+- a long or storage-sensitive operation requests analog mode / lamp on;
+- nested operations keep the activity state active until the outer operation finishes;
+- the initial controller mode is restored before restart/power-off;
+- if a pad does not support main-mode switching, the feature fails open to screen-only progress and does not block the operation.
+
+The on-screen activity/progress display remains authoritative. ANALOG-lamp behavior still needs physical validation across original and third-party controllers before release.
 
 ## Safety model
 
@@ -69,30 +138,87 @@ Every normal HDD-changing path requires:
 1. `ps2hdd` accepts the device as APA;
 2. the current master passes APA/signature/checksum/non-hybrid validation;
 3. a current 1024-byte header backup is saved and read back;
-4. the operation receives its explicit multi-button confirmation;
-5. payload writes remain confined to the reserved `__mbr` program area;
-6. a new/restored payload is flushed and compared before pointer exposure;
+4. the specific operation receives explicit confirmation;
+5. raw payload writes stay inside the reserved `__mbr` program area;
+6. payload is flushed and compared before pointer exposure;
 7. `osdStart`/`osdSize` changes go through `HDIOC_SETOSDMBR` and are read back.
 
 Normal install/restore/disable paths do **not** raw-write sectors 0-1.
 
-### Exceptional Michishirube master recovery
+### Exceptional single-master recovery
 
-A damaged APA master may prevent the normal rules above from even starting. Michishirube therefore has one deliberately separate raw recovery contract:
+A damaged master may prevent normal APA admission. Michishirube therefore keeps a separately gated startup recovery path:
 
-1. the first `HDIOC_STATUS` is intercepted only once so readable raw sectors 0-1 can be inspected before normal admission fails;
-2. portable `apa_repair` must prove exactly one narrowly reconstructable canonical field;
-3. the source checksum must be mismatched and correcting only that field must restore the old stored checksum;
-4. checksum-valid ambiguous corruption, multiple unexplained changes, insufficient APA identity, and GPT/protective layouts are blocked;
-5. the exact damaged 1024 bytes are saved and verified as `HDDRAW.BIN` / `HDDRAW2.BIN`;
-6. the user confirms with `L1 + R1 + START`;
-7. the proposed repaired master is revalidated before the write;
-8. exactly sectors 0-1 are written, flushed, read back, and compared byte-for-byte;
-9. success requires restart so `ps2hdd` re-reads the repaired disk.
+1. raw sectors 0-1 must remain readable;
+2. portable `apa_repair` must prove one narrowly reconstructable canonical field;
+3. the stale checksum must corroborate exactly that correction;
+4. checksum-valid ambiguous corruption, unexplained multiple changes, low identity, and GPT/protective layouts are blocked;
+5. the exact original 1024 bytes are saved/read back as `HDDRAW.BIN` / `HDDRAW2.BIN`;
+6. the completed candidate master is revalidated;
+7. exactly sectors 0-1 are written, flushed, read back and compared;
+8. success requires restart.
 
-Pointer corruption, out-of-bounds OSD pointers, or an active invalid KELF do not use raw master repair. `repair_health` routes them to the ordinary backup + pointer-disable workflow.
+APA's checksum is additive rather than collision-resistant. A matching checksum is supporting evidence, not proof of health.
 
-APA's checksum is additive rather than collision-resistant. Two changes can cancel each other mathematically, so a matching checksum is never treated as proof that an otherwise suspicious master is healthy.
+### Forensic multi-header recovery
+
+Broader recovery uses a different contract:
+
+1. raw scan discovers candidate headers without writing;
+2. surviving `next`, `prev`, `main`, `subs[]`, geometry, bounds, checksums, and reciprocal links are combined into candidate maps;
+3. multiple plausible maps may coexist and are shown explicitly;
+4. read-only shadow-map browsing is allowed before any repair is authorized;
+5. a write plan may alter only the topology fields it explicitly previews (`prev`, `next`, checksum);
+6. every touched original 1024-byte header is preserved in `HDDMETA.BIN` / `HDDMETA2.BIN` with per-header SHA-256 and a whole-snapshot digest;
+7. immediately before each write, the current on-disk header must still match the bytes seen by the scan;
+8. internal headers are committed and verified before the master at LBA 0;
+9. every touched header is raw-read again after the transaction;
+10. success or partial failure requires restart before any further HDD work.
+
+A plan containing only checksum-corroborated exact topology corrections can satisfy the automatic-safe gate. A high-confidence plan with heuristic-only changes remains an explicit expert path and requires a stronger confirmation chord.
+
+## Forensic evidence and two-bit recovery
+
+For link corruption, the engine does not brute-force arbitrary disk bytes. It first obtains an expected `prev`/`next` value from the candidate graph. It then compares that expected value with the bytes currently stored and records the bit distance.
+
+For a physical-style stale-checksum corruption, replacing the damaged link with the graph-derived value must restore the original stored APA checksum before the correction is considered checksum-corroborated. The portable regression suite contains a case with **exactly two flipped bits** in a link and requires all of the following:
+
+- graph reconstruction chooses the correct neighbor;
+- bit distance equals 2;
+- the old checksum corroborates the exact correction;
+- the candidate satisfies the automatic-safe repair gate.
+
+Checksum-valid but semantically wrong links remain heuristic/manual because the checksum provides no independent evidence.
+
+## Recovery artifacts
+
+Normal header/full-rescue files include:
+
+```text
+<device>:/HDDMBR.BIN
+<device>:/HDDMBR2.BIN
+<device>:/HDDRESCUE.BIN
+<device>:/HDDRESCUE2.BIN
+```
+
+Exceptional one-master recovery uses:
+
+```text
+<device>:/HDDRAW.BIN
+<device>:/HDDRAW2.BIN
+```
+
+Forensic analysis and topology repair use:
+
+```text
+<device>:/FORENSIC.TXT
+<device>:/HDDMETA.BIN
+<device>:/HDDMETA2.BIN
+```
+
+`HDDMETA` is versioned recovery evidence, not a normal APA format. It contains the disk/plan metadata and exact pre-repair bytes for every header the plan intends to touch, protected by SHA-256.
+
+Keep important copies off the PS2 as well. Metadata recovery is useful; negotiating with a physically dying drive that has embraced entropy is not a supported protocol.
 
 ## Preparing an MBR source
 
@@ -107,7 +233,7 @@ mass:/MBR.XIN
 mass:/MBR.XLF
 ```
 
-If both names are present, `MBR.XIN` is selected. If the preferred file exists but cannot be opened or fails KELF validation, the manager reports that failure instead of silently hiding it behind the fallback. USB has no MagicGate hardware, so an authentic PS2 memory card in `mc0` or `mc1` is required for signing.
+If both names are present, `MBR.XIN` is selected. If the preferred file exists but cannot be opened or fails KELF validation, the operation fails instead of silently hiding it behind the fallback. USB has no MagicGate hardware, so an authentic PS2 memory card in `mc0` or `mc1` is required for signing.
 
 ## Recovering from an FHDB boot loop
 
@@ -119,63 +245,24 @@ Configure OSDSYS Options -> Skip HDD Update Check = ON
 
 Some FMCB layouts also load HDD modules from their regional system directory. If necessary, back up and temporarily remove the relevant `hddload.irx`, `dev9.irx`, and `atad.irx` from the active `BIEXEC-SYSTEM`, `BAEXEC-SYSTEM`, `BEEXEC-SYSTEM`, or `BCEXEC-SYSTEM` folder.
 
-Once the manager starts with a normally valid APA disk, use `X` to create the mandatory backup and disable the pointer. If the master itself is damaged but remains raw-readable, Michishirube's startup recovery may instead present the guarded `HDDRAW*.BIN` repair flow before normal menu admission.
-
-## Controls
-
-| Context | Input | Action |
-|---|---|---|
-| Main menu | `START` | Save and verify current header + rescue capsule without changing the HDD |
-| Main menu | `R1` | Run read-only boot-chain inspection and save reports |
-| Main menu | `L2` | Open HDD structure health / repair |
-| Main menu | `SELECT` | Choose `mc0`, `mc1`, or `mass` |
-| Enabled bootstrap | `X` | Back up and prepare to disable |
-| Disable confirmation | `L1 + R1 + X` | Clear the active OSD pointer |
-| Disabled bootstrap | `SQUARE` | Load full rescue / legacy pointer backup |
-| Restore confirmation | `L1 + R1 + SQUARE` | Restore according to selected backup type |
-| Disabled bootstrap | `CIRCLE` | Load, sign, and prepare `MBR.XIN` / compatible `MBR.XLF` |
-| Install confirmation | `L1 + R1 + CIRCLE` | Write, verify, and enable payload |
-| Planner-approved master recovery | `L1 + R1 + START` | Confirm exceptional raw sectors 0-1 repair after snapshot creation |
-| Main menu | `TRIANGLE` | Power / restart menu |
-| Confirmation screens | `TRIANGLE` | Cancel pending operation |
-
-## Diagnostics and backups
-
-`R1` saves the current `HDDMAN.LOG` and `BOOTCHAIN.TXT`. The report records ROMVER, pointer state/bounds, payload/KELF hashes, structural KELF result, likely family/next stage, FMCB HDD settings/modules, and downstream filesystem evidence.
-
-`START` creates the first safe non-overwriting header/rescue slots such as:
-
-```text
-<device>:/HDDMBR.BIN
-<device>:/HDDMBR2.BIN
-<device>:/HDDRESCUE.BIN
-<device>:/HDDRESCUE2.BIN
-```
-
-Exceptional master recovery uses its own raw snapshot namespace:
-
-```text
-<device>:/HDDRAW.BIN
-<device>:/HDDRAW2.BIN
-```
-
-Keep important copies off the PS2 as well. The manager can preserve metadata bytes; it cannot negotiate with a physically dying disk that has decided entropy is now a feature.
+Once the manager starts, use the **Bootstrap** section for the ordinary stale-pointer workflow. If the master itself is damaged but raw-readable, startup may offer guarded single-master recovery before normal admission. Heavier corruption belongs in **Recovery -> APA forensic / degraded read-only**.
 
 ## Technical details
 
 The ELF embeds the required PS2SDK IOP dependencies for fileXio, memory cards, MagicGate, USB mass storage, power, DEV9/ATA, APA HDD, and read-only PFS diagnostics.
 
-Important device operations are:
+Important device operations include:
 
-- `HDIOC_READSECTOR` (`0x6836`) — raw APA/payload/recovery reads;
-- `HDIOC_WRITESECTOR` (`0x6837`) — normal reserved bootstrap payload writes and, only through `hdd_repair_ps2`, exact two-sector master recovery;
+- `HDIOC_READSECTOR` (`0x6836`) — raw APA/payload/forensic reads;
+- `HDIOC_WRITESECTOR` (`0x6837`) — normal reserved bootstrap payload writes and separately gated recovery metadata writes;
 - `HDIOC_SETOSDMBR` (`0x6833`) — normal OSD pointer changes;
 - `HDIOC_FLUSH` (`0x4804`) — durability boundary before read-back verification;
 - `SecrDownloadFile()` — console-side KELF signing;
 - read-only `pfs0:` mounts — downstream diagnostics;
+- `padSetMainMode()` — best-effort ANALOG lamp/activity state through controller mode switching;
 - `ExecOSD("BootBrowser")` — controlled restart.
 
-The conservative two-sector raw transfer size is intentional and should not be increased without hardware measurement of the fileXio/IOP path.
+The normal bootstrap writer retains the conservative two-sector raw transfer size. Forensic metadata repair writes one APA header at a time and verifies every write.
 
 ## Testing
 
@@ -185,30 +272,48 @@ Portable tests do not require PS2SDK:
 make test-host
 ```
 
-The host suite regenerates **30 deterministic sparse HDD images**, validates APA/bounds/KELF behavior, executes MBR payload/pointer mutation tests, tests portable repair policy—including the additive-checksum collision regression—and runs all 30 images through repair postconditions.
+The host suite includes:
 
-For the PS2 ELF, use PS2DEV/PS2SDK or the same pinned container as CI:
+- APA/capsule/SHA-256 format tests;
+- conservative master repair policy;
+- portable forensic graph reconstruction;
+- healthy, broken-link, heuristic-only, off-grid subpartition, missing-master write-gate, and exact two-bit link-corruption cases;
+- boot-chain/payload/report/KELF suites;
+- bootstrap transaction ordering/failure injection;
+- rescue validation;
+- **30 deterministic sparse HDD fixtures** for parser/bounds/KELF and mounted repair policy;
+- byte-level mutation tests for normal payload and pointer ordering.
+
+For the PS2 ELF, use PS2DEV/PS2SDK or the pinned CI container:
 
 ```sh
 docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
   sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
 ```
 
-Generated binaries and synthetic HDD images are deliberately not tracked in the source tree.
+Generated binaries and synthetic HDD images are not tracked in the source tree.
 
 ## Hardware validation
 
-The original pointer-disable workflow eliminated a real post-uninstall FHDB boot loop on PlayStation 2 hardware and Torii preserves that normal write behavior. The Michishirube raw master recovery path has host and R5900 build coverage but still requires dedicated physical-HDD validation before release.
+The original pointer-disable workflow eliminated a real post-uninstall FHDB boot loop on PlayStation 2 hardware and Torii preserves that normal write behavior.
 
-Host tests cannot prove DEV9/ATA timing, DMA/fileXio behavior, cache durability, APA journaling, or exact physical power-loss effects.
+The following Michishirube additions are **software/CI proven but not yet hardware-proven**:
+
+- exceptional raw sectors 0-1 master repair;
+- raw forensic scanning across a full physical HDD;
+- multi-header topology repair and master-last commit behavior;
+- `HDDMETA` snapshot/write/read-back behavior on actual memory cards/USB;
+- ANALOG-lamp activity switching on original and third-party controllers.
+
+Host tests cannot prove DEV9/ATA timing, DMA/fileXio behavior, cache durability, APA journaling, adapter quirks, or exact physical power-loss effects. Physical-HDD validation remains the final gate before these paths can be treated as release-ready.
 
 ## Project documentation
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — current modular ownership, normal versus exceptional write invariants, and planned forensic/degraded recovery model.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module ownership, trust ladder, normal and recovery write invariants.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames and engineering milestones.
 - [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — stable rescue capsule format.
-- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — 30 synthetic raw-HDD scenarios, interruption/mutation coverage, repair matrix, and checksum-collision policy.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, test, and review rules for HDD-touching changes.
+- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — synthetic raw-HDD states, mutation coverage and repair matrix.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, test and review rules for HDD-touching changes.
 
 ## License
 
@@ -216,8 +321,8 @@ The application source is released under the MIT License. Embedded PS2SDK module
 
 ## Acknowledgements
 
-- PS2DEV and PS2SDK contributors for APA, PFS, USB, security, and console services.
+- PS2DEV and PS2SDK contributors for APA, PFS, USB, security and console services.
 - Free McBoot/FHDB contributors for the original signing and MBR installation workflow.
-- OSDMenu, HDD-OSD, and PSBBN preservation contributors whose documented layouts make evidence-based identification possible.
+- OSDMenu, HDD-OSD and PSBBN preservation contributors whose documented layouts make evidence-based identification possible.
 - **Berion (PSX-Place)** for identifying the Sony-style `MBR.XIN` naming and historical `MBR.XLF` installer convention.
-- Hifu Himejima for reproducing the failure, preserving the disk header, testing on real hardware, and being that one gloriously unhinged developer who decided to correct this great injustice.
+- Hifu Himejima for reproducing the original failure, preserving the disk header, testing on real hardware, and being that one gloriously unhinged developer who decided to correct this great injustice.
