@@ -93,8 +93,9 @@ int hdd_read_payload_image(unsigned int start, unsigned int sectors,
     if (payload == NULL)
         return HDD_PAYLOAD_ERR_ALLOC;
 
-    disk_status_begin("Bootstrap payload read",
-                      "Reading active bootstrap payload");
+    disk_status_begin_at("Bootstrap payload read",
+                         "Reading active bootstrap payload",
+                         "Reserved __mbr program area selected by osdStart/osdSize");
     while (sector_offset < sectors) {
         unsigned int chunk_sectors = sectors - sector_offset;
         int result;
