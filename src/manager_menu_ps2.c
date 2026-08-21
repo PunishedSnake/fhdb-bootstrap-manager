@@ -12,7 +12,9 @@
 #include "manager_menu_ps2.h"
 #include "platform.h"
 #include "repair_controller_ps2.h"
+#include "session_log.h"
 #include "storage.h"
+#include "ui_theme_ps2.h"
 
 static void build_dashboard_status(char *buffer, unsigned int capacity,
                                    const unsigned char header[APA_HEADER_SIZE],
@@ -174,21 +176,71 @@ static void controller_status_screen(void)
     app_ui_wait_to_return();
 }
 
+static void ui_theme_menu(void)
+{
+    static const char *const hints[UI_THEME_COUNT] = {
+        "Cool cyan / blue default with high-contrast status colors",
+        "Warm amber / brown service-console palette",
+        "Pink-violet accent with the same recovery warning colors",
+        "Neutral grayscale palette for maximum display compatibility"
+    };
+    app_ui_menu_item_t items[UI_THEME_COUNT];
+    unsigned int selected = (unsigned int)ui_theme_current_id();
+    unsigned int i;
+    int choice;
+    int save_result;
+    char status[96];
+    char config_path[STORAGE_LAUNCH_PATH_SIZE];
+
+    for (i = 0; i < UI_THEME_COUNT; i++) {
+        items[i].label = ui_theme_name((ui_theme_id_t)i);
+        items[i].hint = hints[i];
+        items[i].enabled = 1;
+    }
+    snprintf(status, sizeof(status), "Current theme: %s",
+             ui_theme_name(ui_theme_current_id()));
+    choice = app_ui_menu_select("UI theme", status,
+                                items, UI_THEME_COUNT, &selected);
+    if (choice < 0)
+        return;
+
+    ui_theme_set((ui_theme_id_t)choice);
+    save_result = ui_theme_save_config();
+    ui_theme_config_path(config_path, sizeof(config_path));
+    session_log_line("UI theme changed to %s; config=%s; save=%d",
+                     ui_theme_name(ui_theme_current_id()),
+                     config_path, save_result);
+
+    scr_clear();
+    scr_printf("UI theme: %s\n\n", ui_theme_name(ui_theme_current_id()));
+    scr_printf("Config: %s\n", config_path);
+    if (save_result == 0)
+        scr_printf("Preference saved beside the ELF.\n");
+    else
+        scr_printf("Theme is active for this session; config save code: %d\n",
+                   save_result);
+    scr_printf("\nNo restart is required.\n");
+    app_ui_wait_to_return();
+}
+
 static void system_menu(void)
 {
     static const app_ui_menu_item_t items[] = {
         {"Controller / activity indicator", "Inspect ANALOG-lamp capability and behavior", 1},
+        {"UI theme", "Choose Aqua, Amber, Sakura or Monochrome", 1},
         {"Power / restart", "Restart to Browser or shut down", 1}
     };
     unsigned int selected = 0;
 
     for (;;) {
-        int choice = app_ui_menu_select("System", NULL, items, 2, &selected);
+        int choice = app_ui_menu_select("System", NULL, items, 3, &selected);
         if (choice < 0)
             return;
         if (choice == 0)
             controller_status_screen();
         if (choice == 1)
+            ui_theme_menu();
+        if (choice == 2)
             app_ui_power_menu();
     }
 }
@@ -201,7 +253,7 @@ void manager_menu_run(unsigned char header[APA_HEADER_SIZE],
         {"Diagnostics", "Boot-chain evidence and reports", 1},
         {"Recovery", "Deterministic repair and forensic APA workspace", 1},
         {"Backup & Storage", "Rescue backup destination and storage selection", 1},
-        {"System", "Controller status, restart and power", 1}
+        {"System", "Controller, UI theme, restart and power", 1}
     };
     unsigned int selected = 0;
     char status[192];
