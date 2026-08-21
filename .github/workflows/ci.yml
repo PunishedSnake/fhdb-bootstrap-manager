@@ -1,154 +1,34 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  extract-boot-chain-scanner:
-    if: github.head_ref == 'dev/0.4.0-michishirube'
+  host-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: dev/0.4.0-michishirube
-          fetch-depth: 0
-
-      - name: Remove PS2 read-only scanner duplicates from main.c
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          path = Path('src/main.c')
-          text = path.read_text()
-
-          if '#include "boot_chain_ps2.h"' not in text:
-              anchor = '#include "boot_chain.h"\n'
-              assert text.count(anchor) == 1
-              text = text.replace(anchor, anchor + '#include "boot_chain_ps2.h"\n', 1)
-
-          def function_span(source, name):
-              pattern = re.compile(
-                  r'\nstatic\s+[^;{]+?\b' + re.escape(name) +
-                  r'\s*\([^;]*?\)\s*\{', re.S)
-              match = pattern.search(source)
-              assert match is not None, f'missing function {name}'
-              brace = source.index('{', match.start())
-              depth = 0
-              i = brace
-              state = 'code'
-              while i < len(source):
-                  ch = source[i]
-                  nxt = source[i + 1] if i + 1 < len(source) else ''
-                  if state == 'code':
-                      if ch == '/' and nxt == '*':
-                          state = 'block'; i += 2; continue
-                      if ch == '/' and nxt == '/':
-                          state = 'line'; i += 2; continue
-                      if ch == '"':
-                          state = 'string'; i += 1; continue
-                      if ch == "'":
-                          state = 'char'; i += 1; continue
-                      if ch == '{':
-                          depth += 1
-                      elif ch == '}':
-                          depth -= 1
-                          if depth == 0:
-                              return match.start() + 1, i + 1
-                  elif state == 'block':
-                      if ch == '*' and nxt == '/':
-                          state = 'code'; i += 2; continue
-                  elif state == 'line':
-                      if ch == '\n':
-                          state = 'code'
-                  elif state in ('string', 'char'):
-                      if ch == '\\':
-                          i += 2; continue
-                      if (state == 'string' and ch == '"') or (
-                              state == 'char' and ch == "'"):
-                          state = 'code'
-                  i += 1
-              raise AssertionError(f'unclosed function {name}')
-
-          for name in (
-              'read_skip_hdd_setting',
-              'scan_memory_card_boot_files',
-              'scan_skip_hdd_settings',
-              'scan_sysconf_partition',
-              'scan_system_partition',
-          ):
-              a, b = function_span(text, name)
-              text = text[:a] + text[b:]
-
-          assert '#include "boot_chain_ps2.h"' in text
-          for name in (
-              'read_skip_hdd_setting',
-              'scan_memory_card_boot_files',
-              'scan_skip_hdd_settings',
-              'scan_sysconf_partition',
-              'scan_system_partition',
-          ):
-              assert f'static void {name}(' not in text
-              assert f'static int {name}(' not in text
-          assert 'scan_skip_hdd_settings(info);' in text
-          assert 'scan_memory_card_boot_files(info);' in text
-          assert 'scan_sysconf_partition(info);' in text
-          assert 'scan_system_partition(info);' in text
-
-          path.write_text(text)
-          PY
-
-      - name: Run portable regression suite
+      - name: Run portable tests
         run: make test-host
 
-      - name: Cross-build R5900 ELF after scanner extraction
+  ps2-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build stripped PS2 ELF with PS2DEV v2.0.0
         run: >-
           docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
           sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
-
-      - name: Commit verified extraction and restore normal CI
-        run: |
-          cat > .github/workflows/ci.yml <<'EOF'
-          name: CI
-
-          on:
-            push:
-              branches: [main]
-            pull_request:
-
-          permissions:
-            contents: read
-
-          jobs:
-            host-tests:
-              runs-on: ubuntu-latest
-              steps:
-                - uses: actions/checkout@v4
-                - name: Run portable tests
-                  run: make test-host
-
-            ps2-build:
-              runs-on: ubuntu-latest
-              steps:
-                - uses: actions/checkout@v4
-                - name: Build stripped PS2 ELF with PS2DEV v2.0.0
-                  run: >-
-                    docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
-                    sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
-                - name: Record artifact checksum
-                  run: sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
-                - uses: actions/upload-artifact@v4
-                  with:
-                    name: PS2-HDD-Bootstrap-Manager
-                    path: |
-                      PS2_HDD_BOOTSTRAP_MANAGER.ELF
-                      PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
-          EOF
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/main.c .github/workflows/ci.yml
-          git commit -m 'Extract read-only boot-chain scanner from main'
-          git push origin HEAD:dev/0.4.0-michishirube
+      - name: Record artifact checksum
+        run: sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PS2-HDD-Bootstrap-Manager
+          path: |
+            PS2_HDD_BOOTSTRAP_MANAGER.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
