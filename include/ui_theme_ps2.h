@@ -1,7 +1,12 @@
 #ifndef PS2_HDD_BOOTSTRAP_MANAGER_UI_THEME_PS2_H
 #define PS2_HDD_BOOTSTRAP_MANAGER_UI_THEME_PS2_H
 
-#define UI_THEME_CONFIG_FILENAME "MICHISHIRUBE.CFG"
+/* Stable application configuration name. Codenames such as Michishirube are
+ * release-specific and must not become part of the long-lived user config ABI.
+ * 0.4.x still accepts the old development filename as a read-only migration
+ * source, but all writes and distributed examples use HDDMAN.CFG. */
+#define UI_THEME_CONFIG_FILENAME "HDDMAN.CFG"
+#define UI_THEME_LEGACY_CONFIG_FILENAME "MICHISHIRUBE.CFG"
 #define UI_THEME_COUNT 4u
 
 typedef struct {
@@ -45,7 +50,9 @@ int ui_theme_set_by_identifier(const char *identifier);
 
 /* Load/save a tiny theme=... configuration beside the ELF when possible.
  * If argv[0] did not expose a usable directory, storage.c falls back to the
- * selected backup/report storage root. Missing config is not a fatal error. */
+ * selected backup/report storage root. Missing config is not a fatal error.
+ * Loading may migrate the old development-only MICHISHIRUBE.CFG name;
+ * saving always targets HDDMAN.CFG. */
 int ui_theme_load_config(void);
 int ui_theme_save_config(void);
 int ui_theme_config_path(char *destination, unsigned int capacity);
