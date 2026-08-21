@@ -26,7 +26,11 @@ enum {
     APA_FORENSIC_EVIDENCE_TYPE = 1u << 5,
     APA_FORENSIC_EVIDENCE_ID = 1u << 6,
     APA_FORENSIC_EVIDENCE_GRID = 1u << 7,
-    APA_FORENSIC_EVIDENCE_REFERENCED = 1u << 8
+    APA_FORENSIC_EVIDENCE_REFERENCED = 1u << 8,
+    /* A checksum-valid __empty header that is wholly covered by a larger
+     * canonical __empty extent in the master forward chain. Real hardware
+     * retains these allocator/history remnants after free-space coalescing. */
+    APA_FORENSIC_EVIDENCE_DORMANT_FREE = 1u << 9
 };
 
 typedef int (*apa_forensic_read_fn)(void *context, uint32_t lba,
@@ -80,6 +84,7 @@ typedef struct {
     unsigned int reference_reads;
     unsigned int unreadable_reads;
     unsigned int node_count;
+    unsigned int dormant_free_nodes;
     unsigned int map_count;
     int truncated;
     apa_forensic_node_t nodes[APA_FORENSIC_MAX_NODES];
