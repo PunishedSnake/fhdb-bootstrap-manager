@@ -17,6 +17,7 @@ HOST_APP_ERROR_TEST = tests/test_app_error
 HOST_FORMAT_TEST = tests/test_formats
 HOST_APA_REPAIR_TEST = tests/test_apa_repair
 HOST_APA_FORENSIC_TEST = tests/test_apa_forensic
+HOST_APA_FORENSIC_DORMANT_TEST = tests/test_apa_forensic_dormant_free
 HOST_FORENSIC_FIXTURE_TEST = tests/test_forensic_fixtures
 HOST_BOOT_CHAIN_TEST = tests/test_boot_chain
 HOST_BOOT_PAYLOAD_TEST = tests/test_boot_payload
@@ -29,7 +30,7 @@ HOST_HDD_MUTATION_TEST = tests/test_hdd_mutations
 HOST_HDD_REPAIR_FIXTURE_TEST = tests/test_hdd_repair_fixtures
 HOST_HDD_FIXTURE_DIR = tests/generated_hdds
 HOST_FORENSIC_FIXTURE_DIR = tests/generated_forensic_hdds
-HOST_TESTS = $(HOST_APP_ERROR_TEST) $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_APA_FORENSIC_TEST) $(HOST_FORENSIC_FIXTURE_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST) $(HOST_HDD_REPAIR_FIXTURE_TEST)
+HOST_TESTS = $(HOST_APP_ERROR_TEST) $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_APA_FORENSIC_TEST) $(HOST_APA_FORENSIC_DORMANT_TEST) $(HOST_FORENSIC_FIXTURE_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST) $(HOST_HDD_REPAIR_FIXTURE_TEST)
 
 all: $(EE_BIN)
 
@@ -53,6 +54,10 @@ test-host:
 		tests/test_apa_forensic.c src/apa_forensic.c src/apa.c \
 		-o $(HOST_APA_FORENSIC_TEST)
 	./$(HOST_APA_FORENSIC_TEST)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_apa_forensic_dormant_free.c src/apa_forensic.c src/apa.c \
+		-o $(HOST_APA_FORENSIC_DORMANT_TEST)
+	./$(HOST_APA_FORENSIC_DORMANT_TEST)
 	python3 tools/generate_forensic_fixtures.py $(HOST_FORENSIC_FIXTURE_DIR)
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
 		tests/test_forensic_fixtures.c src/apa_forensic.c src/apa.c \
