@@ -1,16 +1,28 @@
 /*
  * Explicit PS2-only writer for the exceptional APA master recovery path.
  *
- * Normal manager operations never raw-write sectors 0-1: payload replacement
- * stays in the reserved __mbr program area and pointer changes go through
- * HDIOC_SETOSDMBR. This module exists only for a planner-approved damaged
- * master that cannot pass normal ps2hdd admission. The controller must save an
- * exact HDDRAW*.BIN snapshot before calling this function.
+ * RELEASE STATUS (0.4.x): EXPERIMENTAL RECOVERY WRITE PATH.
+ * This module is intentionally not a general APA-sector writer and must not be
+ * reused to bypass the portable planner, verified HDDRAW snapshot, controller
+ * confirmation, or restart requirements. Normal manager operations never
+ * raw-write sectors 0-1: payload replacement stays in the reserved __mbr
+ * program area and pointer changes go through HDIOC_SETOSDMBR.
  *
- * Even here the writer owns mechanics, not authorization: the supplied 1024
- * bytes must already be a complete valid canonical APA master, GPT/protective
- * layouts are refused, the write is flushed, and both sectors are read back
- * and compared exactly before success is reported.
+ * This exception exists only for a planner-approved damaged master that cannot
+ * pass normal ps2hdd admission. The controller must save and read back the exact
+ * original 1024 bytes as HDDRAW*.BIN before calling this function. The planner
+ * must already have proven one narrowly reconstructable canonical correction;
+ * the writer does not infer or authorize that correction itself.
+ *
+ * Even here the writer owns mechanics, not policy: the supplied 1024 bytes must
+ * already be a complete valid canonical APA master, GPT/protective layouts are
+ * refused, exactly sectors 0-1 are written, the ATA path is flushed, both
+ * sectors are read back and compared exactly, and the caller must restart the
+ * console before allowing further HDD work.
+ *
+ * The release disclaimer matters: these guards are deliberate defense in depth,
+ * but direct sectors-0/1 recovery still needs broader independent real-hardware
+ * coverage before it should be considered generally proven.
  */
 
 #define NEWLIB_PORT_AWARE
