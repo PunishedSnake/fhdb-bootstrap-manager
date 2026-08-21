@@ -1,4 +1,27 @@
-/* Guarded PS2 writer for forensic APA topology repair plans. */
+/*
+ * Guarded PS2 writer for forensic APA topology repair plans.
+ *
+ * RELEASE STATUS (0.4.x): EXPERIMENTAL RECOVERY WRITE PATH.
+ * This module is not a generic APA mutation API. It must only receive a plan
+ * produced by the portable forensic planner after a complete scan and after
+ * the controller has saved/read back a verified HDDMETA snapshot containing
+ * every original header that the plan intends to touch.
+ *
+ * Safety invariants intentionally live in multiple layers:
+ * - truncated scans are rejected here even if a caller somehow constructs a
+ *   plan by hand;
+ * - source bytes are reread immediately before every write and must still match
+ *   the exact scan evidence;
+ * - only planner-built prev/next/checksum changes are materialized;
+ * - non-master headers are committed first and master LBA 0 last;
+ * - every header write is flushed and immediately read back;
+ * - the complete touched set is reread again after the transaction;
+ * - success or partial failure requires a console restart before more HDD work.
+ *
+ * These guards are defense in depth, not a claim of broad hardware proof. The
+ * 0.4.0 release asks independent testers to exercise these paths only on
+ * sacrificial or fully imaged media and report exact before/after evidence.
+ */
 
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
