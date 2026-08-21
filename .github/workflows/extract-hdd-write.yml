@@ -1,0 +1,398 @@
+name: Extract write-capable HDD transport
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  extract-hdd-write:
+    if: github.head_ref == 'dev/0.4.0-michishirube'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/0.4.0-michishirube
+
+      - name: Extract write-capable transport
+        run: |
+          cat > include/hdd_write.h <<'EOF'
+          #ifndef PS2_HDD_BOOTSTRAP_MANAGER_HDD_WRITE_H
+          #define PS2_HDD_BOOTSTRAP_MANAGER_HDD_WRITE_H
+
+          #include <tamtypes.h>
+          #include "apa.h"
+
+          /*
+           * PS2-only write transport. These functions deliberately expose
+           * individual transaction steps so caller policy must still perform
+           * backup/confirmation and preserve payload-first/pointer-last order.
+           */
+          int hdd_write_payload_verified(const unsigned char *payload,
+                                         unsigned int payload_size,
+                                         u32 start_sector);
+          int hdd_write_set_osd_mbr(u32 start, u32 size);
+          int hdd_write_verify_osd_mbr(unsigned char destination[APA_HEADER_SIZE],
+                                       u32 expected_start, u32 expected_size);
+
+          #endif
+          EOF
+
+          cat > src/hdd_write.c <<'EOF'
+          /*
+           * PS2-specific write-capable HDD transport.
+           *
+           * This module owns raw write packets, flushes, and immediate read-back
+           * verification. It does not decide whether a transaction is allowed,
+           * create backups, request confirmation, sign KELFs, or choose ordering
+           * between payload and pointer operations.
+           */
+
+          #define NEWLIB_PORT_AWARE
+          #include <fileXio_rpc.h>
+          #include <hdd-ioctl.h>
+
+          #include <string.h>
+
+          #include "apa.h"
+          #include "hdd_limits.h"
+          #include "hdd_read.h"
+          #include "hdd_write.h"
+
+          /* Local names keep the source compatible with older PS2SDK headers. */
+          #define HDIOC_SETOSDMBR_LOCAL 0x6833
+          #define HDIOC_WRITESECTOR_LOCAL 0x6837
+          #define HDIOC_FLUSH_LOCAL 0x4804
+
+          /* Preserve Torii's historical project-defined verification codes. */
+          enum {
+              HDD_WRITE_HEADER_READ_FAILED = -1,
+              HDD_WRITE_HEADER_INVALID = -2,
+              HDD_WRITE_START_MISMATCH = -3,
+              HDD_WRITE_SIZE_MISMATCH = -4,
+              HDD_WRITE_PAYLOAD_FLUSH_FAILED = -130,
+              HDD_WRITE_PAYLOAD_COMPARE_FAILED = -131
+          };
+
+          typedef struct {
+              u32 lba;
+              u32 size;
+              unsigned char data[HDD_TRANSFER_BYTES];
+          } raw_write_packet_t;
+
+          static raw_write_packet_t write_packet __attribute__((aligned(64)));
+          static unsigned char sector_verify_buffer[HDD_TRANSFER_BYTES]
+              __attribute__((aligned(64)));
+          static unsigned char header_verify_buffer[APA_HEADER_SIZE]
+              __attribute__((aligned(64)));
+
+          int hdd_write_set_osd_mbr(u32 start, u32 size)
+          {
+              hddSetOsdMBR_t info;
+              int result;
+
+              info.start = start;
+              info.size = size;
+              result = fileXioDevctl("hdd0:", HDIOC_SETOSDMBR_LOCAL,
+                                     &info, sizeof(info), NULL, 0);
+              if (result < 0)
+                  return result;
+              return fileXioDevctl("hdd0:", HDIOC_FLUSH_LOCAL,
+                                   NULL, 0, NULL, 0);
+          }
+
+          int hdd_write_verify_osd_mbr(unsigned char destination[APA_HEADER_SIZE],
+                                       u32 expected_start, u32 expected_size)
+          {
+              if (hdd_read_raw_sectors(0, 2, header_verify_buffer) < 0)
+                  return HDD_WRITE_HEADER_READ_FAILED;
+              if (!is_standard_apa_header(header_verify_buffer))
+                  return HDD_WRITE_HEADER_INVALID;
+              if (read_le32(header_verify_buffer + APA_OSD_START_OFFSET) !=
+                  expected_start)
+                  return HDD_WRITE_START_MISMATCH;
+              if (read_le32(header_verify_buffer + APA_OSD_SIZE_OFFSET) !=
+                  expected_size)
+                  return HDD_WRITE_SIZE_MISMATCH;
+              memcpy(destination, header_verify_buffer, APA_HEADER_SIZE);
+              return 0;
+          }
+
+          int hdd_write_payload_verified(const unsigned char *payload,
+                                         unsigned int payload_size,
+                                         u32 start_sector)
+          {
+              unsigned int offset = 0;
+              u32 sector_offset = 0;
+
+              while (offset < payload_size) {
+                  unsigned int remaining = payload_size - offset;
+                  unsigned int bytes = remaining > HDD_TRANSFER_BYTES
+                                           ? HDD_TRANSFER_BYTES : remaining;
+                  u32 sectors = (bytes + HDD_SECTOR_SIZE - 1) / HDD_SECTOR_SIZE;
+                  int result;
+
+                  write_packet.lba = start_sector + sector_offset;
+                  write_packet.size = sectors;
+                  memset(write_packet.data, 0, HDD_TRANSFER_BYTES);
+                  memcpy(write_packet.data, payload + offset, bytes);
+                  result = fileXioDevctl(
+                      "hdd0:", HDIOC_WRITESECTOR_LOCAL, &write_packet,
+                      sizeof(write_packet.lba) + sizeof(write_packet.size) +
+                          (sectors * HDD_SECTOR_SIZE),
+                      NULL, 0);
+                  if (result < 0)
+                      return result;
+                  offset += bytes;
+                  sector_offset += sectors;
+              }
+
+              if (fileXioDevctl("hdd0:", HDIOC_FLUSH_LOCAL,
+                                NULL, 0, NULL, 0) < 0)
+                  return HDD_WRITE_PAYLOAD_FLUSH_FAILED;
+
+              offset = 0;
+              sector_offset = 0;
+              while (offset < payload_size) {
+                  unsigned int remaining = payload_size - offset;
+                  unsigned int bytes = remaining > HDD_TRANSFER_BYTES
+                                           ? HDD_TRANSFER_BYTES : remaining;
+                  u32 sectors = (bytes + HDD_SECTOR_SIZE - 1) / HDD_SECTOR_SIZE;
+                  int result;
+
+                  memset(write_packet.data, 0, HDD_TRANSFER_BYTES);
+                  memcpy(write_packet.data, payload + offset, bytes);
+                  result = hdd_read_raw_sectors(start_sector + sector_offset,
+                                                sectors, sector_verify_buffer);
+                  if (result < 0)
+                      return result;
+                  if (memcmp(write_packet.data, sector_verify_buffer,
+                             sectors * HDD_SECTOR_SIZE) != 0)
+                      return HDD_WRITE_PAYLOAD_COMPARE_FAILED;
+                  offset += bytes;
+                  sector_offset += sectors;
+              }
+              return 0;
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              return text.replace(old, new, 1)
+
+          path = Path('src/main.c')
+          text = path.read_text()
+          text = replace_once(text,
+              '#include "hdd_read.h"\n#include "kelf.h"\n',
+              '#include "hdd_read.h"\n#include "hdd_write.h"\n#include "kelf.h"\n',
+              'hdd_write include')
+          text = replace_once(text,
+              '/* Local names keep the source compatible with older PS2SDK header revisions. */\n'
+              '#define HDIOC_SETOSDMBR_LOCAL 0x6833\n'
+              '#define HDIOC_WRITESECTOR_LOCAL 0x6837\n'
+              '#define HDIOC_FLUSH_LOCAL 0x4804\n\n',
+              '', 'local write ioctl constants')
+          text = replace_once(text,
+              '/* DMA-safe buffers shared with pad, fileXio, and raw HDD RPC operations. */\n'
+              'static unsigned char header_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));\n'
+              'static unsigned char verify_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));\n'
+              'static unsigned char backup_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));\n'
+              'static unsigned char sector_verify_buffer[TRANSFER_BYTES] __attribute__((aligned(64)));\n'
+              'static unsigned char capsule_metadata[RESCUE_CAPSULE_METADATA_SIZE]\n'
+              '    __attribute__((aligned(64)));\n',
+              '/* Application-owned buffers retained across higher-level workflows. */\n'
+              'static unsigned char header_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));\n'
+              'static unsigned char backup_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));\n'
+              'static unsigned char capsule_metadata[RESCUE_CAPSULE_METADATA_SIZE]\n'
+              '    __attribute__((aligned(64)));\n',
+              'write-side buffers')
+          text, count = re.subn(
+              r'/\* Input packet used by the raw write devctl, including at most two sectors\. \*/\n'
+              r'typedef struct \{.*?static raw_write_packet_t write_packet __attribute__\(\(aligned\(64\)\)\);\n\n',
+              '', text, count=1, flags=re.DOTALL)
+          if count != 1:
+              raise SystemExit(f'raw write packet: expected one block, found {count}')
+
+          start = text.index('/* Update only osdStart/osdSize through ps2hdd and flush its APA cache. */')
+          end = text.index('/* ------------------------------------------------------------------------- */\n/* Read-only boot-chain inspection', start)
+          block = text[start:end]
+          for name in ('set_osd_mbr', 'verify_values', 'write_and_verify_payload'):
+              if name not in block:
+                  raise SystemExit(f'expected write helper not found before extraction: {name}')
+          text = text[:start] + text[end:]
+
+          text = text.replace('write_and_verify_payload(', 'hdd_write_payload_verified(')
+          text = text.replace('set_osd_mbr(', 'hdd_write_set_osd_mbr(')
+          text = text.replace('verify_values(', 'hdd_write_verify_osd_mbr(header_buffer, ')
+
+          for token in ('HDIOC_WRITESECTOR_LOCAL', 'HDIOC_SETOSDMBR_LOCAL',
+                        'HDIOC_FLUSH_LOCAL', 'raw_write_packet_t', 'write_packet',
+                        'sector_verify_buffer', 'verify_buffer',
+                        'write_and_verify_payload(', 'set_osd_mbr(', 'verify_values('):
+              if token in text:
+                  raise SystemExit(f'write transport remained in main.c: {token}')
+          path.write_text(text)
+
+          path = Path('Makefile')
+          text = path.read_text()
+          text = replace_once(text,
+              'EE_OBJS = main.o platform.o storage.o apa.o hdd_read.o boot_chain.o',
+              'EE_OBJS = main.o platform.o storage.o apa.o hdd_read.o hdd_write.o boot_chain.o',
+              'EE object list')
+          text = replace_once(text,
+              'hdd_read.o: src/hdd_read.c\n\t$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@\n\n'
+              'boot_chain.o: src/boot_chain.c\n',
+              'hdd_read.o: src/hdd_read.c\n\t$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@\n\n'
+              'hdd_write.o: src/hdd_write.c\n\t$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@\n\n'
+              'boot_chain.o: src/boot_chain.c\n',
+              'hdd_write object rule')
+          path.write_text(text)
+          PY
+
+      - name: Verify write-order invariants
+        run: |
+          ! grep -q 'HDIOC_WRITESECTOR_LOCAL\|HDIOC_SETOSDMBR_LOCAL\|HDIOC_FLUSH_LOCAL' src/main.c
+          ! grep -q 'raw_write_packet_t\|write_packet\|sector_verify_buffer\|verify_buffer' src/main.c
+          grep -q 'HDIOC_WRITESECTOR_LOCAL' src/hdd_write.c
+          grep -q 'HDIOC_SETOSDMBR_LOCAL' src/hdd_write.c
+          grep -q 'HDIOC_FLUSH_LOCAL' src/hdd_write.c
+          ! grep -q 'wait_for_chord\|save_backup\|SecrDownloadFile\|session_log\|scr_printf' src/hdd_write.c
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path('src/main.c').read_text()
+
+          def section(start_marker, end_marker):
+              start = text.index(start_marker)
+              end = text.index(end_marker, start)
+              return text[start:end]
+
+          def ordered(body, names, label):
+              positions = [body.index(name) for name in names]
+              if positions != sorted(positions):
+                  raise SystemExit(f'{label}: unsafe call order: {names}')
+
+          disable = section('static void disable_bootstrap(void)',
+                            'static void restore_legacy_pointer(void)')
+          ordered(disable,
+                  ['save_backup()', 'wait_for_chord(',
+                   'hdd_write_set_osd_mbr(', 'hdd_write_verify_osd_mbr('],
+                  'disable')
+
+          legacy = section('static void restore_legacy_pointer(void)',
+                           'static void restore_rescue_capsule(void)')
+          ordered(legacy,
+                  ['save_backup()', 'wait_for_chord(',
+                   'hdd_write_set_osd_mbr(', 'hdd_write_verify_osd_mbr('],
+                  'legacy restore')
+
+          rescue = section('static void restore_rescue_capsule(void)',
+                           'static void install_bootstrap(void)')
+          ordered(rescue,
+                  ['hdd_validate_payload_bounds(', 'save_backup()',
+                   'wait_for_chord(', 'hdd_write_payload_verified(',
+                   'hdd_write_set_osd_mbr(', 'hdd_write_verify_osd_mbr('],
+                  'full rescue restore')
+
+          install = section('static void install_bootstrap(void)',
+                            '/* ------------------------------------------------------------------------- */\n/* Main state machine')
+          ordered(install,
+                  ['save_backup()', 'SecrDownloadFile(', 'wait_for_chord(',
+                   'hdd_write_payload_verified(', 'hdd_write_set_osd_mbr(',
+                   'hdd_write_verify_osd_mbr('],
+                  'manual install')
+          PY
+
+      - name: Update write-boundary documentation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once('README.md',
+              '`main.c` retains diagnostics presentation/timing, rescue/install policy, MagicGate signing, and every write-capable APA operation.',
+              '`hdd_write.c` now owns write-capable APA transport primitives and their DMA/read-back buffers, while `main.c` deliberately retains rescue/install policy, confirmation gates, MagicGate signing, and payload-first/pointer-last transaction ordering.',
+              'README write boundary')
+
+          replace_once('docs/ARCHITECTURE.md',
+              '- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install workflows, write-capable APA transport, and guarded pointer/write ordering that has not yet been extracted.\n',
+              '- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install workflows, confirmation/safety policy, and explicit payload-first/pointer-last transaction ordering.\n',
+              'architecture main ownership')
+          replace_once('docs/ARCHITECTURE.md',
+              '- `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.\n',
+              '- `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.\n'
+              '- `src/hdd_write.c` — PS2-only write-capable transport: raw `HDIOC_WRITESECTOR` packets, write-side DMA/read-back buffers, flushes, byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back verification. It owns mechanics only, not backup/confirmation/signing or transaction ordering.\n',
+              'architecture hdd_write module')
+          replace_once('docs/ARCHITECTURE.md',
+              'Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split three ways: portable header logic lives in `apa.c`, read-only raw sector transport and live payload bounds live in `hdd_read.c`, and the write-capable transport/pointer-update transaction remains in `main.c` until a later gated step. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.\n',
+              'Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split across portable header logic in `apa.c`, read-only raw transport/bounds in `hdd_read.c`, and write-capable transport/read-back mechanics in `hdd_write.c`. The higher-level rescue/install transaction policy remains visibly sequenced in `main.c`, so moving the transport does not hide backup, confirmation, signing, or payload-first/pointer-last ordering. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.\n',
+              'architecture split paragraph')
+          old = '''The following operations deliberately remain in the not-yet-extracted write-capable half in `main.c`:
+
+- `HDIOC_WRITESECTOR` packets and the aligned write/verification buffers used by install/restore;
+- `HDIOC_SETOSDMBR` pointer changes and write-cache flushes;
+- post-write sector comparison and final APA-header read-back;
+- rescue/install transaction ordering, including payload-first/pointer-last activation.
+
+Keeping the read boundary separate from the write transaction lets diagnostics reuse one raw-read implementation without turning a parser refactor into an unreviewed rewrite of disk-changing behavior.
+'''
+          new = '''Write-capable transport is isolated in `hdd_write.c`: it owns the raw write packet, aligned verification buffers, `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, flushes, payload byte comparison, and final APA/pointer read-back. Its interface intentionally exposes those operations as separate steps rather than a single "install" call.
+
+The safety policy still lives in the higher-level workflows in `main.c`: current-header backup, rescue validation, user confirmation, MagicGate signing, and the explicit payload-write/verify before pointer-update/verify sequence. This separation makes the dangerous I/O implementation modular without making transaction order implicit.
+
+Keeping read-only `hdd_read.c` separate from write-capable `hdd_write.c` also prevents diagnostics from acquiring a write interface merely because both paths need raw-sector read-back.
+'''
+          replace_once('docs/ARCHITECTURE.md', old, new, 'architecture APA write section')
+
+          replace_once('docs/ROADMAP.md',
+              '- [ ] `apa` write-capable transport half — `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, flush/read-back verification, write-side DMA buffers, and transaction ordering remain in `main.c` until the read-only boundary has wider regression and hardware coverage.\n',
+              '- [x] `hdd_write` write-capable transport — `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write-side DMA/read-back buffers, flushes, payload byte comparison, and final pointer verification are isolated behind a PS2-only interface.\n- [ ] write transaction policy — backup/confirmation/signing plus payload-first/pointer-last ordering remain explicit in `main.c` until the transport extraction has hardware coverage.\n',
+              'roadmap hdd_write')
+          replace_once('docs/ROADMAP.md',
+              '- only after the read-only boundary and diagnostics split have enough regression/hardware confidence, extract the write-capable APA transport without changing payload-first/pointer-last semantics;\n',
+              '- hardware-validate the new `hdd_write` transport boundary before moving higher-level rescue/install transaction policy; payload-first/pointer-last ordering remains an explicit invariant;\n',
+              'roadmap remaining write work')
+
+          replace_once('CHANGELOG.md',
+              '- Kept only diagnostics timing/presentation and the short diagnostics screen in `main.c`.\n',
+              '- Kept only diagnostics timing/presentation and the short diagnostics screen in `main.c`.\n- Extracted write-capable HDD transport into PS2-only `hdd_write.c` / `hdd_write.h`: raw sector write packets, write-side DMA/read-back buffers, flushes, payload byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back now live behind explicit primitives.\n',
+              'changelog hdd_write changed')
+          replace_once('CHANGELOG.md',
+              '- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flush/read-back verification, rescue restore, MagicGate signing, and payload-first/pointer-last ordering remain in `main.c` with their Torii semantics unchanged.\n',
+              '- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flushes, payload comparison, and pointer read-back moved mechanically into `hdd_write.c`; the numeric diagnostics and I/O sequence inside those primitives are unchanged. Rescue/install policy, mandatory backup/confirmation, MagicGate signing, and payload-first/pointer-last ordering remain explicit in `main.c`.\n',
+              'changelog hdd_write safety')
+          PY
+
+      - name: Run portable regression suite
+        run: make test-host
+
+      - name: Cross-build integrated R5900 ELF
+        run: >-
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit verified extraction and remove workflow
+        run: |
+          rm .github/workflows/extract-hdd-write.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- include/hdd_write.h src/hdd_write.c src/main.c Makefile \
+            README.md CHANGELOG.md docs/ARCHITECTURE.md docs/ROADMAP.md \
+            .github/workflows/extract-hdd-write.yml
+          git commit -m "Extract write-capable HDD transport"
+          git push origin HEAD:dev/0.4.0-michishirube
