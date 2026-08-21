@@ -13,10 +13,12 @@ typedef enum {
 /*
  * Michishirube's application-wide GS frontend.
  *
- * This renderer owns CRT/framebuffer setup instead of sharing libdebug's
- * drawing environment. All coordinates are ordinary full-screen 640x448 UI
- * coordinates. PS2SDK libdraw adds the GS 2048 coordinate bias internally;
- * callers must never compensate for it themselves.
+ * Physical hardware validation showed that the proven PS2SDK/libdebug CRT
+ * bootstrap should remain responsible for establishing the interlaced output
+ * and framebuffer read circuit. gs_ui_ps2 then owns every application pixel in
+ * that framebuffer. The UI uses a virtual 640x448 layout mapped vertically to
+ * the bootstrap's 640x224 field coordinate space. PS2SDK libdraw already adds
+ * the GS +2048 primitive bias; callers must never compensate for it themselves.
  */
 int gs_ui_initialize(void);
 int gs_ui_is_ready(void);
@@ -34,9 +36,9 @@ void gs_ui_render_message(const char *title,
                           const char *footer,
                           gs_ui_tone_t tone);
 
-/* Compatibility surface for existing controller screens. It keeps their
- * printf-style construction semantics but renders the resulting screen with
- * the same GS/GIF-DMA frontend. libdebug no longer draws application UI. */
+/* Compatibility surface for existing controller screens. Their printf-style
+ * construction is linker-wrapped and routed through this GS/GIF-DMA frontend;
+ * libdebug itself does not draw normal application UI after video bootstrap. */
 void gs_ui_console_clear(void);
 void gs_ui_console_printf(const char *format, ...)
     __attribute__((format(printf, 1, 2)));
