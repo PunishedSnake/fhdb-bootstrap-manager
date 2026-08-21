@@ -1,8 +1,10 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
 EE_OBJS = main.o manager_menu_ps2.o app_ui_ps2.o disk_status_ps2.o gs_ui_ps2.o gs_debug_compat_ps2.o app_error.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o forensic_controller_ps2.o platform.o storage.o header_backup.o repair_snapshot.o forensic_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o apa_forensic.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o hdd_forensic_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -ldraw -lgraph -lpacket -ldma -lm -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
-EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
-EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen -Wl,--wrap=fileXioDevctl -Wl,--wrap=scr_printf -Wl,--wrap=scr_vprintf -Wl,--wrap=scr_clear
+# LTO lets the R5900 compiler optimize across the deliberately small modules
+# while section GC still removes unused recovery/UI helpers from the final ELF.
+EE_CFLAGS = -O2 -flto -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
+EE_LDFLAGS = -flto -Wl,--gc-sections -Wl,--wrap=fileXioOpen -Wl,--wrap=fileXioDevctl -Wl,--wrap=scr_printf -Wl,--wrap=scr_vprintf -Wl,--wrap=scr_clear
 
 # Filesystem, MagicGate, USB mass-storage, power, and APA HDD services are
 # embedded so the manager does not depend on whichever IOP modules launched it.

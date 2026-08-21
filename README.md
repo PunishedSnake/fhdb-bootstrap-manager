@@ -21,6 +21,11 @@ Michishirube expands the project into a modular PS2-side recovery toolkit while 
 - `HDDRAW`, `HDDMETA`, rescue, log and forensic evidence artifacts;
 - a large host regression laboratory and guarded physical-HDD fault injector.
 
+The 0.4.x optimization branch builds EE code with `-O2` plus link-time
+optimization. This lets the R5900 compiler optimize across module boundaries
+while the existing section garbage collection continues to remove unused code
+from the stripped release ELF.
+
 ## Important recovery disclaimer
 
 **Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.0.**
