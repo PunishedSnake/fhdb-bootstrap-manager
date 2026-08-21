@@ -13,6 +13,7 @@
  */
 
 #include <kernel.h>
+#include <timer.h>
 #include <debug.h>
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
