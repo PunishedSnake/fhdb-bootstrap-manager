@@ -41,6 +41,10 @@ void gs_ui_console_clear(void);
 void gs_ui_console_printf(const char *format, ...)
     __attribute__((format(printf, 1, 2)));
 void gs_ui_console_vprintf(const char *format, va_list arguments);
+/* Present one complete compatibility-console screen. Historical controller
+ * code often emits a screen through several scr_printf() calls; batching those
+ * calls avoids rebuilding and submitting the same frame after every line. */
+void gs_ui_console_present(void);
 
 void gs_ui_render_disk_status(const char *operation,
                               const char *phase,
