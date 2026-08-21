@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app_error.h"
 #include "sha256.h"
 #include "storage.h"
 
@@ -22,6 +23,12 @@ static const unsigned char snapshot_magic[8] = {
 static const char *const snapshot_names[FORENSIC_SNAPSHOT_SLOT_COUNT] = {
     "HDDMETA.BIN", "HDDMETA2.BIN"
 };
+
+static int fail_snapshot(int code, const char *stage)
+{
+    app_error_record(APP_ERROR_DOMAIN_FORENSIC_SNAPSHOT, code, stage);
+    return code;
+}
 
 static void write_le32_snapshot(unsigned char *destination, unsigned int value)
 {
@@ -43,11 +50,13 @@ static int build_snapshot_image(const apa_forensic_result_t *result,
     unsigned char *image;
 
     if (plan->patch_count == 0 || plan->patch_count > APA_FORENSIC_MAX_PATCHES)
-        return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+        return fail_snapshot(FORENSIC_SNAPSHOT_INVALID_ARGUMENT,
+                             "validate forensic patch count");
     if (plan->patch_count >
         (0xffffffffu - SNAPSHOT_HEADER_BYTES - SNAPSHOT_TRAILER_BYTES) /
             SNAPSHOT_ENTRY_BYTES)
-        return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+        return fail_snapshot(FORENSIC_SNAPSHOT_INVALID_ARGUMENT,
+                             "validate HDDMETA image size");
 
     for (i = 0; i < plan->patch_count; i++) {
         unsigned int distance =
@@ -61,7 +70,8 @@ static int build_snapshot_image(const apa_forensic_result_t *result,
            SNAPSHOT_TRAILER_BYTES;
     image = malloc(size);
     if (image == NULL)
-        return FORENSIC_SNAPSHOT_ALLOC_FAILED;
+        return fail_snapshot(FORENSIC_SNAPSHOT_ALLOC_FAILED,
+                             "allocate HDDMETA image");
     memset(image, 0, size);
 
     memcpy(image, snapshot_magic, sizeof(snapshot_magic));
@@ -86,12 +96,14 @@ static int build_snapshot_image(const apa_forensic_result_t *result,
 
         if (patch->node_index >= result->node_count) {
             free(image);
-            return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+            return fail_snapshot(FORENSIC_SNAPSHOT_INVALID_ARGUMENT,
+                                 "resolve patch node for HDDMETA");
         }
         node = &result->nodes[patch->node_index];
         if (node->lba != patch->lba) {
             free(image);
-            return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+            return fail_snapshot(FORENSIC_SNAPSHOT_INVALID_ARGUMENT,
+                                 "match patch LBA to scanned node");
         }
 
         write_le32_snapshot(image + offset, patch->lba);
@@ -121,7 +133,8 @@ int forensic_snapshot_save(unsigned int storage,
 
     if (storage >= STORAGE_TARGET_COUNT || result == NULL || plan == NULL ||
         path_out == NULL)
-        return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+        return fail_snapshot(FORENSIC_SNAPSHOT_INVALID_ARGUMENT,
+                             "validate HDDMETA snapshot arguments");
 
     result_code = build_snapshot_image(result, plan, &image, &image_size);
     if (result_code < 0)
@@ -129,7 +142,8 @@ int forensic_snapshot_save(unsigned int storage,
     verify = malloc(image_size);
     if (verify == NULL) {
         free(image);
-        return FORENSIC_SNAPSHOT_ALLOC_FAILED;
+        return fail_snapshot(FORENSIC_SNAPSHOT_ALLOC_FAILED,
+                             "allocate HDDMETA read-back buffer");
     }
 
     for (slot = 0; slot < FORENSIC_SNAPSHOT_SLOT_COUNT; slot++) {
@@ -156,13 +170,15 @@ int forensic_snapshot_save(unsigned int storage,
         if (write_whole_file(path, image, (int)image_size) < 0) {
             free(verify);
             free(image);
-            return FORENSIC_SNAPSHOT_WRITE_FAILED;
+            return fail_snapshot(FORENSIC_SNAPSHOT_WRITE_FAILED,
+                                 "write HDDMETA snapshot");
         }
         if (read_exact_file(path, verify, (int)image_size) < 0 ||
             memcmp(verify, image, image_size) != 0) {
             free(verify);
             free(image);
-            return FORENSIC_SNAPSHOT_VERIFY_FAILED;
+            return fail_snapshot(FORENSIC_SNAPSHOT_VERIFY_FAILED,
+                                 "read back/compare HDDMETA snapshot");
         }
 
         strncpy(path_out, path, FORENSIC_SNAPSHOT_PATH_SIZE - 1u);
@@ -174,5 +190,6 @@ int forensic_snapshot_save(unsigned int storage,
 
     free(verify);
     free(image);
-    return FORENSIC_SNAPSHOT_NO_SLOT;
+    return fail_snapshot(FORENSIC_SNAPSHOT_NO_SLOT,
+                         "select non-overwriting HDDMETA slot");
 }
