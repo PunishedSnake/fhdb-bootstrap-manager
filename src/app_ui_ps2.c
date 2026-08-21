@@ -9,6 +9,7 @@
 #include <hdd-ioctl.h>
 #include <libpwroff.h>
 
+#include "app_error.h"
 #include "app_identity.h"
 #include "app_ui_ps2.h"
 #include "boot_report_session.h"
@@ -16,6 +17,35 @@
 #include "session_log.h"
 #include "storage.h"
 #include "version.h"
+
+static void print_error_details(app_error_domain_t fallback_domain,
+                                int code, int consume)
+{
+    app_error_record_t record;
+    app_error_info_t info;
+    app_error_domain_t domain = fallback_domain;
+    const char *context = NULL;
+
+    if (app_error_get(&record) && record.code == code) {
+        domain = record.domain;
+        context = record.context[0] != '\0' ? record.context : NULL;
+    }
+    app_error_describe(domain, code, &info);
+
+    scr_printf("\nError ID : %s\n", info.symbol);
+    if (context != NULL)
+        scr_printf("Stage    : %s\n", context);
+    scr_printf("Summary  : %s\n", info.summary);
+    scr_printf("Reason   : %s\n", info.detail);
+    scr_printf("Next step: %s\n", info.action);
+    scr_printf("Raw code : %d\n", code);
+
+    session_log_line("Error detail: id=%s code=%d context=%s summary=%s",
+                     info.symbol, code,
+                     context != NULL ? context : "(none)", info.summary);
+    if (consume)
+        app_error_clear();
+}
 
 void app_ui_restart_to_browser(void)
 {
@@ -72,8 +102,8 @@ void app_ui_fatal_screen(const char *message, int code)
         scr_clear();
         scr_printf(APP_NAME " v%s\n\n", APP_VERSION);
         scr_printf("ERROR: %s\n", message);
-        scr_printf("Code: %d\n\n", code);
-        scr_printf("X = restart   TRIANGLE = power off\n");
+        print_error_details(APP_ERROR_DOMAIN_STARTUP, code, 0);
+        scr_printf("\nX = restart   TRIANGLE = power off\n");
         pressed = wait_for_press();
         if (pressed & PAD_CROSS)
             app_ui_restart_to_browser();
@@ -84,6 +114,10 @@ void app_ui_fatal_screen(const char *message, int code)
 
 void app_ui_wait_to_return(void)
 {
+    app_error_record_t record;
+
+    if (app_error_get(&record))
+        print_error_details(record.domain, record.code, 1);
     scr_printf("\nPress X to return.\n");
     while (!(wait_for_press() & PAD_CROSS)) {}
 }
