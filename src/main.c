@@ -36,7 +36,9 @@
 #include <unistd.h>
 
 #include "capsule_format.h"
+#include "platform.h"
 #include "sha256.h"
+#include "storage.h"
 #include "version.h"
 
 /* Application identity and offsets within the 1024-byte APA master header. */
@@ -76,7 +78,6 @@
 #define BACKUP_OCCUPIED 999998
 
 /* DMA-safe buffers shared with pad, fileXio, and raw HDD RPC operations. */
-static unsigned char pad_buffer[256] __attribute__((aligned(64)));
 static unsigned char header_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));
 static unsigned char verify_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));
 static unsigned char backup_buffer[APA_HEADER_SIZE] __attribute__((aligned(64)));
@@ -93,63 +94,11 @@ static unsigned int session_log_saved[3];
 static unsigned int session_log_sequence;
 static int last_report_save_result = BACKUP_NOT_TRIED;
 
-/* One global storage choice controls backup lookup and the MBR.XLF source path. */
-typedef struct {
-    const char *name;
-    const char *prefix;
-    int memory_card_port;
-} storage_target_t;
-
-static const storage_target_t storage_targets[] = {
-    {"mc0", "mc0:", 0},
-    {"mc1", "mc1:", 1},
-    {"mass", "mass:", -1}
-};
-
-#define STORAGE_TARGET_COUNT (sizeof(storage_targets) / sizeof(storage_targets[0]))
-static unsigned int selected_storage = 0;
-
 /* Per-slot results are displayed verbatim when a mandatory backup fails. */
 static int backup_read_result[BACKUP_SLOT_COUNT];
 static int backup_write_result[BACKUP_SLOT_COUNT];
 static int backup_verify_result[BACKUP_SLOT_COUNT];
 static char backup_diagnostic_path[BACKUP_SLOT_COUNT][64];
-
-/* IRX modules embedded into the ELF by the Makefile's bin2c rules. */
-extern unsigned char iomanX_irx[];
-extern unsigned int size_iomanX_irx;
-extern unsigned char fileXio_irx[];
-extern unsigned int size_fileXio_irx;
-extern unsigned char secrman_irx[];
-extern unsigned int size_secrman_irx;
-extern unsigned char freesio2_irx[];
-extern unsigned int size_freesio2_irx;
-extern unsigned char freepad_irx[];
-extern unsigned int size_freepad_irx;
-extern unsigned char mcman_irx[];
-extern unsigned int size_mcman_irx;
-extern unsigned char mcserv_irx[];
-extern unsigned int size_mcserv_irx;
-extern unsigned char secrsif_irx[];
-extern unsigned int size_secrsif_irx;
-extern unsigned char poweroff_irx[];
-extern unsigned int size_poweroff_irx;
-extern unsigned char bdm_irx[];
-extern unsigned int size_bdm_irx;
-extern unsigned char bdmfs_fatfs_irx[];
-extern unsigned int size_bdmfs_fatfs_irx;
-extern unsigned char usbd_irx[];
-extern unsigned int size_usbd_irx;
-extern unsigned char usbmass_bd_irx[];
-extern unsigned int size_usbmass_bd_irx;
-extern unsigned char ps2dev9_irx[];
-extern unsigned int size_ps2dev9_irx;
-extern unsigned char ps2atad_irx[];
-extern unsigned int size_ps2atad_irx;
-extern unsigned char ps2hdd_irx[];
-extern unsigned int size_ps2hdd_irx;
-extern unsigned char ps2fs_irx[];
-extern unsigned int size_ps2fs_irx;
 
 /* Argument layout used by the raw read devctl. */
 typedef struct {
@@ -369,112 +318,8 @@ static int kelf_size_from_disk_image(const unsigned char *data,
 }
 
 /* ------------------------------------------------------------------------- */
-/* IOP, controller, storage, and console lifecycle                           */
+/* Console lifecycle and UI                                                */
 /* ------------------------------------------------------------------------- */
-
-/* Reset the IOP and enable loading embedded homebrew IRX modules. */
-static void reset_iop(void)
-{
-    sceSifInitRpc(0);
-    while (!SifIopReset(NULL, 0)) {}
-    while (!SifIopSync()) {}
-    sceSifInitRpc(0);
-    sbv_patch_enable_lmb();
-    sbv_patch_disable_prefix_check();
-}
-
-/* Execute an embedded IRX and treat either RPC or module-start failure as fatal. */
-static int exec_irx(void *buffer, unsigned int size)
-{
-    int module_result = 0;
-    int module_id = SifExecModuleBuffer(buffer, size, 0, NULL, &module_result);
-
-    if (module_id < 0)
-        return module_id;
-    return module_result < 0 ? module_result : 0;
-}
-
-/* Load modules in dependency order, including USB and MagicGate services. */
-static int load_modules(void)
-{
-    if (exec_irx(iomanX_irx, size_iomanX_irx) < 0) return -1;
-    if (exec_irx(fileXio_irx, size_fileXio_irx) < 0) return -2;
-    if (exec_irx(secrman_irx, size_secrman_irx) < 0) return -3;
-    if (exec_irx(freesio2_irx, size_freesio2_irx) < 0) return -4;
-    if (exec_irx(freepad_irx, size_freepad_irx) < 0) return -5;
-    if (exec_irx(mcman_irx, size_mcman_irx) < 0) return -6;
-    if (exec_irx(mcserv_irx, size_mcserv_irx) < 0) return -7;
-    if (exec_irx(secrsif_irx, size_secrsif_irx) < 0) return -8;
-    if (exec_irx(poweroff_irx, size_poweroff_irx) < 0) return -9;
-    if (exec_irx(bdm_irx, size_bdm_irx) < 0) return -10;
-    if (exec_irx(bdmfs_fatfs_irx, size_bdmfs_fatfs_irx) < 0) return -11;
-    if (exec_irx(usbd_irx, size_usbd_irx) < 0) return -12;
-    if (exec_irx(usbmass_bd_irx, size_usbmass_bd_irx) < 0) return -13;
-    if (exec_irx(ps2dev9_irx, size_ps2dev9_irx) < 0) return -14;
-    if (exec_irx(ps2atad_irx, size_ps2atad_irx) < 0) return -15;
-    if (exec_irx(ps2hdd_irx, size_ps2hdd_irx) < 0) return -16;
-    if (exec_irx(ps2fs_irx, size_ps2fs_irx) < 0) return -17;
-    return 0;
-}
-
-/* Wait for controller port 0, slot 0 to reach a readable state. */
-static int wait_pad_ready(void)
-{
-    int state;
-    int timeout = 500000;
-
-    while (timeout-- > 0) {
-        state = padGetState(0, 0);
-        if (state == PAD_STATE_STABLE || state == PAD_STATE_FINDCTP1)
-            return 0;
-        DelayThread(10);
-    }
-    return -1;
-}
-
-/* Initialize the first controller using a statically allocated DMA buffer. */
-static int init_pad(void)
-{
-    padInit(0);
-    if (!padPortOpen(0, 0, pad_buffer))
-        return -1;
-    return wait_pad_ready();
-}
-
-/* Block until a new button edge is observed, avoiding repeated menu actions. */
-static u32 wait_for_press(void)
-{
-    struct padButtonStatus buttons;
-    static u32 previous = 0;
-
-    for (;;) {
-        if (wait_pad_ready() == 0 && padRead(0, 0, &buttons) != 0) {
-            u32 current = 0xffffu ^ buttons.btns;
-            u32 pressed = current & ~previous;
-            previous = current;
-            if (pressed)
-                return pressed;
-        }
-        DelayThread(16000);
-    }
-}
-
-/* Require a multi-button hold; TRIANGLE always cancels safely. */
-static int wait_for_chord(u32 chord)
-{
-    struct padButtonStatus buttons;
-
-    for (;;) {
-        if (wait_pad_ready() == 0 && padRead(0, 0, &buttons) != 0) {
-            u32 held = 0xffffu ^ buttons.btns;
-            if (held & PAD_TRIANGLE)
-                return 0;
-            if ((held & chord) == chord)
-                return 1;
-        }
-        DelayThread(16000);
-    }
-}
 
 /* Perform a normal PS2 shutdown through the poweroff RPC service. */
 static void shutdown_console(void)
@@ -547,212 +392,8 @@ static void wait_to_return(void)
 }
 
 /* ------------------------------------------------------------------------- */
-/* File and storage helpers                                                  */
+/* Configuration parsing and higher-level storage workflows                */
 /* ------------------------------------------------------------------------- */
-
-/* Construct a root-level path for the selected storage device. */
-static void storage_path(char *destination, unsigned int capacity,
-                         unsigned int storage, const char *filename)
-{
-    snprintf(destination, capacity, "%s/%s",
-             storage_targets[storage].prefix, filename);
-}
-
-/* Prefer the device that launched the ELF when argv[0] carries that path. */
-static void select_launch_storage(int argc, char **argv)
-{
-    unsigned int i;
-
-    if (argc <= 0 || argv == NULL || argv[0] == NULL)
-        return;
-    if (strncmp(argv[0], "mass0:", 6) == 0) {
-        selected_storage = 2;
-        return;
-    }
-    for (i = 0; i < STORAGE_TARGET_COUNT; i++) {
-        size_t prefix_length = strlen(storage_targets[i].prefix);
-
-        if (strncmp(argv[0], storage_targets[i].prefix, prefix_length) == 0) {
-            selected_storage = i;
-            return;
-        }
-    }
-}
-
-/* Write all bytes, handling short fileXio transfers correctly. */
-static int write_whole_file(const char *path, const void *data, int size)
-{
-    const unsigned char *source = data;
-    int fd = fileXioOpen(path, FIO_O_WRONLY | FIO_O_CREAT | FIO_O_TRUNC, 0666);
-    int total = 0;
-
-    if (fd < 0)
-        return fd;
-    while (total < size) {
-        int written = fileXioWrite(fd, source + total, size - total);
-        if (written <= 0) {
-            fileXioClose(fd);
-            return written < 0 ? written : -1;
-        }
-        total += written;
-    }
-    fileXioClose(fd);
-    return 0;
-}
-
-/* Append a log fragment, optionally rotating a stale oversized log first. */
-static int append_log_file(const char *path, const void *data, int size,
-                           int truncate)
-{
-    int flags = FIO_O_WRONLY | FIO_O_CREAT;
-    const unsigned char *source = data;
-    int total = 0;
-    int fd;
-
-    flags |= truncate ? FIO_O_TRUNC : FIO_O_APPEND;
-    fd = fileXioOpen(path, flags, 0666);
-    if (fd < 0)
-        return fd;
-    while (total < size) {
-        int written = fileXioWrite(fd, source + total, size - total);
-
-        if (written <= 0) {
-            fileXioClose(fd);
-            return written < 0 ? written : -1;
-        }
-        total += written;
-    }
-    fileXioClose(fd);
-    return 0;
-}
-
-/* Read exactly the requested size and reject truncation or trailing bytes. */
-static int read_exact_file(const char *path, void *data, int size)
-{
-    unsigned char *destination = data;
-    int fd = fileXioOpen(path, FIO_O_RDONLY, 0);
-    int total = 0;
-    int result;
-
-    if (fd < 0)
-        return fd;
-    result = fileXioLseek(fd, 0, FIO_SEEK_END);
-    if (result != size || fileXioLseek(fd, 0, FIO_SEEK_SET) < 0) {
-        fileXioClose(fd);
-        return -1;
-    }
-    while (total < size) {
-        result = fileXioRead(fd, destination + total, size - total);
-        if (result <= 0) {
-            fileXioClose(fd);
-            return result < 0 ? result : -1;
-        }
-        total += result;
-    }
-    fileXioClose(fd);
-    return 0;
-}
-
-/* Read a complete bounded file into heap memory for capsule validation. */
-static int read_bounded_file(const char *path, unsigned int maximum_size,
-                             unsigned char **data_out,
-                             unsigned int *size_out)
-{
-    int fd = fileXioOpen(path, FIO_O_RDONLY, 0);
-    int size;
-    int total = 0;
-    unsigned char *data;
-
-    if (fd < 0)
-        return fd;
-    size = fileXioLseek(fd, 0, FIO_SEEK_END);
-    if (size <= 0 || (unsigned int)size > maximum_size ||
-        fileXioLseek(fd, 0, FIO_SEEK_SET) < 0) {
-        fileXioClose(fd);
-        return -160;
-    }
-    data = malloc((unsigned int)size);
-    if (data == NULL) {
-        fileXioClose(fd);
-        return -161;
-    }
-    while (total < size) {
-        int received = fileXioRead(fd, data + total, size - total);
-
-        if (received <= 0) {
-            free(data);
-            fileXioClose(fd);
-            return received < 0 ? received : -162;
-        }
-        total += received;
-    }
-    fileXioClose(fd);
-    *data_out = data;
-    *size_out = (unsigned int)size;
-    return 0;
-}
-
-/* Return a boolean existence result without exposing driver-specific errors. */
-static int path_exists(const char *path)
-{
-    iox_stat_t status;
-
-    memset(&status, 0, sizeof(status));
-    return fileXioGetStat(path, &status) >= 0;
-}
-
-/* Load a small configuration file and always provide a trailing NUL byte. */
-static int read_text_file(const char *path, char *buffer,
-                          unsigned int capacity)
-{
-    int fd;
-    int size;
-    int total = 0;
-
-    if (capacity < 2)
-        return -1;
-    fd = fileXioOpen(path, FIO_O_RDONLY, 0);
-    if (fd < 0)
-        return fd;
-    size = fileXioLseek(fd, 0, FIO_SEEK_END);
-    if (size < 0 || (unsigned int)size >= capacity ||
-        fileXioLseek(fd, 0, FIO_SEEK_SET) < 0) {
-        fileXioClose(fd);
-        return -2;
-    }
-    while (total < size) {
-        int received = fileXioRead(fd, buffer + total, size - total);
-
-        if (received <= 0) {
-            fileXioClose(fd);
-            return received < 0 ? received : -3;
-        }
-        total += received;
-    }
-    fileXioClose(fd);
-    buffer[total] = '\0';
-    return total;
-}
-
-/* Read ROMVER through the already initialized fileXio stack. */
-static int read_romver(char destination[RESCUE_CAPSULE_ROMVER_SIZE])
-{
-    int fd = fileXioOpen("rom0:ROMVER", FIO_O_RDONLY, 0);
-    int received;
-
-    memset(destination, 0, RESCUE_CAPSULE_ROMVER_SIZE);
-    if (fd < 0)
-        return fd;
-    received = fileXioRead(fd, destination,
-                           RESCUE_CAPSULE_ROMVER_SIZE - 1);
-    fileXioClose(fd);
-    if (received <= 0)
-        return received < 0 ? received : -1;
-    if (received >= (int)RESCUE_CAPSULE_ROMVER_SIZE)
-        received = RESCUE_CAPSULE_ROMVER_SIZE - 1;
-    destination[received] = '\0';
-    return received;
-}
 
 /* Case-insensitive ASCII comparison used by old FMCB-style CNF files. */
 static int ascii_equal_nocase(char a, char b)
