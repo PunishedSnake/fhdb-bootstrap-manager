@@ -23,6 +23,8 @@ const storage_target_t storage_targets[STORAGE_TARGET_COUNT] = {
 };
 
 static unsigned int selected_storage = 0;
+static char launch_directory[STORAGE_LAUNCH_PATH_SIZE];
+static int launch_directory_valid;
 
 unsigned int storage_selected(void)
 {
@@ -45,13 +47,48 @@ void storage_path(char *destination, unsigned int capacity,
              storage_targets[storage].prefix, filename);
 }
 
+static void capture_launch_directory(const char *path)
+{
+    const char *slash;
+    const char *colon;
+    size_t length;
+
+    launch_directory[0] = '\0';
+    launch_directory_valid = 0;
+    if (path == NULL || path[0] == '\0')
+        return;
+
+    colon = strchr(path, ':');
+    if (colon == NULL)
+        return;
+
+    slash = strrchr(path, '/');
+    if (slash != NULL && slash > colon) {
+        length = (size_t)(slash - path);
+    } else {
+        /* A launcher may pass e.g. "mass:APP.ELF". Keep the device prefix as
+           the directory instead of guessing a host-side working directory. */
+        length = (size_t)(colon - path) + 1u;
+    }
+
+    if (length == 0 || length >= sizeof(launch_directory))
+        return;
+    memcpy(launch_directory, path, length);
+    launch_directory[length] = '\0';
+    launch_directory_valid = 1;
+}
+
 /* Prefer the device that launched the ELF when argv[0] carries that path. */
 void select_launch_storage(int argc, char **argv)
 {
     unsigned int i;
 
+    launch_directory[0] = '\0';
+    launch_directory_valid = 0;
     if (argc <= 0 || argv == NULL || argv[0] == NULL)
         return;
+
+    capture_launch_directory(argv[0]);
     if (strncmp(argv[0], "mass0:", 6) == 0) {
         storage_set_selected(2);
         return;
@@ -64,6 +101,41 @@ void select_launch_storage(int argc, char **argv)
             return;
         }
     }
+}
+
+int storage_launch_file_path(char *destination, unsigned int capacity,
+                             const char *filename)
+{
+    int written;
+
+    if (destination == NULL || capacity == 0 || filename == NULL ||
+        filename[0] == '\0')
+        return -1;
+
+    if (launch_directory_valid) {
+        size_t length = strlen(launch_directory);
+        const char *separator = length != 0 &&
+                                launch_directory[length - 1u] == ':'
+                                    ? "" : "/";
+
+        written = snprintf(destination, capacity, "%s%s%s",
+                           launch_directory, separator, filename);
+    } else {
+        written = snprintf(destination, capacity, "%s/%s",
+                           storage_targets[storage_selected()].prefix,
+                           filename);
+    }
+
+    if (written < 0 || (unsigned int)written >= capacity) {
+        destination[0] = '\0';
+        return -2;
+    }
+    return launch_directory_valid ? 0 : 1;
+}
+
+const char *storage_launch_directory(void)
+{
+    return launch_directory_valid ? launch_directory : NULL;
 }
 
 /* Write all bytes, handling short fileXio transfers correctly. */
