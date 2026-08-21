@@ -6,7 +6,14 @@
 #include "apa.h"
 
 #define APA_FORENSIC_SCAN_STEP 0x40000u
-#define APA_FORENSIC_MAX_NODES 512u
+/*
+ * Real 1-2 TB HDL-heavy disks can legitimately contain well over 512 APA
+ * headers because every game may own multiple sub-partitions. 2048 keeps the
+ * static forensic working set in the intended low-single-digit MiB range while
+ * covering substantially larger real disks. Hitting this cap is still a hard
+ * read-only condition: a truncated scan can never authorize repair.
+ */
+#define APA_FORENSIC_MAX_NODES 2048u
 #define APA_FORENSIC_MAX_MAPS 3u
 #define APA_FORENSIC_MAX_PATCHES APA_FORENSIC_MAX_NODES
 
