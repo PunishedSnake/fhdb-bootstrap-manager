@@ -78,7 +78,7 @@ mbr_compat.o: src/mbr_compat.c
 # Only PS2 build goals need the SDK's global rules. This makes `make test-host`
 # and `make clean` useful on an ordinary development machine or CI runner.
 PS2_GOALS := $(filter-out test-host clean,$(MAKECMDGOALS))
-ifeq ($(strip $(MAKECMD_GOALS)),)
+ifeq ($(strip $(MAKECMDGOALS)),)
 include $(PS2SDK)/samples/Makefile.pref
 include $(PS2SDK)/samples/Makefile.eeglobal
 else ifneq ($(strip $(PS2_GOALS)),)
