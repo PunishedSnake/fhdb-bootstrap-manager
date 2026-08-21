@@ -26,7 +26,7 @@
 static int read_skip_hdd_setting(const char *path)
 {
     char *text = malloc(TEXT_FILE_LIMIT);
-    int attempts = (selected_storage == 2 &&
+    int attempts = (storage_selected() == 2 &&
                     strncmp(path, "mass:", 5) == 0) ? 20 : 1;
     int result;
 

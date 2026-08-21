@@ -10,7 +10,7 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
 - Began regression-gated decomposition of the former monolithic EE application without changing the established HDD write transaction.
 - Extracted IOP reset, embedded IRX startup, controller DMA lifetime, pad input, and confirmation chords into `platform.c` / `platform.h`.
-- Extracted storage-target selection, ROMVER access, and generic fileXio helpers into `storage.c` / `storage.h` while temporarily preserving the existing selected-storage state interface.
+- Extracted storage-target selection, ROMVER access, and generic fileXio helpers into `storage.c` / `storage.h`; Michishirube now also encapsulates the selected-target state behind `storage_selected()` / `storage_set_selected()` instead of exporting a mutable global.
 - Extracted portable APA master-header parsing into `apa.c` / `apa.h`, leaving raw HDD transport and pointer updates in `main.c`.
 - Extracted the shared boot-chain evidence model, CNF parsing, ROMVER mapping, target parsing, and family-classification policy into PS2SDK-free `boot_chain.c` / `boot_chain.h`.
 - Extracted memory-card, FMCB, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection into read-only `boot_chain_ps2.c` / `boot_chain_ps2.h`.

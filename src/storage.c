@@ -22,7 +22,20 @@ const storage_target_t storage_targets[STORAGE_TARGET_COUNT] = {
     {"mass", "mass:", -1}
 };
 
-unsigned int selected_storage = 0;
+static unsigned int selected_storage = 0;
+
+unsigned int storage_selected(void)
+{
+    return selected_storage;
+}
+
+int storage_set_selected(unsigned int storage)
+{
+    if (storage >= STORAGE_TARGET_COUNT)
+        return -1;
+    selected_storage = storage;
+    return 0;
+}
 
 /* Construct a root-level path for one supported storage device. */
 void storage_path(char *destination, unsigned int capacity,
@@ -40,14 +53,14 @@ void select_launch_storage(int argc, char **argv)
     if (argc <= 0 || argv == NULL || argv[0] == NULL)
         return;
     if (strncmp(argv[0], "mass0:", 6) == 0) {
-        selected_storage = 2;
+        storage_set_selected(2);
         return;
     }
     for (i = 0; i < STORAGE_TARGET_COUNT; i++) {
         size_t prefix_length = strlen(storage_targets[i].prefix);
 
         if (strncmp(argv[0], storage_targets[i].prefix, prefix_length) == 0) {
-            selected_storage = i;
+            storage_set_selected(i);
             return;
         }
     }

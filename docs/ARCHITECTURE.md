@@ -8,7 +8,7 @@ The `0.4.0-dev` **Michishirube** line is progressively converting the former mon
 
 - `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install workflows, write-capable APA transport, and guarded pointer/write ordering that has not yet been extracted.
 - `src/platform.c` — IOP reset, embedded IRX startup, pad initialization, button-edge input, and confirmation-chord input.
-- `src/storage.c` — storage target definitions, launch-device selection, ROMVER access, and generic fileXio helpers. The first split temporarily exposes the selected target state so call sites remain behaviorally identical; later Michishirube work will encapsulate it after regression coverage exists.
+- `src/storage.c` — storage target definitions, encapsulated selected-target state, launch-device selection, ROMVER access, and generic fileXio helpers. Callers read/change the selection through validated accessors instead of mutating module state directly.
 - `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
 - `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.
 - `src/boot_payload.c` — PS2SDK-free conversion of a sector-aligned active payload into byte counts, sector-image SHA-256, KELF structural result/size, and unpadded-KELF SHA-256.

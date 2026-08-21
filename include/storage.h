@@ -11,14 +11,12 @@ typedef struct {
     int memory_card_port;
 } storage_target_t;
 
-/*
- * Transitional state exported during the first 0.4 modularization pass.
- * Keeping these names preserves call-site behaviour while code moves out of
- * main.c. A later Michishirube step can encapsulate selection behind accessors
- * once the split itself has regression coverage.
- */
+/* Storage target metadata remains read-only to callers. */
 extern const storage_target_t storage_targets[STORAGE_TARGET_COUNT];
-extern unsigned int selected_storage;
+
+/* Selected-target state is owned by storage.c. */
+unsigned int storage_selected(void);
+int storage_set_selected(unsigned int storage);
 
 void storage_path(char *destination, unsigned int capacity,
                   unsigned int storage, const char *filename);
