@@ -5,7 +5,10 @@
 
 #define APA_HEADER_SIZE 1024u
 #define APA_MAGIC_OFFSET 0x004u
+#define APA_NEXT_OFFSET 0x008u
+#define APA_PREV_OFFSET 0x00cu
 #define APA_ID_OFFSET 0x010u
+#define APA_ID_SIZE 32u
 #define APA_START_OFFSET 0x040u
 #define APA_LENGTH_OFFSET 0x044u
 #define APA_TYPE_OFFSET 0x048u
@@ -19,9 +22,13 @@
 #define APA_OSD_START_OFFSET 0x130u
 #define APA_OSD_SIZE_OFFSET 0x134u
 #define PC_MBR_SIGNATURE_OFFSET 0x1feu
+#define APA_SUBS_OFFSET 0x200u
+#define APA_SUB_ENTRY_SIZE 8u
+#define APA_MAX_SUBS 64u
 
 #define APA_MASTER_TYPE_VALUE 0x0001u
 #define APA_MASTER_VERSION_VALUE 2u
+#define APA_SUB_FLAG_VALUE 0x0001u
 
 /*
  * Transitional names retained while pure APA parsing leaves main.c. These
