@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   host-tests:
@@ -32,3 +32,190 @@ jobs:
           path: |
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+
+  integrate-bootstrap-transaction:
+    if: github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/0.4.0-michishirube
+          fetch-depth: 0
+
+      - name: Route write workflows through transaction policy
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'src/main.c',
+              '#include "apa.h"\n#include "boot_chain.h"\n',
+              '#include "apa.h"\n#include "bootstrap_transaction_ps2.h"\n#include "boot_chain.h"\n',
+              'transaction include')
+          replace_once(
+              'src/main.c',
+              '#include "hdd_read.h"\n#include "hdd_write.h"\n#include "kelf.h"\n',
+              '#include "hdd_read.h"\n#include "kelf.h"\n',
+              'remove direct hdd_write include')
+
+          replace_once(
+              'src/main.c',
+              'static void disable_bootstrap(void)\n{\n    const char *backup_path = save_backup();\n    const char *rescue_path;\n    int result;\n',
+              'static void disable_bootstrap(void)\n{\n    const char *backup_path = save_backup();\n    const char *rescue_path;\n    bootstrap_transaction_result_t transaction;\n    int result;\n',
+              'disable transaction state')
+          replace_once(
+              'src/main.c',
+              '    result = hdd_write_set_osd_mbr(0, 0);\n    if (result < 0)\n        fatal_screen("HDIOC_SETOSDMBR failed.", result);\n    result = hdd_write_verify_osd_mbr(header_buffer, 0, 0);\n    if (result < 0)\n        fatal_screen("Disable verification failed. Keep the backup.", result);\n',
+              '    result = bootstrap_transaction_ps2_set_pointer(\n        header_buffer, 0, 0, &transaction);\n    if (result < 0) {\n        if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_POINTER_SET)\n            fatal_screen("HDIOC_SETOSDMBR failed.", result);\n        else\n            fatal_screen("Disable verification failed. Keep the backup.", result);\n    }\n',
+              'disable transaction call')
+
+          replace_once(
+              'src/main.c',
+              'static void restore_legacy_pointer(void)\n{\n    const char *backup_path = load_backup();\n    const char *safety_backup;\n    u32 start;\n    u32 size;\n    int result;\n',
+              'static void restore_legacy_pointer(void)\n{\n    const char *backup_path = load_backup();\n    const char *safety_backup;\n    bootstrap_transaction_result_t transaction;\n    u32 start;\n    u32 size;\n    int result;\n',
+              'legacy transaction state')
+          replace_once(
+              'src/main.c',
+              '    result = hdd_write_set_osd_mbr(start, size);\n    if (result < 0)\n        fatal_screen("Bootstrap restore failed.", result);\n    result = hdd_write_verify_osd_mbr(header_buffer, start, size);\n    if (result < 0)\n        fatal_screen("Restore verification failed.", result);\n',
+              '    result = bootstrap_transaction_ps2_set_pointer(\n        header_buffer, start, size, &transaction);\n    if (result < 0) {\n        if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_POINTER_SET)\n            fatal_screen("Bootstrap restore failed.", result);\n        else\n            fatal_screen("Restore verification failed.", result);\n    }\n',
+              'legacy transaction call')
+
+          replace_once(
+              'src/main.c',
+              '    const unsigned char *payload;\n    const char *safety_backup;\n    int result;\n',
+              '    const unsigned char *payload;\n    const char *safety_backup;\n    bootstrap_transaction_result_t transaction;\n    int result;\n',
+              'rescue transaction state')
+          replace_once(
+              'src/main.c',
+              '    result = hdd_write_payload_verified(payload, info.payload_bytes,\n                                        info.payload_start);\n    free(file_data);\n    if (result < 0)\n        fatal_screen("Rescue payload verification failed; pointer remains disabled.",\n                     result);\n    result = hdd_write_set_osd_mbr(info.payload_start, info.payload_sectors);\n    if (result < 0)\n        fatal_screen("Rescue payload verified, but pointer restore failed.",\n                     result);\n    result = hdd_write_verify_osd_mbr(\n        header_buffer, info.payload_start, info.payload_sectors);\n    if (result < 0)\n        fatal_screen("Rescue pointer read-back verification failed.", result);\n',
+              '    result = bootstrap_transaction_ps2_activate(\n        header_buffer, payload, info.payload_bytes, info.payload_start,\n        info.payload_sectors, free, file_data, &transaction);\n    if (result < 0) {\n        if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_PAYLOAD)\n            fatal_screen(\n                "Rescue payload verification failed; pointer remains disabled.",\n                result);\n        else if (transaction.stage ==\n                 BOOTSTRAP_TRANSACTION_STAGE_POINTER_SET)\n            fatal_screen(\n                "Rescue payload verified, but pointer restore failed.", result);\n        else\n            fatal_screen("Rescue pointer read-back verification failed.",\n                         result);\n    }\n',
+              'rescue transaction call')
+
+          replace_once(
+              'src/main.c',
+              '    unsigned int sectors;\n    int signing_port;\n    int result;\n    iox_stat_t mbr_stat;\n',
+              '    unsigned int sectors;\n    int signing_port;\n    bootstrap_transaction_result_t transaction;\n    int result;\n    iox_stat_t mbr_stat;\n',
+              'install transaction state')
+          replace_once(
+              'src/main.c',
+              '    result = hdd_write_payload_verified(payload, payload_size, MBR_PAYLOAD_START);\n    free(payload);\n    if (result < 0)\n        fatal_screen("Payload write/read-back failed; pointer remains disabled.", result);\n\n    result = hdd_write_set_osd_mbr(MBR_PAYLOAD_START, sectors);\n    if (result < 0)\n        fatal_screen("Payload verified, but enabling its pointer failed.", result);\n    result = hdd_write_verify_osd_mbr(header_buffer, MBR_PAYLOAD_START, sectors);\n    if (result < 0)\n        fatal_screen("Installed pointer verification failed.", result);\n',
+              '    result = bootstrap_transaction_ps2_activate(\n        header_buffer, payload, payload_size, MBR_PAYLOAD_START, sectors,\n        free, payload, &transaction);\n    if (result < 0) {\n        if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_PAYLOAD)\n            fatal_screen(\n                "Payload write/read-back failed; pointer remains disabled.",\n                result);\n        else if (transaction.stage ==\n                 BOOTSTRAP_TRANSACTION_STAGE_POINTER_SET)\n            fatal_screen(\n                "Payload verified, but enabling its pointer failed.", result);\n        else\n            fatal_screen("Installed pointer verification failed.", result);\n    }\n',
+              'install transaction call')
+
+          text = Path('src/main.c').read_text()
+          for token in ('hdd_write_payload_verified(', 'hdd_write_set_osd_mbr(',
+                        'hdd_write_verify_osd_mbr('):
+              if token in text:
+                  raise SystemExit(f'direct write transport still used in main.c: {token}')
+          PY
+
+      - name: Update transaction architecture documentation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'README.md',
+              '`hdd_write.c` now owns write-capable APA transport primitives and their DMA/read-back buffers, while `main.c` deliberately retains rescue/install policy, confirmation gates, MagicGate signing, and payload-first/pointer-last transaction ordering.',
+              '`hdd_write.c` owns write-capable APA transport primitives and their DMA/read-back buffers; portable `bootstrap_transaction.c` plus its PS2 adapter now own the post-confirmation payload-release/pointer sequencing. `main.c` retains validation, backup/confirmation, MagicGate signing, and error/UI policy.',
+              'README transaction boundary')
+
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install workflows, confirmation/safety policy, and explicit payload-first/pointer-last transaction ordering.\n',
+              '- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install preconditions, backup/confirmation, MagicGate signing, and user-facing error policy.\n',
+              'architecture main policy')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '- `src/hdd_write.c` — PS2-only write-capable transport: raw `HDIOC_WRITESECTOR` packets, write-side DMA/read-back buffers, flushes, byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back verification. It owns mechanics only, not backup/confirmation/signing or transaction ordering.\n',
+              '- `src/hdd_write.c` — PS2-only write-capable transport: raw `HDIOC_WRITESECTOR` packets, write-side DMA/read-back buffers, flushes, byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back verification. It owns mechanics only, not backup/confirmation/signing or transaction ordering.\n- `src/bootstrap_transaction.c` — PS2SDK-free post-confirmation transaction sequencer. It preserves raw transport errors, records the failed stage, releases the caller-owned payload immediately after write/verify, and guarantees that pointer update/verification cannot occur after payload failure.\n- `src/bootstrap_transaction_ps2.c` — thin PS2 binding from the portable sequencer to `hdd_write`; it adds no policy of its own.\n',
+              'architecture transaction modules')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              'Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split across portable header logic in `apa.c`, read-only raw transport/bounds in `hdd_read.c`, and write-capable transport/read-back mechanics in `hdd_write.c`. The higher-level rescue/install transaction policy remains visibly sequenced in `main.c`, so moving the transport does not hide backup, confirmation, signing, or payload-first/pointer-last ordering. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.\n',
+              'Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split across portable header logic in `apa.c`, read-only raw transport/bounds in `hdd_read.c`, write-capable transport/read-back mechanics in `hdd_write.c`, and a portable `bootstrap_transaction.c` sequencer with a narrow PS2 adapter. `main.c` still owns all pre-write authorization gates—validation, backup, confirmation, and signing—while the tested sequencer owns only the already-authorized payload-first/pointer-last commit phase. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.\n',
+              'architecture transaction split')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              'The safety policy still lives in the higher-level workflows in `main.c`: current-header backup, rescue validation, user confirmation, MagicGate signing, and the explicit payload-write/verify before pointer-update/verify sequence. This separation makes the dangerous I/O implementation modular without making transaction order implicit.\n\nKeeping read-only `hdd_read.c` separate from write-capable `hdd_write.c` also prevents diagnostics from acquiring a write interface merely because both paths need raw-sector read-back.\n',
+              'Pre-write authorization remains in `main.c`: current-header backup, rescue/capacity validation, user confirmation, and MagicGate signing all complete before the transaction sequencer is entered.\n\nThe already-authorized commit phase lives in portable `bootstrap_transaction.c`. Host tests assert `payload -> release -> pointer set -> pointer verify`, assert immediate stop at each injected failure, and specifically prove that pointer exposure never follows a failed payload write/compare. `bootstrap_transaction_ps2.c` only binds those abstract operations to `hdd_write.c`, so the tested policy is independent of PS2SDK.\n\nKeeping read-only `hdd_read.c` separate from write-capable `hdd_write.c` also prevents diagnostics from acquiring a write interface merely because both paths need raw-sector read-back.\n',
+              'architecture transaction safety')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, boot-payload, boot-report, and malformed KELF regression cases.\n',
+              '- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, boot-payload, boot-report, bootstrap-transaction ordering/failure injection, and malformed KELF regression cases.\n',
+              'architecture tests')
+
+          replace_once(
+              'docs/ROADMAP.md',
+              '- [ ] write transaction policy — backup/confirmation/signing plus payload-first/pointer-last ordering remain explicit in `main.c` until the transport extraction has hardware coverage.\n',
+              '- [x] `bootstrap_transaction` commit policy — portable failure-injected tests cover payload/release/pointer/verify ordering, and the PS2 adapter binds that policy to `hdd_write` without owning pre-write authorization.\n- [ ] higher-level write workflow split — rescue/install validation, backups, user confirmation, MagicGate signing, and UI/error presentation still live in `main.c` and should move only after hardware coverage of the transport+transaction boundary.\n',
+              'roadmap transaction policy')
+          replace_once(
+              'docs/ROADMAP.md',
+              '- report assessment precedence for inconsistent pointers, unreadable payloads, invalid KELFs, and unknown downstream environments;\n',
+              '- report assessment precedence for inconsistent pointers, unreadable payloads, invalid KELFs, and unknown downstream environments;\n- bootstrap transaction success plus injected payload, pointer-set, and pointer-verify failures, including proof that payload allocation release precedes pointer exposure and that payload failure stops the transaction;\n',
+              'roadmap transaction tests')
+          replace_once(
+              'docs/ROADMAP.md',
+              '- hardware-validate the new `hdd_write` transport boundary before moving higher-level rescue/install transaction policy; payload-first/pointer-last ordering remains an explicit invariant;\n',
+              '- hardware-validate the combined `hdd_write` + `bootstrap_transaction` boundary before moving rescue-capsule lifecycle, signing, confirmation, or error/UI orchestration; payload-first/pointer-last remains an explicit tested invariant;\n',
+              'roadmap transaction hardware gate')
+
+          replace_once(
+              'CHANGELOG.md',
+              '- Extracted write-capable HDD transport into PS2-only `hdd_write.c` / `hdd_write.h`: raw sector write packets, write-side DMA/read-back buffers, flushes, payload byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back now live behind explicit primitives.\n',
+              '- Extracted write-capable HDD transport into PS2-only `hdd_write.c` / `hdd_write.h`: raw sector write packets, write-side DMA/read-back buffers, flushes, payload byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back now live behind explicit primitives.\n- Extracted the already-authorized write commit sequence into portable `bootstrap_transaction.c` / `bootstrap_transaction.h`, with `bootstrap_transaction_ps2.c` binding it to `hdd_write`. The sequencer preserves the raw failing code and reports whether payload, pointer-set, or pointer-verification failed.\n',
+              'changelog transaction changed')
+          replace_once(
+              'CHANGELOG.md',
+              '- Report tests verify the external-HDD-module/`Skip_HDD` advisory text and guarantee NUL termination even when the supplied output buffer is deliberately too small.\n',
+              '- Report tests verify the external-HDD-module/`Skip_HDD` advisory text and guarantee NUL termination even when the supplied output buffer is deliberately too small.\n- Added portable bootstrap-transaction failure injection covering pointer-only success/failure, payload failure with no pointer exposure, payload-buffer release before pointer update, pointer-set failure, pointer-verification failure, raw error propagation, and success ordering.\n',
+              'changelog transaction tests')
+          replace_once(
+              'CHANGELOG.md',
+              '- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flushes, payload comparison, and pointer read-back moved mechanically into `hdd_write.c`; historical numeric diagnostics and the I/O sequence inside those primitives are unchanged. Rescue/install policy, mandatory backup/confirmation, MagicGate signing, and payload-first/pointer-last ordering remain explicit in `main.c`.\n',
+              '- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flushes, payload comparison, and pointer read-back remain isolated in `hdd_write.c`; historical numeric diagnostics and primitive I/O behavior are unchanged. Portable `bootstrap_transaction` now enforces the already-authorized payload-first/pointer-last commit sequence, while rescue/install validation, mandatory backup/confirmation, MagicGate signing, and UI/error policy remain in `main.c`.\n',
+              'changelog transaction safety')
+          replace_once(
+              'CHANGELOG.md',
+              '- The report renderer cannot access storage. `boot_report_ps2` and `session_log` own only diagnostic-file persistence; active payload acquisition remains behind the read-only `boot_payload_ps2`/`hdd_read` boundary. `main.c` retains diagnostics presentation/timing and higher-level disk-changing transaction policy, while raw write mechanics are isolated in `hdd_write.c`.\n',
+              '- The report renderer cannot access storage. `boot_report_ps2` and `session_log` own only diagnostic-file persistence; active payload acquisition remains behind the read-only `boot_payload_ps2`/`hdd_read` boundary. `main.c` retains diagnostics presentation/timing plus pre-write authorization/UI policy; raw write mechanics live in `hdd_write.c` and the post-confirmation commit sequence in portable `bootstrap_transaction`.\n',
+              'changelog ownership')
+          PY
+
+      - name: Verify transaction boundaries and regressions
+        run: |
+          ! grep -q 'hdd_write_' src/main.c
+          ! grep -q 'fileXio\|HDIOC_\|tamtypes\|hdd_write' src/bootstrap_transaction.c
+          ! grep -q 'wait_for_chord\|save_backup\|SecrDownloadFile\|scr_printf\|session_log' src/bootstrap_transaction_ps2.c
+          grep -q 'bootstrap_transaction_ps2_activate' src/main.c
+          grep -q 'bootstrap_transaction_ps2_set_pointer' src/main.c
+          make test-host
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
+            sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit integrated policy and restore normal CI
+        run: |
+          git checkout ef50dd968690ae55c1e0ec6c72514eba13a155bf -- .github/workflows/ci.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main.c README.md CHANGELOG.md docs/ARCHITECTURE.md docs/ROADMAP.md .github/workflows/ci.yml
+          git commit -m "Route writes through tested transaction policy"
+          git push origin HEAD:dev/0.4.0-michishirube
