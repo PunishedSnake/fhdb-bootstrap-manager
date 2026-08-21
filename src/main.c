@@ -26,13 +26,13 @@
 #include <fileXio_rpc.h>
 #include <hdd-ioctl.h>
 #include <libpwroff.h>
-#include <libsecr.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "apa.h"
+#include "bootstrap_signing.h"
 #include "bootstrap_source.h"
 #include "bootstrap_transaction_ps2.h"
 #include "boot_chain.h"
@@ -41,7 +41,6 @@
 #include "hdd_limits.h"
 #include "hdd_read.h"
 #include "header_backup.h"
-#include "kelf.h"
 #include "rescue_storage.h"
 #include "platform.h"
 #include "session_log.h"
@@ -577,6 +576,7 @@ static void install_bootstrap(void)
     const char *backup_path;
     const char *installed_rescue;
     int signing_port;
+    bootstrap_signing_result_t signing_result;
     bootstrap_transaction_result_t transaction;
     int result;
 
@@ -650,20 +650,21 @@ static void install_bootstrap(void)
 
     scr_clear();
     scr_printf("Signing MBR.XLF through mc%d...\n", signing_port);
-    if (SecrDownloadFile(2 + signing_port, 0, source.payload) == NULL) {
-        bootstrap_source_release(&source);
-        session_log_line("MagicGate signing failed through mc%d", signing_port);
-        session_log_flush(storage_selected());
-        scr_clear();
-        scr_printf("MagicGate signing failed through mc%d.\n", signing_port);
-        scr_printf("HDD was NOT modified. Check the PS2 memory card.\n");
-        wait_to_return();
-        return;
-    }
-    result = kelf_validate_layout(source.payload, source.payload_size);
+    result = bootstrap_signing_sign(
+        signing_port, source.payload, source.payload_size, &signing_result);
     if (result < 0) {
         bootstrap_source_release(&source);
-        fatal_screen("Signed KELF failed structural validation.", result);
+        if (signing_result.stage == BOOTSTRAP_SIGNING_STAGE_MAGICGATE) {
+            session_log_line("MagicGate signing failed through mc%d", signing_port);
+            session_log_flush(storage_selected());
+            scr_clear();
+            scr_printf("MagicGate signing failed through mc%d.\n", signing_port);
+            scr_printf("HDD was NOT modified. Check the PS2 memory card.\n");
+            wait_to_return();
+            return;
+        }
+        fatal_screen("Signed KELF failed structural validation.",
+                     signing_result.code);
     }
 
     scr_clear();
@@ -744,7 +745,7 @@ int main(int argc, char **argv)
     }
     fileXioInit();
     poweroffInit();
-    SecrInit();
+    bootstrap_signing_init();
     if (init_pad() < 0) {
         scr_printf("ERROR: Controller 1 is not available.\n");
         scr_printf("Power off with the console button.\n");
