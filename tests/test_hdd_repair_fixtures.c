@@ -1,4 +1,4 @@
-/* Exercise repair policy against every generated synthetic raw HDD fixture. */
+/* Exercise diagnosis and successful repair postconditions for every raw fixture. */
 
 #include "apa.h"
 #include "apa_repair.h"
@@ -75,11 +75,48 @@ static int read_bytes(const char *directory, const char *name, long offset,
     return 1;
 }
 
+static void write_le32_test(unsigned char *destination, unsigned int value)
+{
+    destination[0] = (unsigned char)value;
+    destination[1] = (unsigned char)(value >> 8);
+    destination[2] = (unsigned char)(value >> 16);
+    destination[3] = (unsigned char)(value >> 24);
+}
+
 static int master_anchors_match(const unsigned char header[APA_HEADER_SIZE])
 {
     return read_le32(header + APA_START_OFFSET) == 0 &&
            read_le16(header + APA_TYPE_OFFSET) == APA_MASTER_TYPE_VALUE &&
            read_le32(header + APA_MBR_VERSION_OFFSET) == APA_MASTER_VERSION_VALUE;
+}
+
+static int pointer_clear_postcondition(
+    const unsigned char source[APA_HEADER_SIZE])
+{
+    unsigned char cleared[APA_HEADER_SIZE];
+    unsigned int i;
+
+    memcpy(cleared, source, sizeof(cleared));
+    write_le32_test(cleared + APA_OSD_START_OFFSET, 0);
+    write_le32_test(cleared + APA_OSD_SIZE_OFFSET, 0);
+    write_le32_test(cleared, apa_checksum(cleared));
+
+    if (!is_standard_apa_header(cleared) || !master_anchors_match(cleared) ||
+        is_hybrid_gpt(cleared) ||
+        read_le32(cleared + APA_OSD_START_OFFSET) != 0 ||
+        read_le32(cleared + APA_OSD_SIZE_OFFSET) != 0)
+        return 0;
+
+    /* A successful SETOSDMBR(0,0) postcondition may alter only the checksum
+       word and the two OSD pointer words in this host byte model. */
+    for (i = 0; i < APA_HEADER_SIZE; i++) {
+        if (i < 4 ||
+            (i >= APA_OSD_START_OFFSET && i < APA_OSD_SIZE_OFFSET + 4))
+            continue;
+        if (cleared[i] != source[i])
+            return 0;
+    }
+    return 1;
 }
 
 static expected_repair_t classify_case(const char *directory,
@@ -111,10 +148,23 @@ static expected_repair_t classify_case(const char *directory,
         return EXPECT_HEADER_REPAIR;
     }
 
-    if (plan.blockers != 0)
+    if (plan.blockers != 0) {
+        unsigned char forbidden[APA_HEADER_SIZE];
+
+        if (apa_repair_build_header(header, &plan, forbidden) == 0) {
+            *detail_out = -4;
+            return EXPECT_HEADER_REPAIR;
+        }
         return EXPECT_BLOCKED;
-    if (plan.pointer_clear_recommended)
+    }
+
+    if (plan.pointer_clear_recommended) {
+        if (!pointer_clear_postcondition(header)) {
+            *detail_out = -5;
+            return EXPECT_BLOCKED;
+        }
         return EXPECT_POINTER_CLEAR;
+    }
 
     start = read_le32(header + APA_OSD_START_OFFSET);
     sectors = read_le32(header + APA_OSD_SIZE_OFFSET);
@@ -125,6 +175,8 @@ static expected_repair_t classify_case(const char *directory,
         start, sectors, 0, test->mbr_size);
     if (result < 0) {
         *detail_out = result;
+        if (!pointer_clear_postcondition(header))
+            return EXPECT_BLOCKED;
         return EXPECT_POINTER_CLEAR;
     }
 
@@ -136,11 +188,15 @@ static expected_repair_t classify_case(const char *directory,
                         (long)start * HDD_SECTOR_SIZE,
                         payload, sizeof(payload))) {
             *detail_out = -3;
+            if (!pointer_clear_postcondition(header))
+                return EXPECT_BLOCKED;
             return EXPECT_POINTER_CLEAR;
         }
         result = kelf_size_from_disk_image(payload, sizeof(payload), &file_bytes);
         if (result < 0) {
             *detail_out = result;
+            if (!pointer_clear_postcondition(header))
+                return EXPECT_BLOCKED;
             return EXPECT_POINTER_CLEAR;
         }
     }
@@ -179,8 +235,9 @@ int main(int argc, char **argv)
         counts[(unsigned int)actual]++;
     }
 
-    printf("All %u generated HDD repair-policy cases passed: "
-           "%u no-repair, %u header-repair, %u pointer-clear, %u blocked.\n",
+    printf("All %u generated HDD repair-policy cases passed with repair "
+           "postconditions: %u no-repair, %u header-repair, "
+           "%u pointer-clear, %u blocked.\n",
            (unsigned int)(sizeof(cases) / sizeof(cases[0])),
            counts[EXPECT_NO_REPAIR], counts[EXPECT_HEADER_REPAIR],
            counts[EXPECT_POINTER_CLEAR], counts[EXPECT_BLOCKED]);
