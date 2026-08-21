@@ -37,9 +37,10 @@ Instead:
 
 Physical retesting confirmed that this removed the visible forensic-scan tearing. The status panel refreshes less frequently during rapid reads, as intended, while remaining responsive for write-sensitive transitions.
 
-The two native 640x224 buffers use the same VRAM footprint that 0.4.0 reserved
-for one conservative 640x448 allocation, so this removes a tearing race without
-spending additional GS memory or weakening I/O throughput.
+The two buffers reserve 640x448 pixels apiece so they can also back the optional
+progressive application mode. Native output draws into their upper 224-line
+field. The extra VRAM removes the tearing race without weakening I/O throughput
+and still leaves ample room in the GS's 4 MiB budget.
 
 ## Current status coverage
 

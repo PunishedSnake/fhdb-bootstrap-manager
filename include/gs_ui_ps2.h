@@ -10,6 +10,12 @@ typedef enum {
     GS_UI_TONE_DANGER
 } gs_ui_tone_t;
 
+typedef enum {
+    GS_UI_VIDEO_NATIVE = 0,
+    GS_UI_VIDEO_480P,
+    GS_UI_VIDEO_MODE_COUNT
+} gs_ui_video_mode_t;
+
 /*
  * Michishirube's application-wide GS frontend.
  *
@@ -20,6 +26,13 @@ typedef enum {
  */
 int gs_ui_initialize(void);
 int gs_ui_is_ready(void);
+
+/* Video-mode changes affect this application only. The native mode reuses the
+ * hardware-proven init_scr() bootstrap; 480p uses a 640x448 framebuffer and is
+ * intentionally session-only until confirmed on physical hardware. */
+const char *gs_ui_video_mode_name(gs_ui_video_mode_t mode);
+gs_ui_video_mode_t gs_ui_video_mode_current(void);
+int gs_ui_video_mode_apply(gs_ui_video_mode_t mode);
 
 void gs_ui_render_menu(const char *title,
                        const char *status,

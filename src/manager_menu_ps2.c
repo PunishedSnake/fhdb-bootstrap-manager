@@ -1,6 +1,7 @@
 /* Hierarchical post-0.4 UI controller: categories replace button exhaustion. */
 
 #include <debug.h>
+#include <libpad.h>
 
 #include <stdio.h>
 
@@ -9,6 +10,7 @@
 #include "boot_report_session.h"
 #include "diagnostics_controller_ps2.h"
 #include "forensic_controller_ps2.h"
+#include "gs_ui_ps2.h"
 #include "manager_menu_ps2.h"
 #include "platform.h"
 #include "repair_controller_ps2.h"
@@ -223,17 +225,87 @@ static void ui_theme_menu(void)
     app_ui_wait_to_return();
 }
 
+static void video_mode_menu(void)
+{
+    static const app_ui_menu_item_t items[] = {
+        {"Native interlaced",
+         "Hardware-proven 640x224 FIELD output", 1},
+        {"480p progressive (experimental)",
+         "640x448; requires a 480p-capable display and video path", 1}
+    };
+    unsigned int selected = (unsigned int)gs_ui_video_mode_current();
+    char status[96];
+    char body[256];
+    int choice;
+    int result;
+
+    snprintf(status, sizeof(status), "Current: %s",
+             gs_ui_video_mode_name(gs_ui_video_mode_current()));
+    choice = app_ui_menu_select("Video mode", status, items, 2, &selected);
+    if (choice < 0 || (gs_ui_video_mode_t)choice == gs_ui_video_mode_current())
+        return;
+
+    result = gs_ui_video_mode_apply((gs_ui_video_mode_t)choice);
+    session_log_line("Video mode request: %s; result=%d",
+                     gs_ui_video_mode_name((gs_ui_video_mode_t)choice), result);
+    if (result < 0) {
+        scr_clear();
+        scr_printf("Video mode switch failed (code %d).\n\n", result);
+        scr_printf("The native display mode has been restored.\n");
+        app_ui_wait_to_return();
+        return;
+    }
+
+    if (choice == GS_UI_VIDEO_NATIVE)
+        return;
+
+    {
+        unsigned int remaining;
+        int confirmed = 0;
+
+        for (remaining = 10u; remaining != 0u; remaining--) {
+            u32 pressed = 0;
+
+            snprintf(body, sizeof(body),
+                     "640x448 progressive output is active.\n\n"
+                     "Press X to keep it for this session.\n"
+                     "Press TRIANGLE to restore native output.\n\n"
+                     "Automatic restore in %u second%s.",
+                     remaining, remaining == 1u ? "" : "s");
+            gs_ui_render_message("Confirm 480p output", body,
+                                 "This preference is not written to HDDMAN.CFG.",
+                                 GS_UI_TONE_WARNING);
+            if (wait_for_press_timeout(1000u, &pressed)) {
+                if (pressed & PAD_CROSS) {
+                    confirmed = 1;
+                    break;
+                }
+                if (pressed & PAD_TRIANGLE)
+                    break;
+            }
+        }
+        if (confirmed) {
+            session_log_line("480p output confirmed for this session");
+            return;
+        }
+    }
+
+    (void)gs_ui_video_mode_apply(GS_UI_VIDEO_NATIVE);
+    session_log_line("480p output was not confirmed; native mode restored");
+}
+
 static void system_menu(void)
 {
     static const app_ui_menu_item_t items[] = {
         {"Controller / activity indicator", "Inspect ANALOG-lamp capability and behavior", 1},
         {"UI theme", "Choose Aqua, Amber, Sakura or Monochrome", 1},
+        {"Video mode", "Native interlaced or guarded 480p progressive output", 1},
         {"Power / restart", "Restart to Browser or shut down", 1}
     };
     unsigned int selected = 0;
 
     for (;;) {
-        int choice = app_ui_menu_select("System", NULL, items, 3, &selected);
+        int choice = app_ui_menu_select("System", NULL, items, 4, &selected);
         if (choice < 0)
             return;
         if (choice == 0)
@@ -241,6 +313,8 @@ static void system_menu(void)
         if (choice == 1)
             ui_theme_menu();
         if (choice == 2)
+            video_mode_menu();
+        if (choice == 3)
             app_ui_power_menu();
     }
 }
@@ -253,7 +327,7 @@ void manager_menu_run(unsigned char header[APA_HEADER_SIZE],
         {"Diagnostics", "Boot-chain evidence and reports", 1},
         {"Recovery", "Deterministic repair and forensic APA workspace", 1},
         {"Backup & Storage", "Rescue backup destination and storage selection", 1},
-        {"System", "Controller, UI theme, restart and power", 1}
+        {"System", "Controller, UI theme, video mode, restart and power", 1}
     };
     unsigned int selected = 0;
     char status[192];

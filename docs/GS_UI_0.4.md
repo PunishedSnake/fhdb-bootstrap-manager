@@ -16,7 +16,21 @@
 
 The built-in PS2SDK MSX glyph data is converted once into a 128x64 RGBA atlas and uploaded once to VRAM. Every glyph is rendered **8x8 source -> 8x8 destination** with nearest-neighbour sampling and integer native field coordinates. There is no 448->224 scaling stage.
 
-Panels, cards, selection/disabled rows, outlines, status areas and progress bars are ordinary GS primitives. Frames are submitted through GIF DMA with alternating EE packet buffers.
+Panels, cards, selection/disabled rows, outlines, status areas and progress bars are ordinary GS primitives. Frames are submitted through GIF DMA with alternating EE packet buffers and two GS framebuffers.
+
+## Experimental application video mode
+
+**System -> Video mode** can switch the manager itself to a 480p progressive
+output backed by a 640x448 framebuffer. Layout coordinates remain the proven
+640x224 design and are expanded vertically by an exact integer factor of two;
+there is still no fractional glyph scaling or discarded bitmap row.
+
+480p requires a compatible display and video path. The manager therefore shows
+a ten-second confirmation screen after switching. X keeps the mode for the
+current session; TRIANGLE or no confirmation restores the hardware-proven
+`init_scr()` interlaced output automatically. The choice is deliberately not
+written to `HDDMAN.CFG` before physical validation across console revisions,
+cables and displays.
 
 Linker wrappers for `scr_printf`, `scr_vprintf`, and `scr_clear` route older incremental text screens through `gs_debug_compat_ps2` and therefore through the same GS renderer. The real libdebug renderer remains reachable only as a last-resort GS-initialization failure display.
 
@@ -86,8 +100,11 @@ A large healthy-disk forensic scan performs thousands of raw reads. Waiting for 
 
 Physical retesting confirmed that visible forensic-scan screen tearing disappeared. The screen updates less frequently during rapid reads, which is intentional.
 
-The two 640x224 buffers reuse the 640x448 VRAM reservation already budgeted by
-0.4.0, so true double buffering adds no framebuffer-memory overhead.
+Each framebuffer reserves 640x448 pixels so the same pair can serve both the
+native 640x224 field and the optional full-height progressive mode. This costs
+about 1.1 MiB more VRAM than the conservative single-buffer 0.4.0 reservation,
+but remains comfortably inside the GS's 4 MiB budget together with the font
+atlas.
 
 ## Physical validation result
 

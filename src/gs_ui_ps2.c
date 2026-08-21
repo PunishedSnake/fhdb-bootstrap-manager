@@ -14,6 +14,7 @@
 #include <kernel.h>
 #include <tamtypes.h>
 
+#include <debug.h>
 #include <dma.h>
 #include <draw.h>
 #include <graph.h>
@@ -31,6 +32,7 @@
 
 #define GS_UI_WIDTH 640
 #define GS_UI_HEIGHT 224
+#define GS_UI_PROGRESSIVE_HEIGHT 448
 #define GS_UI_FRAME_COUNT 2
 #define GS_UI_FONT_SRC_W 8
 #define GS_UI_FONT_SRC_H 8
@@ -55,6 +57,8 @@ static blend_t alpha_blend;
 static packet_t *render_packets[2];
 static unsigned int render_packet_index;
 static unsigned int draw_frame_index;
+static unsigned int render_scale_y = 1u;
+static gs_ui_video_mode_t video_mode = GS_UI_VIDEO_NATIVE;
 static u32 font_atlas[GS_UI_ATLAS_W * GS_UI_ATLAS_H]
     __attribute__((aligned(64)));
 static char console_buffer[GS_UI_CONSOLE_BYTES];
@@ -89,10 +93,10 @@ static qword_t *filled_rect_rgb(qword_t *q, float x0, float y0,
     rect_t rect;
 
     rect.v0.x = x0;
-    rect.v0.y = y0;
+    rect.v0.y = y0 * (float)render_scale_y;
     rect.v0.z = 1;
     rect.v1.x = x1;
-    rect.v1.y = y1;
+    rect.v1.y = y1 * (float)render_scale_y;
     rect.v1.z = 1;
     set_color(&rect.color, rgb);
     select_blending(0);
@@ -105,10 +109,10 @@ static qword_t *outline_rect_rgb(qword_t *q, float x0, float y0,
     rect_t rect;
 
     rect.v0.x = x0;
-    rect.v0.y = y0;
+    rect.v0.y = y0 * (float)render_scale_y;
     rect.v0.z = 1;
     rect.v1.x = x1;
-    rect.v1.y = y1;
+    rect.v1.y = y1 * (float)render_scale_y;
     rect.v1.z = 1;
     set_color(&rect.color, rgb);
     select_blending(0);
@@ -128,10 +132,10 @@ static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
     glyph_y = ((unsigned int)ch >> 4) * GS_UI_FONT_SRC_H;
 
     glyph.v0.x = x;
-    glyph.v0.y = y;
+    glyph.v0.y = y * (float)render_scale_y;
     glyph.v0.z = 2;
     glyph.v1.x = x + GS_UI_GLYPH_W;
-    glyph.v1.y = y + GS_UI_GLYPH_H;
+    glyph.v1.y = (y + GS_UI_GLYPH_H) * (float)render_scale_y;
     glyph.v1.z = 2;
     glyph.t0.u = (float)glyph_x;
     glyph.t0.v = (float)glyph_y;
@@ -217,21 +221,21 @@ static int setup_environment(void)
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
 
-    /* init_scr() already configured VRAM 0 as the visible framebuffer. Two
-       native FIELD buffers occupy the same 640x448 reservation used by 0.4.0,
-       but let us draw off-screen and swap on VBlank instead of racing the CRT
-       read circuit. Frame zero remains compatible with emergency libdebug
-       output and is the buffer initially displayed by init_scr(). */
+    /* init_scr() already configured VRAM 0 as the visible framebuffer. Reserve
+       two full 640x448 buffers: native mode uses their upper 224-line fields,
+       while progressive mode uses all 448 lines. Frame zero remains compatible
+       with emergency libdebug output and is initially displayed by init_scr(). */
     graph_vram_clear();
     for (i = 0; i < GS_UI_FRAME_COUNT; i++) {
-        int address = graph_vram_allocate(GS_UI_WIDTH, GS_UI_HEIGHT,
+        int address = graph_vram_allocate(GS_UI_WIDTH,
+                                          GS_UI_PROGRESSIVE_HEIGHT,
                                           GS_PSM_32, GRAPH_ALIGN_PAGE);
 
         if (address < 0 || (i == 0u && address != 0))
             return -1;
         frames[i].address = (unsigned int)address;
         frames[i].width = GS_UI_WIDTH;
-        frames[i].height = GS_UI_HEIGHT;
+        frames[i].height = GS_UI_PROGRESSIVE_HEIGHT;
         frames[i].psm = GS_PSM_32;
         frames[i].mask = 0;
     }
@@ -259,7 +263,7 @@ static int setup_environment(void)
     /* libdraw draw2d primitives add the GS +2048 bias themselves. */
     q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
     q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
-                          0, GS_UI_HEIGHT - 1);
+                          0, GS_UI_PROGRESSIVE_HEIGHT - 1);
     q = draw_finish(q);
     dma_wait_fast();
     dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
@@ -347,7 +351,7 @@ static qword_t *begin_frame(packet_t **packet_out)
     q = draw_framebuffer(q, GS_UI_CONTEXT, &frames[draw_frame_index]);
     q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
     q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
-                          0, GS_UI_HEIGHT - 1);
+                          0, GS_UI_HEIGHT * (int)render_scale_y - 1);
     q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
     q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
     q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
@@ -432,6 +436,70 @@ int gs_ui_initialize(void)
 int gs_ui_is_ready(void)
 {
     return renderer_ready;
+}
+
+const char *gs_ui_video_mode_name(gs_ui_video_mode_t mode)
+{
+    switch (mode) {
+        case GS_UI_VIDEO_480P:
+            return "480p progressive (640x448)";
+        case GS_UI_VIDEO_NATIVE:
+        default:
+            return "Native interlaced (640x224 field)";
+    }
+}
+
+gs_ui_video_mode_t gs_ui_video_mode_current(void)
+{
+    return video_mode;
+}
+
+static void restore_native_video(void)
+{
+    /* This is deliberately the same read-circuit bootstrap already proven on
+       physical hardware. It is also the timed escape hatch from an unsupported
+       480p display/cable combination. */
+    init_scr();
+    render_scale_y = 1u;
+    video_mode = GS_UI_VIDEO_NATIVE;
+    draw_frame_index = 1u;
+    blending_enabled = -1;
+}
+
+int gs_ui_video_mode_apply(gs_ui_video_mode_t mode)
+{
+    unsigned int displayed_frame;
+
+    if (!renderer_ready)
+        return -1;
+    if ((unsigned int)mode >= (unsigned int)GS_UI_VIDEO_MODE_COUNT)
+        return -2;
+    if (mode == video_mode)
+        return 0;
+
+    dma_wait_fast();
+    graph_wait_vsync();
+    if (mode == GS_UI_VIDEO_NATIVE) {
+        restore_native_video();
+        return 0;
+    }
+
+    displayed_frame = draw_frame_index ^ 1u;
+    graph_disable_output();
+    if (graph_set_mode(GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P,
+                       GRAPH_MODE_FRAME, GRAPH_DISABLE) < 0 ||
+        graph_set_screen(0, 0, GS_UI_WIDTH, GS_UI_PROGRESSIVE_HEIGHT) < 0) {
+        restore_native_video();
+        return -3;
+    }
+    graph_set_bgcolor(0, 0, 0);
+    graph_set_framebuffer_filtered(frames[displayed_frame].address,
+                                   GS_UI_WIDTH, GS_PSM_32, 0, 0);
+    render_scale_y = 2u;
+    video_mode = GS_UI_VIDEO_480P;
+    blending_enabled = -1;
+    graph_enable_output();
+    return 0;
 }
 
 void gs_ui_render_menu(const char *title,

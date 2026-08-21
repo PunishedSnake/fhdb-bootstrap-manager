@@ -179,6 +179,24 @@ The final 0.4.0 display contract is:
 
 The VSync build was physically retested: screen tearing during forensic scanning disappeared. The visible status refresh rate is lower by design, while disk I/O itself is not forced to wait for one VBlank per raw read because high-rate read telemetry is coalesced.
 
+### Post-release GS optimization pending physical validation
+
+The 0.4.x optimization branch adds true two-framebuffer VBlank swapping and an
+optional application-owned 480p mode backed by a 640x448 framebuffer. The 480p
+choice is guarded by a ten-second confirmation timeout and is never persisted.
+
+The following items must be checked on physical hardware before treating that
+mode as validated:
+
+- native mode still boots through the proven `init_scr()` signal path;
+- native and progressive screens fill the intended display area;
+- 480p text retains complete glyph rows and stable nearest-neighbour edges;
+- automatic timeout restores native output when 480p is not visible;
+- confirmed 480p remains stable across menus and live HDD status screens;
+- repeated native <-> 480p switches do not corrupt the font atlas or buffers.
+
+Until those checks pass, 480p is an experimental convenience, not a new default.
+
 ## Large-HDD forensic finding #1 — old node-cap truncation
 
 The first healthy large-HDL forensic scan hit the old 512-node capacity. The partial forward map still looked extremely coherent, but the visible tail was not the physical tail. The old evaluator therefore inferred two fake endpoint changes.

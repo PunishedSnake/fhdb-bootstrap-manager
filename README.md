@@ -87,10 +87,20 @@ The physically validated display contract is intentionally conservative:
 - `gs_ui_ps2` renders normal application pixels through libdraw/GIF DMA;
 - the PS2SDK MSX font is uploaded once as a texture atlas and rendered native 8x8 -> 8x8;
 - menu cards, outlines, locked rows, progress bars and status panels are GS primitives;
+- complete frames are drawn off-screen and swapped on VBlank through two
+  framebuffers;
 - remaining source-level `scr_clear()` / `scr_printf()` compatibility screens are intercepted and rendered through the same GS frontend;
 - real libdebug drawing is retained only as a renderer-initialization emergency fallback.
 
 Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
+
+The current 0.4.x development branch also exposes **System -> Video mode**. Its
+experimental 480p option renders the manager into a 640x448 progressive
+framebuffer for a steadier, clearer UI. Because the PS2 remains admirably
+uninterested in negotiating modern display capabilities, the mode must be
+confirmed with X within ten seconds. TRIANGLE, no input, or an internal setup
+failure restores the physically proven native output. The choice is session-only
+and is not written to `HDDMAN.CFG`.
 
 ### Themes and configuration
 
@@ -132,7 +142,7 @@ SECTOR      exact physical LBA/range when a raw HDD command exists
 
 Instrumentation covers startup admission, diagnostics, backup, disable, legacy/full restore, MBR source validation, MagicGate signing, install, payload reads/writes, pointer changes, deterministic health assessment, `HDDRAW`, exceptional master repair, `HDDMETA`, and forensic multi-header repair.
 
-Presentation is synchronized to VBlank. High-rate raw `READ` telemetry is coalesced so the UI shows the newest state without turning every disk access into a mandatory 50/60 Hz wait. WRITE/VERIFY/FLUSH/pointer and phase changes remain immediate and VBlank-synchronized. This removed visible forensic-scan tearing on the release test console.
+Presentation uses a complete off-screen framebuffer and a VBlank swap. High-rate raw `READ` telemetry is coalesced so the UI shows the newest state without turning every disk access into a mandatory 50/60 Hz wait. WRITE/VERIFY/FLUSH/pointer and phase changes remain immediate. This preserves the release fix for visible forensic-scan tearing while removing the remaining draw-versus-scan race for every screen.
 
 ## Contextual errors
 
