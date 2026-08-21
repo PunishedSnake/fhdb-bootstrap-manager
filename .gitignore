@@ -2,6 +2,7 @@
 *.o
 *_irx.c
 *.ELF
+/tests/test_app_error
 /tests/test_formats
 /tests/test_apa_repair
 /tests/test_apa_forensic
