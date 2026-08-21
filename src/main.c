@@ -35,21 +35,15 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "apa.h"
 #include "capsule_format.h"
 #include "platform.h"
 #include "sha256.h"
 #include "storage.h"
 #include "version.h"
 
-/* Application identity and offsets within the 1024-byte APA master header. */
+/* Application identity; APA layout constants live in apa.h. */
 #define APP_NAME "PS2 HDD Bootstrap Manager"
-#define APA_HEADER_SIZE 1024
-#define APA_MAGIC_OFFSET 0x004
-#define APA_ID_OFFSET 0x010
-#define APA_MBR_MAGIC_OFFSET 0x100
-#define APA_OSD_START_OFFSET 0x130
-#define APA_OSD_SIZE_OFFSET 0x134
-#define PC_MBR_SIGNATURE_OFFSET 0x1fe
 
 /* The HDD bootstrap payload begins in the reserved area of __mbr at sector 0x2000. */
 #define MBR_PAYLOAD_START 0x2000
@@ -196,64 +190,8 @@ static void log_line(const char *format, ...)
 }
 
 /* ------------------------------------------------------------------------- */
-/* APA header parsing and validation                                         */
+/* KELF payload structure helpers                                          */
 /* ------------------------------------------------------------------------- */
-
-/* Read an explicitly little-endian 32-bit value without alignment assumptions. */
-static u32 read_le32(const unsigned char *p)
-{
-    return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
-}
-
-/* APA checksum: the sum of words 1..255, excluding the checksum word itself. */
-static u32 apa_checksum(const unsigned char *header)
-{
-    u32 sum = 0;
-    unsigned int i;
-
-    for (i = 1; i < 256; i++)
-        sum += read_le32(header + (i * 4));
-    return sum;
-}
-
-/* Reject anything that is not a normal, internally consistent APA master header. */
-static int is_standard_apa_header(const unsigned char *header)
-{
-    static const unsigned char apa_magic[4] = {0x41, 0x50, 0x41, 0x00};
-    static const char mbr_id[] = "__mbr";
-    static const char sce_magic[] = "Sony Computer Entertainment Inc.";
-
-    if (memcmp(header + APA_MAGIC_OFFSET, apa_magic, sizeof(apa_magic)) != 0)
-        return 0;
-    if (memcmp(header + APA_ID_OFFSET, mbr_id, sizeof(mbr_id) - 1) != 0)
-        return 0;
-    if (memcmp(header + APA_MBR_MAGIC_OFFSET, sce_magic, sizeof(sce_magic) - 1) != 0)
-        return 0;
-    if (read_le32(header) != apa_checksum(header))
-        return 0;
-    return 1;
-}
-
-/* Hybrid APA/GPT disks use the conventional 0x55AA signature in sector zero. */
-static int is_hybrid_gpt(const unsigned char *header)
-{
-    return header[PC_MBR_SIGNATURE_OFFSET] == 0x55 &&
-           header[PC_MBR_SIGNATURE_OFFSET + 1] == 0xaa;
-}
-
-/* Match a backup to this disk while ignoring checksum and mutable OSD fields. */
-static int headers_match_same_disk(const unsigned char *a, const unsigned char *b)
-{
-    unsigned int i;
-
-    for (i = 0; i < APA_HEADER_SIZE; i++) {
-        if (i < 4 || (i >= APA_OSD_START_OFFSET && i < APA_OSD_SIZE_OFFSET + 4))
-            continue;
-        if (a[i] != b[i])
-            return 0;
-    }
-    return 1;
-}
 
 /* Validate enough KELF structure to reject plain ELFs, truncation, and nonsense. */
 static int validate_kelf_layout(const unsigned char *data, unsigned int size)
