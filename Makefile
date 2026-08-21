@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o platform.o storage.o header_backup.o rescue_image.o rescue_storage.o bootstrap_source.o apa.o hdd_read.o hdd_write.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o platform.o storage.o header_backup.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o hdd_read.o hdd_write.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
@@ -83,6 +83,9 @@ rescue_storage.o: src/rescue_storage.c
 bootstrap_source.o: src/bootstrap_source.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
+bootstrap_signing.o: src/bootstrap_signing.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
 apa.o: src/apa.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
@@ -143,7 +146,7 @@ mbr_compat.o: src/mbr_compat.c
 # Only PS2 build goals need the SDK's global rules. This makes `make test-host`
 # and `make clean` useful on an ordinary development machine or CI runner.
 PS2_GOALS := $(filter-out test-host clean,$(MAKECMDGOALS))
-ifeq ($(strip $(MAKECMDGOALS)),)
+ifeq ($(strip $(MAKECMD_GOALS)),)
 include $(PS2SDK)/samples/Makefile.pref
 include $(PS2SDK)/samples/Makefile.eeglobal
 else ifneq ($(strip $(PS2_GOALS)),)
