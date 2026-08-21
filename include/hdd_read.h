@@ -1,12 +1,10 @@
 #ifndef PS2_HDD_BOOTSTRAP_MANAGER_HDD_READ_H
 #define PS2_HDD_BOOTSTRAP_MANAGER_HDD_READ_H
 
-/* Stable project-owned errors; negative PS2SDK/IOP errors are forwarded. */
+#include "hdd_bounds.h"
+
+/* Stable read/allocation errors; negative PS2SDK/IOP errors are forwarded. */
 enum {
-    HDD_PAYLOAD_ERR_EMPTY_POINTER = -170,
-    HDD_PAYLOAD_ERR_TOO_LARGE = -171,
-    HDD_PAYLOAD_ERR_BEFORE_RESERVED_AREA = -172,
-    HDD_PAYLOAD_ERR_OUTSIDE_MBR = -173,
     HDD_PAYLOAD_ERR_IMAGE_SECTORS = -174,
     HDD_PAYLOAD_ERR_ALLOC = -175
 };
