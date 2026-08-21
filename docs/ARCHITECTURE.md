@@ -21,7 +21,7 @@ The `0.4.0-dev` **Michishirube** line is progressively converting the former mon
 - `src/sha256.c` — portable SHA-256 used for rescue integrity and payload fingerprints.
 - `src/capsule_format.c` — endian-stable rescue capsule serialization.
 - `include/` — module interfaces shared by the EE build and, where practical, host tests.
-- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, boot-report, and malformed KELF regression cases.
+- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, boot-payload, boot-report, and malformed KELF regression cases.
 - `docs/` — format, architecture, and roadmap documentation.
 
 ### Modularization rule
@@ -34,7 +34,7 @@ Moving code between translation units is easy; proving that initialization, DMA-
 4. complete a warning-clean R5900 release build with the pinned PS2DEV toolchain;
 5. only then consider API cleanup, state encapsulation, or additional optimization.
 
-Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. The APA module is intentionally split in two: its pure header logic has moved and is host-tested, while raw sector transport and pointer updates remain in `main.c` until a later gated step. Boot-chain policy, filesystem evidence collection, KELF format parsing, and report formatting are now separated from raw payload acquisition for the same reason.
+Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split three ways: portable header logic lives in `apa.c`, read-only raw sector transport and live payload bounds live in `hdd_read.c`, and the write-capable transport/pointer-update transaction remains in `main.c` until a later gated step. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.
 
 ## Non-negotiable write invariants
 
