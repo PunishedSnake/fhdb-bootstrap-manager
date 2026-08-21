@@ -35,18 +35,14 @@ int hdd_read_raw_sectors(unsigned int lba, unsigned int sectors,
                          unsigned char *destination)
 {
     hdd_raw_transfer_t transfer;
-    int result;
 
     transfer.lba = lba;
     transfer.size = sectors;
     disk_status_io(DISK_STATUS_READ, lba, sectors, 0, 0);
     memset(destination, 0, sectors * HDD_SECTOR_SIZE);
-    result = fileXioDevctl("hdd0:", HDIOC_READSECTOR_LOCAL,
-                           &transfer, sizeof(transfer), destination,
-                           sectors * HDD_SECTOR_SIZE);
-    if (result < 0)
-        app_error_record(APP_ERROR_DOMAIN_IOP, result, "HDIOC_READSECTOR");
-    return result;
+    return fileXioDevctl("hdd0:", HDIOC_READSECTOR_LOCAL,
+                         &transfer, sizeof(transfer), destination,
+                         sectors * HDD_SECTOR_SIZE);
 }
 
 int hdd_validate_payload_bounds(unsigned int start, unsigned int sectors)
@@ -110,6 +106,8 @@ int hdd_read_payload_image(unsigned int start, unsigned int sectors,
         result = hdd_read_raw_sectors(start + sector_offset, chunk_sectors,
                                       read_transfer_buffer);
         if (result < 0) {
+            app_error_record(APP_ERROR_DOMAIN_IOP, result,
+                             "read active bootstrap payload");
             disk_status_end();
             free(payload);
             return result;
