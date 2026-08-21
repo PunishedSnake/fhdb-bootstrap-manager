@@ -2,8 +2,6 @@
 
 #include <libsecr.h>
 
-#include <string.h>
-
 #include "bootstrap_signing.h"
 #include "kelf.h"
 
