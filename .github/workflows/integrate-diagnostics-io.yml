@@ -1,0 +1,463 @@
+name: Integrate diagnostics persistence boundary
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-diagnostics-io:
+    if: github.head_ref == 'dev/0.4.0-michishirube'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/0.4.0-michishirube
+
+      - name: Extract report persistence and session logging
+        run: |
+          cat > include/boot_report_ps2.h <<'EOF'
+          #ifndef PS2_HDD_BOOTSTRAP_MANAGER_BOOT_REPORT_PS2_H
+          #define PS2_HDD_BOOTSTRAP_MANAGER_BOOT_REPORT_PS2_H
+
+          /*
+           * Persist an already-rendered BOOTCHAIN.TXT image on one configured
+           * storage target. This PS2-only boundary owns path construction and the
+           * existing USB mount grace period; it does not render or classify data.
+           */
+          int boot_report_save(unsigned int storage, const char *report,
+                               unsigned int length);
+
+          #endif
+          EOF
+
+          cat > src/boot_report_ps2.c <<'EOF'
+          /* PS2-only persistence for the otherwise portable BOOTCHAIN.TXT image. */
+
+          #include <delaythread.h>
+
+          #include "boot_report_ps2.h"
+          #include "storage.h"
+
+          #define BOOT_REPORT_PATH_SIZE 64u
+          #define USB_WRITE_ATTEMPTS 20
+          #define USB_WRITE_RETRY_DELAY_US 250000
+
+          int boot_report_save(unsigned int storage, const char *report,
+                               unsigned int length)
+          {
+              char path[BOOT_REPORT_PATH_SIZE];
+              int attempts;
+              int result;
+
+              if (storage >= STORAGE_TARGET_COUNT || report == NULL || length == 0)
+                  return -1;
+
+              storage_path(path, sizeof(path), storage, "BOOTCHAIN.TXT");
+              attempts = storage == 2 ? USB_WRITE_ATTEMPTS : 1;
+              do {
+                  result = write_whole_file(path, report, (int)length);
+                  if (result >= 0)
+                      break;
+                  DelayThread(USB_WRITE_RETRY_DELAY_US);
+              } while (--attempts > 0);
+              return result;
+          }
+          EOF
+
+          cat > include/session_log.h <<'EOF'
+          #ifndef PS2_HDD_BOOTSTRAP_MANAGER_SESSION_LOG_H
+          #define PS2_HDD_BOOTSTRAP_MANAGER_SESSION_LOG_H
+
+          /* Record one ordered diagnostic line in the bounded in-memory session. */
+          void session_log_line(const char *format, ...);
+
+          /*
+           * Persist only the unsaved tail for one storage target. The existing
+           * 128 KiB rotation policy and USB mount grace period are preserved.
+           */
+          int session_log_flush(unsigned int storage);
+
+          #endif
+          EOF
+
+          cat > src/session_log.c <<'EOF'
+          /* PS2-specific bounded session logging and HDDMAN.LOG persistence. */
+
+          #define NEWLIB_PORT_AWARE
+          #include <fileXio_rpc.h>
+          #include <io_common.h>
+          #include <delaythread.h>
+
+          #include <stdarg.h>
+          #include <stdio.h>
+          #include <string.h>
+
+          #include "session_log.h"
+          #include "storage.h"
+
+          #define SESSION_LOG_SIZE 16384u
+          #define SESSION_LOG_ROTATE_SIZE (128u * 1024u)
+          #define SESSION_LOG_PATH_SIZE 64u
+          #define USB_WRITE_ATTEMPTS 20
+          #define USB_WRITE_RETRY_DELAY_US 250000
+
+          static char session_log[SESSION_LOG_SIZE];
+          static unsigned int session_log_length;
+          static unsigned int session_log_saved[STORAGE_TARGET_COUNT];
+          static unsigned int session_log_sequence;
+
+          static void append_text(char *buffer, unsigned int capacity,
+                                  unsigned int *length, const char *format, ...)
+          {
+              va_list arguments;
+              int written;
+
+              if (*length >= capacity - 1)
+                  return;
+              va_start(arguments, format);
+              written = vsnprintf(buffer + *length, capacity - *length,
+                                  format, arguments);
+              va_end(arguments);
+              if (written < 0)
+                  return;
+              if ((unsigned int)written >= capacity - *length)
+                  *length = capacity - 1;
+              else
+                  *length += (unsigned int)written;
+          }
+
+          void session_log_line(const char *format, ...)
+          {
+              char line[256];
+              va_list arguments;
+              int written;
+
+              va_start(arguments, format);
+              written = vsnprintf(line, sizeof(line), format, arguments);
+              va_end(arguments);
+              if (written < 0)
+                  return;
+              line[sizeof(line) - 1] = '\0';
+              append_text(session_log, sizeof(session_log), &session_log_length,
+                          "[%04u] %s\n", ++session_log_sequence, line);
+          }
+
+          int session_log_flush(unsigned int storage)
+          {
+              char path[SESSION_LOG_PATH_SIZE];
+              iox_stat_t existing;
+              unsigned int start;
+              int attempts;
+              int truncate = 0;
+              int result;
+
+              if (storage >= STORAGE_TARGET_COUNT || session_log_length == 0)
+                  return -1;
+              storage_path(path, sizeof(path), storage, "HDDMAN.LOG");
+              memset(&existing, 0, sizeof(existing));
+              if (fileXioGetStat(path, &existing) >= 0 &&
+                  existing.size >= SESSION_LOG_ROTATE_SIZE) {
+                  truncate = 1;
+                  session_log_saved[storage] = 0;
+              }
+              start = session_log_saved[storage];
+              if (start > session_log_length)
+                  start = 0;
+              if (start == session_log_length)
+                  return 0;
+
+              attempts = storage == 2 ? USB_WRITE_ATTEMPTS : 1;
+              do {
+                  result = append_log_file(path, session_log + start,
+                                           (int)(session_log_length - start),
+                                           truncate);
+                  if (result >= 0)
+                      break;
+                  DelayThread(USB_WRITE_RETRY_DELAY_US);
+              } while (--attempts > 0);
+              if (result == 0)
+                  session_log_saved[storage] = session_log_length;
+              return result;
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              return text.replace(old, new, 1)
+
+          path = Path('src/main.c')
+          text = path.read_text()
+          text = replace_once(text, '#include <stdarg.h>\n', '', 'stdarg include')
+          text = replace_once(
+              text,
+              '#include "boot_payload_ps2.h"\n#include "boot_report.h"\n',
+              '#include "boot_payload_ps2.h"\n#include "boot_report.h"\n#include "boot_report_ps2.h"\n',
+              'boot report PS2 include')
+          text = replace_once(
+              text,
+              '#include "platform.h"\n#include "sha256.h"\n',
+              '#include "platform.h"\n#include "session_log.h"\n#include "sha256.h"\n',
+              'session log include')
+          text = replace_once(
+              text,
+              '#define SESSION_LOG_SIZE 16384\n#define SESSION_LOG_ROTATE_SIZE (128 * 1024)\n#define TEXT_FILE_LIMIT 32768\n',
+              '#define TEXT_FILE_LIMIT 32768\n',
+              'session log constants')
+          text = replace_once(
+              text,
+              'static char boot_report[BOOT_REPORT_SIZE];\n'
+              'static unsigned int boot_report_length;\n'
+              'static char session_log[SESSION_LOG_SIZE];\n'
+              'static unsigned int session_log_length;\n'
+              'static unsigned int session_log_saved[3];\n'
+              'static unsigned int session_log_sequence;\n'
+              'static int last_report_save_result = BACKUP_NOT_TRIED;\n',
+              'static char boot_report[BOOT_REPORT_SIZE];\n'
+              'static unsigned int boot_report_length;\n'
+              'static int last_report_save_result = BACKUP_NOT_TRIED;\n',
+              'session log state')
+          text = replace_once(
+              text,
+              '/* Forward declarations for logging paths used by early fatal screens. */\n'
+              'static int flush_session_log(unsigned int storage);\n'
+              'static int save_boot_chain_report(unsigned int storage);\n'
+              'static void refresh_boot_chain_report(int save_to_storage);\n',
+              '/* Forward declarations for report paths used before diagnostics UI. */\n'
+              'static int save_boot_chain_report(unsigned int storage);\n'
+              'static void refresh_boot_chain_report(int save_to_storage);\n',
+              'forward declarations')
+
+          text, count = re.subn(
+              r'/\* Append formatted text without allowing a report or log buffer to overflow\. \*/\n'
+              r'static void append_text\(.*?\n\}\n\n'
+              r'/\* Record an ordered English diagnostic line for the selected-device log\. \*/\n'
+              r'static void log_line\(.*?\n\}\n\n',
+              '', text, count=1, flags=re.MULTILINE | re.DOTALL)
+          if count != 1:
+              raise SystemExit(f'local logging functions: expected one block, found {count}')
+
+          text, count = re.subn(
+              r'/\* Append only the unsaved portion of this session to one selected device\. \*/\n'
+              r'static int flush_session_log\(unsigned int storage\)\n\{.*?\n\}\n\n',
+              '', text, count=1, flags=re.MULTILINE | re.DOTALL)
+          if count != 1:
+              raise SystemExit(f'flush_session_log: expected one function, found {count}')
+
+          old_save = '''/* Save the latest read-only boot-chain report as a separate text file. */
+          static int save_boot_chain_report(unsigned int storage)
+          {
+              char path[64];
+              int attempts;
+
+              if (storage >= STORAGE_TARGET_COUNT || boot_report_length == 0)
+                  return -1;
+              storage_path(path, sizeof(path), storage, "BOOTCHAIN.TXT");
+              attempts = storage == 2 ? 20 : 1;
+              do {
+                  last_report_save_result =
+                      write_whole_file(path, boot_report, (int)boot_report_length);
+                  if (last_report_save_result >= 0)
+                      break;
+                  DelayThread(250000);
+              } while (--attempts > 0);
+              return last_report_save_result;
+          }
+          '''
+          new_save = '''/* Persist the latest rendered report while retaining UI result state here. */
+          static int save_boot_chain_report(unsigned int storage)
+          {
+              int result;
+
+              if (storage >= STORAGE_TARGET_COUNT || boot_report_length == 0)
+                  return -1;
+              result = boot_report_save(storage, boot_report, boot_report_length);
+              last_report_save_result = result;
+              return result;
+          }
+          '''
+          text = replace_once(text, old_save, new_save, 'report save wrapper')
+
+          text = text.replace('log_line(', 'session_log_line(')
+          text = text.replace('flush_session_log(', 'session_log_flush(')
+          if 'log_line(' in text or 'flush_session_log(' in text:
+              raise SystemExit('legacy logging call remained in main.c')
+          for token in ('session_log_length', 'session_log_saved',
+                        'session_log_sequence', 'SESSION_LOG_ROTATE_SIZE',
+                        'SESSION_LOG_SIZE'):
+              if token in text:
+                  raise SystemExit(f'local session-log state remained: {token}')
+
+          stale = '''/* Map ROMVER's region character to the memory-card system folder family. */
+
+
+          /* Inspect all known regional FMCB folders because cross-model cards can mix them. */
+
+
+          /* Read the three locations from which FMCB configurations are commonly used. */
+
+
+          /* Inspect __sysconf for FHDB and modern OSDMenu configuration evidence. */
+
+
+          /* Inspect __system for the executable that a bootstrap is likely to launch. */
+
+
+          /* Classify the probable family separately from the directly observed evidence. */
+
+
+          '''
+          text = replace_once(
+              text, stale,
+              '/* Filesystem/config scanners live in boot_chain_ps2.c; main only coordinates them. */\n\n',
+              'stale extracted comments')
+          text = text.replace(
+              '/* Load a bounded MBR.XLF into EE memory; USB receives a short mount grace period. */',
+              '/* Load a bounded MBR.XIN/MBR.XLF source; USB receives a short mount grace period. */')
+          text = text.replace(
+              '/* USB has no MagicGate hardware, so choose which memory card signs MBR.XLF. */',
+              '/* USB has no MagicGate hardware, so choose which memory card signs the bootstrap source. */')
+          text = text.replace(
+              '        result = hdd_read_raw_sectors(start_sector + sector_offset, sectors,\n'
+              '                                  sector_verify_buffer);',
+              '        result = hdd_read_raw_sectors(start_sector + sector_offset, sectors,\n'
+              '                                      sector_verify_buffer);')
+          path.write_text(text)
+
+          path = Path('Makefile')
+          text = path.read_text()
+          text = replace_once(
+              text,
+              'EE_OBJS = main.o platform.o storage.o apa.o hdd_read.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_report.o kelf.o sha256.o capsule_format.o mbr_compat.o',
+              'EE_OBJS = main.o platform.o storage.o apa.o hdd_read.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_report.o boot_report_ps2.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o',
+              'EE objects')
+          text = replace_once(
+              text,
+              'boot_report.o: src/boot_report.c\n\t$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@\n\n'
+              'kelf.o: src/kelf.c\n',
+              'boot_report.o: src/boot_report.c\n\t$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@\n\n'
+              'boot_report_ps2.o: src/boot_report_ps2.c\n\t$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@\n\n'
+              'session_log.o: src/session_log.c\n\t$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@\n\n'
+              'kelf.o: src/kelf.c\n',
+              'PS2 diagnostics object rules')
+          path.write_text(text)
+          PY
+
+      - name: Verify module boundaries
+        run: |
+          ! grep -q 'fileXio\|DelayThread\|storage_path\|write_whole_file' src/boot_report.c
+          ! grep -q 'static void log_line\|static int flush_session_log\|SESSION_LOG_SIZE' src/main.c
+          grep -q 'boot_report_save' src/boot_report_ps2.c
+          grep -q 'session_log_flush' src/session_log.c
+
+      - name: Run full portable regression suite
+        run: make test-host
+
+      - name: Cross-build integrated R5900 ELF
+        run: >-
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Update architecture documentation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'README.md',
+              '`main.c` still owns report persistence, rescue/install policy, MagicGate signing, and every write-capable APA operation.',
+              '`boot_report_ps2.c` now owns `BOOTCHAIN.TXT` persistence and `session_log.c` owns bounded `HDDMAN.LOG` buffering/flush policy. `main.c` still owns diagnostics orchestration/UI, rescue/install policy, MagicGate signing, and every write-capable APA operation.',
+              'README development boundary')
+
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '- `src/main.c` — application state machine, report persistence/orchestration, rescue/install workflows, logging policy, write-capable APA transport, and guarded pointer/write ordering that has not yet been extracted.\n',
+              '- `src/main.c` — application state machine, diagnostics orchestration/UI, rescue/install workflows, write-capable APA transport, and guarded pointer/write ordering that has not yet been extracted.\n',
+              'architecture main ownership')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '- `src/boot_report.c` — PS2SDK-free, bounded rendering of a completed evidence snapshot into the human-readable `BOOTCHAIN.TXT` image. It performs no device access or persistence.\n',
+              '- `src/boot_report.c` — PS2SDK-free, bounded rendering of a completed evidence snapshot into the human-readable `BOOTCHAIN.TXT` image. It performs no device access or persistence.\n'
+              '- `src/boot_report_ps2.c` — PS2-only `BOOTCHAIN.TXT` persistence, including storage-path construction and the existing USB mount grace period; it performs no rendering or classification.\n'
+              '- `src/session_log.c` — bounded ordered session logging plus `HDDMAN.LOG` append/rotation/USB-retry persistence. It owns no boot-chain classification or HDD write transaction.\n',
+              'architecture diagnostics modules')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '4. `boot_report.c` receives the completed `boot_chain_info_t` plus explicit `osdStart`/`osdSize` values and renders the bounded text image. `main.c` remains responsible for saving that image as `BOOTCHAIN.TXT`, appending the save result to `HDDMAN.LOG`, and presenting the short UI summary.\n',
+              '4. `boot_report.c` receives the completed `boot_chain_info_t` plus explicit `osdStart`/`osdSize` values and renders the bounded text image.\n'
+              '5. `boot_report_ps2.c` persists that already-rendered image as `BOOTCHAIN.TXT`; `session_log.c` owns ordered `HDDMAN.LOG` buffering, append/rotation, and storage retry policy. `main.c` retains only orchestration, the last report-save result used by the UI, and the short diagnostics screen.\n',
+              'architecture reporting pipeline')
+
+          replace_once(
+              'docs/BOOT_REPORT.md',
+              '3. **Persistence/presentation** — `main.c` writes the rendered bytes to `BOOTCHAIN.TXT`, records the result in `HDDMAN.LOG`, and shows the short console summary.\n',
+              '3. **Persistence** — `boot_report_ps2.c` writes the rendered bytes to `BOOTCHAIN.TXT` with the existing storage-path and USB retry semantics. `session_log.c` records the scan/save result in the bounded `HDDMAN.LOG` session and owns append/rotation.\n'
+              '4. **Presentation/orchestration** — `main.c` retains the latest save result for the short console summary and coordinates when the report and log are persisted.\n',
+              'boot report persistence pipeline')
+          replace_once(
+              'docs/BOOT_REPORT.md',
+              '- save `BOOTCHAIN.TXT` or append `HDDMAN.LOG`;\n',
+              '- save `BOOTCHAIN.TXT` or append `HDDMAN.LOG` (those operations belong to the PS2-only persistence modules);\n',
+              'boot report non-goal')
+
+          replace_once(
+              'docs/ROADMAP.md',
+              '- [ ] `boot_chain` orchestration/report persistence — `main.c` still combines the evidence sources, saves `BOOTCHAIN.TXT`, records scan/save results in `HDDMAN.LOG`, and owns the short diagnostics screen.\n',
+              '- [x] `boot_report_ps2` persistence — storage-path construction, complete `BOOTCHAIN.TXT` replacement, and the existing USB write grace period are outside `main.c` while the portable renderer stays storage-free.\n'
+              '- [x] `session_log` persistence — bounded ordered session buffering, append-only `HDDMAN.LOG`, 128 KiB rotation, per-storage unsaved offsets, and USB retry behavior are outside `main.c`.\n'
+              '- [ ] `boot_chain` orchestration/UI — `main.c` still combines evidence, decides when to render/persist, retains the last report-save result for display, and owns the short diagnostics screen.\n',
+              'roadmap diagnostics split')
+          replace_once(
+              'docs/ROADMAP.md',
+              '- move `BOOTCHAIN.TXT` persistence/logging behind a narrow PS2-specific interface so the diagnostic orchestration no longer owns storage details, while keeping the portable renderer completely storage-free;\n',
+              '- reduce the remaining diagnostics orchestration/UI state without moving classification policy or storage operations back into `main.c`;\n',
+              'roadmap remaining diagnostics work')
+
+          replace_once(
+              'CHANGELOG.md',
+              '- Kept report persistence and the short diagnostics UI in `main.c`; existing save/log behavior remains outside the portable layer.\n',
+              '- Extracted `BOOTCHAIN.TXT` path/retry/write persistence into PS2-only `boot_report_ps2.c` / `boot_report_ps2.h`; the portable renderer remains completely storage-free.\n'
+              '- Extracted bounded ordered session buffering plus `HDDMAN.LOG` append/rotation/retry behavior into `session_log.c` / `session_log.h`.\n'
+              '- Kept only report/log orchestration, the last report-save result used by the diagnostics UI, and the short diagnostics screen in `main.c`.\n',
+              'changelog diagnostics extraction')
+          replace_once(
+              'CHANGELOG.md',
+              '- The report renderer cannot access storage. Active payload acquisition is now delegated to the read-only `boot_payload_ps2`/`hdd_read` boundary, while `main.c` still owns `BOOTCHAIN.TXT` persistence, `HDDMAN.LOG` updates, diagnostics-screen presentation, and every disk-changing transaction.\n',
+              '- The report renderer cannot access storage. `boot_report_ps2` and `session_log` own only diagnostic-file persistence; active payload acquisition remains behind the read-only `boot_payload_ps2`/`hdd_read` boundary, while `main.c` still owns diagnostics orchestration/UI and every disk-changing transaction.\n',
+              'changelog safety boundary')
+          PY
+
+      - name: Re-run gates after documentation integration
+        run: |
+          make test-host
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
+            sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit verified extraction and remove migration workflow
+        run: |
+          rm .github/workflows/integrate-diagnostics-io.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            include/boot_report_ps2.h include/session_log.h \
+            src/boot_report_ps2.c src/session_log.c src/main.c Makefile \
+            README.md CHANGELOG.md docs/ARCHITECTURE.md docs/BOOT_REPORT.md \
+            docs/ROADMAP.md .github/workflows/integrate-diagnostics-io.yml
+          git commit -m "Extract diagnostics persistence boundaries"
+          git push origin HEAD:dev/0.4.0-michishirube
