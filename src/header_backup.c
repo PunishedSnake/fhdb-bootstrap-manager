@@ -77,7 +77,7 @@ int header_backup_find_enabled(
     unsigned int storage,
     const unsigned char current_header[APA_HEADER_SIZE],
     char *found_path, unsigned int path_capacity,
-    uint32_t *start_out, uint32_t *size_out)
+    u32 *start_out, u32 *size_out)
 {
     static const char *const filenames[] = {
         "HDDMBR.BIN", "HDDMBR2.BIN", "FHDBMBR.BIN", "FHDBMBR2.BIN"
@@ -90,8 +90,8 @@ int header_backup_find_enabled(
         return -1;
 
     for (i = 0; i < sizeof(filenames) / sizeof(filenames[0]); i++) {
-        uint32_t start;
-        uint32_t size;
+        u32 start;
+        u32 size;
         char path[HEADER_BACKUP_PATH_SIZE];
 
         storage_path(path, sizeof(path), storage, filenames[i]);
@@ -99,8 +99,8 @@ int header_backup_find_enabled(
             !is_standard_apa_header(backup_scratch) ||
             !headers_match_same_disk(current_header, backup_scratch))
             continue;
-        start = read_le32(backup_scratch + APA_OSD_START_OFFSET);
-        size = read_le32(backup_scratch + APA_OSD_SIZE_OFFSET);
+        start = (u32)read_le32(backup_scratch + APA_OSD_START_OFFSET);
+        size = (u32)read_le32(backup_scratch + APA_OSD_SIZE_OFFSET);
         if (start == 0 || size == 0)
             continue;
         snprintf(found_path, path_capacity, "%s", path);
