@@ -5,7 +5,7 @@
  * MBR KELF. Some community installers historically shipped the same kind of
  * payload as MBR.XLF. Berion on PSX-Place pointed out the naming mismatch.
  *
- * Keep the 0.3.0 installation path untouched and interpose only fileXioOpen().
+ * Keep the 0.3.0 filename semantics untouched and interpose only fileXioOpen().
  * When that path attempts to open a root-level MBR.XLF, prefer a sibling
  * MBR.XIN if it actually exists. If MBR.XIN exists but cannot be opened, its
  * error is returned instead of silently falling back; this preserves the
@@ -13,7 +13,7 @@
  * work exactly as it did before 0.3.1.
  */
 
-/* Match main.c: this project intentionally talks to the IOP fileXio API. */
+/* The bootstrap-source module intentionally talks to the IOP fileXio API. */
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
 #include <io_common.h>
@@ -55,8 +55,8 @@ int __wrap_fileXioOpen(const char *name, int flags, int mode)
 
         if (fileXioGetStat(preferred, &status) >= 0) {
             /*
-             * install_bootstrap() passes a writable stack path here. Updating
-             * that buffer makes later diagnostics identify the file that was
+             * bootstrap_source_t owns a writable path buffer. Updating that
+             * buffer makes later diagnostics identify the file that was
              * actually selected, while leaving every non-MBR open untouched.
              */
             memcpy((char *)name + length - 3, "XIN", 3);
