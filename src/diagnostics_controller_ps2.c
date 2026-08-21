@@ -7,6 +7,7 @@
 #include "boot_diagnostics_ps2.h"
 #include "boot_report_session.h"
 #include "diagnostics_controller_ps2.h"
+#include "disk_status_ps2.h"
 #include "platform.h"
 #include "session_log.h"
 #include "storage.h"
@@ -22,6 +23,11 @@ void diagnostics_controller_refresh(
 
     pad_activity_begin();
     boot_diagnostics_scan(boot_chain, start, sectors);
+
+    disk_status_begin_at("Boot-chain diagnostics",
+                         "Rendering structured evidence report",
+                         "In-memory BOOTCHAIN.TXT representation");
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 1, save_to_storage ? 2u : 1u);
     boot_report_session_render(boot_chain, start, sectors,
                                APP_NAME, APP_VERSION);
     session_log_line(
@@ -30,12 +36,17 @@ void diagnostics_controller_refresh(
         boot_chain->payload_read_result, boot_chain->payload_kelf_result);
 
     if (save_to_storage) {
-        int result = boot_report_session_save(storage_selected());
+        int result;
 
+        disk_status_phase_at("Saving diagnostics report and session log",
+                             "Selected report storage / BOOTCHAIN.TXT + HDDMAN.LOG");
+        disk_status_io(DISK_STATUS_SCAN, 0, 0, 2, 2);
+        result = boot_report_session_save(storage_selected());
         session_log_line("BOOTCHAIN.TXT save to %s returned %d",
                          storage_targets[storage_selected()].name, result);
         session_log_flush(storage_selected());
     }
+    disk_status_end();
     pad_activity_end();
 }
 
