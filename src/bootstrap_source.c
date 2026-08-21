@@ -8,16 +8,28 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app_error.h"
 #include "bootstrap_source.h"
 #include "hdd_limits.h"
 #include "kelf.h"
 #include "storage.h"
+
+static const char *stage_name(bootstrap_source_stage_t stage)
+{
+    switch (stage) {
+        case BOOTSTRAP_SOURCE_STAGE_LOAD: return "load MBR.XIN/XLF from selected storage";
+        case BOOTSTRAP_SOURCE_STAGE_KELF: return "KELF structural validation";
+        case BOOTSTRAP_SOURCE_STAGE_CAPACITY: return "validate source against live __mbr capacity";
+        default: return "bootstrap source preparation";
+    }
+}
 
 static void reset_result(bootstrap_source_result_t *result)
 {
     if (result == NULL)
         return;
     memset(result, 0, sizeof(*result));
+    app_error_clear();
 }
 
 static int fail_result(bootstrap_source_result_t *result,
@@ -27,6 +39,10 @@ static int fail_result(bootstrap_source_result_t *result,
         result->stage = stage;
         result->code = code;
     }
+    app_error_record(stage == BOOTSTRAP_SOURCE_STAGE_KELF
+                         ? APP_ERROR_DOMAIN_KELF
+                         : APP_ERROR_DOMAIN_BOOTSTRAP_SOURCE,
+                     code, stage_name(stage));
     return code;
 }
 
@@ -133,6 +149,8 @@ int bootstrap_source_prepare(unsigned int storage, bootstrap_source_t *source,
         bootstrap_source_release(source);
         result->stage = BOOTSTRAP_SOURCE_STAGE_CAPACITY;
         result->code = code < 0 ? code : BOOTSTRAP_SOURCE_CAPACITY_INVALID;
+        app_error_record(APP_ERROR_DOMAIN_BOOTSTRAP_SOURCE, result->code,
+                         stage_name(BOOTSTRAP_SOURCE_STAGE_CAPACITY));
         return result->code;
     }
 
