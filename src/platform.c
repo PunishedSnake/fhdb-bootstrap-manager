@@ -16,6 +16,7 @@
 #include <libpad.h>
 
 #include "platform.h"
+#include "gs_ui_ps2.h"
 
 /* Controller DMA memory must remain aligned and alive for padPortOpen(). */
 static unsigned char pad_buffer[256] __attribute__((aligned(64)));
@@ -218,6 +219,9 @@ u32 wait_for_press(void)
     struct padButtonStatus buttons;
     static u32 previous = 0;
 
+    /* Compatibility screens are assembled through several scr_printf() calls.
+       Submit the completed frame once, immediately before it becomes interactive. */
+    gs_ui_console_present();
     for (;;) {
         if (wait_pad_ready() == 0 && padRead(0, 0, &buttons) != 0) {
             u32 current = 0xffffu ^ buttons.btns;
@@ -235,6 +239,7 @@ int wait_for_chord(u32 chord)
 {
     struct padButtonStatus buttons;
 
+    gs_ui_console_present();
     for (;;) {
         if (wait_pad_ready() == 0 && padRead(0, 0, &buttons) != 0) {
             u32 held = 0xffffu ^ buttons.btns;
