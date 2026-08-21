@@ -1,0 +1,240 @@
+name: Extract boot report session state
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  extract-boot-report-session:
+    if: github.head_ref == 'dev/0.4.0-michishirube'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/0.4.0-michishirube
+
+      - name: Extract latest-report state
+        run: |
+          cat > include/boot_report_session.h <<'EOF'
+          #ifndef PS2_HDD_BOOTSTRAP_MANAGER_BOOT_REPORT_SESSION_H
+          #define PS2_HDD_BOOTSTRAP_MANAGER_BOOT_REPORT_SESSION_H
+
+          #include "boot_chain.h"
+
+          /*
+           * Own the latest rendered BOOTCHAIN.TXT image and its persistence result.
+           * Rendering remains delegated to boot_report.c and device I/O to
+           * boot_report_ps2.c; this module only keeps their shared session state.
+           */
+          unsigned int boot_report_session_render(const boot_chain_info_t *info,
+                                                  unsigned int start,
+                                                  unsigned int sectors,
+                                                  const char *application_name,
+                                                  const char *application_version);
+          int boot_report_session_save(unsigned int storage);
+          int boot_report_session_last_save_result(void);
+          unsigned int boot_report_session_length(void);
+
+          #endif
+          EOF
+
+          cat > src/boot_report_session.c <<'EOF'
+          /* Session-owned state connecting portable report rendering to PS2 persistence. */
+
+          #include "boot_report.h"
+          #include "boot_report_ps2.h"
+          #include "boot_report_session.h"
+
+          #define REPORT_SAVE_NOT_TRIED 999999
+
+          static char report_buffer[BOOT_REPORT_SIZE];
+          static unsigned int report_length;
+          static int last_save_result = REPORT_SAVE_NOT_TRIED;
+
+          unsigned int boot_report_session_render(const boot_chain_info_t *info,
+                                                  unsigned int start,
+                                                  unsigned int sectors,
+                                                  const char *application_name,
+                                                  const char *application_version)
+          {
+              report_length = boot_report_render(
+                  report_buffer, sizeof(report_buffer), info, start, sectors,
+                  application_name, application_version);
+              return report_length;
+          }
+
+          int boot_report_session_save(unsigned int storage)
+          {
+              int result;
+
+              if (report_length == 0)
+                  return -1;
+              result = boot_report_save(storage, report_buffer, report_length);
+              last_save_result = result;
+              return result;
+          }
+
+          int boot_report_session_last_save_result(void)
+          {
+              return last_save_result;
+          }
+
+          unsigned int boot_report_session_length(void)
+          {
+              return report_length;
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              return text.replace(old, new, 1)
+
+          path = Path('src/main.c')
+          text = path.read_text()
+          text = replace_once(
+              text,
+              '#include "boot_report.h"\n#include "boot_report_ps2.h"\n',
+              '#include "boot_report_session.h"\n',
+              'report includes')
+          text = replace_once(
+              text,
+              '/* The latest report is kept in memory so it can follow a storage selection. */\n'
+              'static char boot_report[BOOT_REPORT_SIZE];\n'
+              'static unsigned int boot_report_length;\n'
+              'static int last_report_save_result = BACKUP_NOT_TRIED;\n\n',
+              '',
+              'report session globals')
+          text = replace_once(
+              text,
+              '/* Forward declarations for report paths used before diagnostics UI. */\n'
+              'static int save_boot_chain_report(unsigned int storage);\n'
+              'static void refresh_boot_chain_report(int save_to_storage);\n',
+              '/* Forward declaration for diagnostics refresh used by the UI and write workflows. */\n'
+              'static void refresh_boot_chain_report(int save_to_storage);\n',
+              'report forward declarations')
+
+          text, count = re.subn(
+              r'/\* Persist the latest rendered report while retaining UI result state here\. \*/\n'
+              r'static int save_boot_chain_report\(unsigned int storage\)\n\{.*?\n\}\n\n',
+              '', text, count=1, flags=re.MULTILINE | re.DOTALL)
+          if count != 1:
+              raise SystemExit(f'save_boot_chain_report: expected 1, found {count}')
+
+          text = text.replace('save_boot_chain_report(', 'boot_report_session_save(')
+          text = replace_once(
+              text,
+              '    boot_report_length = boot_report_render(\n'
+              '        boot_report, sizeof(boot_report), &boot_chain,\n'
+              '        start, sectors, APP_NAME, APP_VERSION);\n',
+              '    boot_report_session_render(&boot_chain, start, sectors,\n'
+              '                               APP_NAME, APP_VERSION);\n',
+              'report render call')
+          text = replace_once(
+              text,
+              '    scr_printf("Save code : %d\\n\\n", last_report_save_result);\n',
+              '    scr_printf("Save code : %d\\n\\n",\n'
+              '               boot_report_session_last_save_result());\n',
+              'report save result UI')
+
+          for token in ('boot_report_length', 'last_report_save_result',
+                        'static char boot_report[', 'save_boot_chain_report('):
+              if token in text:
+                  raise SystemExit(f'report session state remained in main.c: {token}')
+          path.write_text(text)
+
+          path = Path('Makefile')
+          text = path.read_text()
+          text = replace_once(
+              text,
+              'EE_OBJS = main.o platform.o storage.o apa.o hdd_read.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o',
+              'EE_OBJS = main.o platform.o storage.o apa.o hdd_read.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o',
+              'EE objects')
+          text = replace_once(
+              text,
+              'boot_report_ps2.o: src/boot_report_ps2.c\n\t$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@\n\n'
+              'session_log.o: src/session_log.c\n',
+              'boot_report_ps2.o: src/boot_report_ps2.c\n\t$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@\n\n'
+              'boot_report_session.o: src/boot_report_session.c\n\t$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@\n\n'
+              'session_log.o: src/session_log.c\n',
+              'report session object rule')
+          path.write_text(text)
+          PY
+
+      - name: Update documentation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'README.md',
+              '`boot_diagnostics_ps2.c` now orchestrates the complete read-only evidence scan; `boot_report_ps2.c` owns `BOOTCHAIN.TXT` persistence and `session_log.c` owns bounded `HDDMAN.LOG` buffering, rotation, and flush policy. `main.c` retains diagnostics presentation/timing, rescue/install policy, MagicGate signing, and every write-capable APA operation.',
+              '`boot_diagnostics_ps2.c` orchestrates the complete read-only evidence scan; `boot_report_session.c` owns the latest rendered report/session save result, `boot_report_ps2.c` owns `BOOTCHAIN.TXT` device persistence, and `session_log.c` owns bounded `HDDMAN.LOG` buffering, rotation, and flush policy. `main.c` retains diagnostics presentation/timing, rescue/install policy, MagicGate signing, and every write-capable APA operation.',
+              'README report session')
+
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '- `src/boot_report_ps2.c` — PS2-only `BOOTCHAIN.TXT` persistence, including storage-path construction and the existing USB mount grace period; it performs no rendering or classification.\n',
+              '- `src/boot_report_ps2.c` — PS2-only `BOOTCHAIN.TXT` persistence, including storage-path construction and the existing USB mount grace period; it performs no rendering or classification.\n'
+              '- `src/boot_report_session.c` — owns the latest rendered report buffer, length, and last save result while delegating formatting to `boot_report.c` and device I/O to `boot_report_ps2.c`.\n',
+              'architecture report session module')
+          replace_once(
+              'docs/ARCHITECTURE.md',
+              '5. `boot_report_ps2.c` persists that already-rendered image as `BOOTCHAIN.TXT`; `session_log.c` owns ordered `HDDMAN.LOG` buffering, append/rotation, and storage retry policy. `main.c` retains scan timing/presentation, the last report-save result used by the UI, and the short diagnostics screen.\n',
+              '5. `boot_report_session.c` owns the latest rendered text image and last save result, delegating actual file persistence to `boot_report_ps2.c`; `session_log.c` owns ordered `HDDMAN.LOG` buffering, append/rotation, and storage retry policy. `main.c` retains scan timing/presentation and the short diagnostics screen.\n',
+              'architecture report pipeline')
+
+          replace_once(
+              'docs/ROADMAP.md',
+              '- [ ] diagnostics presentation/UI — `main.c` still decides when to scan/render/persist, retains the last report-save result for display, and owns the short diagnostics screen.\n',
+              '- [x] `boot_report_session` state — latest rendered report bytes, length, and last persistence result are outside `main.c`, while rendering and device I/O remain delegated to their existing narrow modules.\n'
+              '- [ ] diagnostics presentation/UI — `main.c` still decides when to scan/render/persist and owns the short diagnostics screen itself.\n',
+              'roadmap report state')
+
+          replace_once(
+              'CHANGELOG.md',
+              '- Kept only diagnostics timing/presentation, the last report-save result used by the UI, and the short diagnostics screen in `main.c`.\n',
+              '- Extracted latest-report buffer/length/save-result state into `boot_report_session.c` / `boot_report_session.h`, preserving save-on-storage-change behavior while keeping rendering and PS2 device persistence in their existing modules.\n'
+              '- Kept only diagnostics timing/presentation and the short diagnostics screen in `main.c`.\n',
+              'changelog report session')
+          PY
+
+      - name: Verify session boundary and run host tests
+        run: |
+          ! grep -q 'boot_report_length\|last_report_save_result\|static char boot_report\[' src/main.c
+          ! grep -q 'fileXio\|HDIOC_\|SecrDownloadFile' src/boot_report_session.c
+          grep -q 'boot_report_render' src/boot_report_session.c
+          grep -q 'boot_report_save' src/boot_report_session.c
+          make test-host
+
+      - name: Cross-build integrated R5900 ELF
+        run: >-
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit verified extraction and remove workflow
+        run: |
+          rm .github/workflows/extract-boot-report-session.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- include/boot_report_session.h src/boot_report_session.c src/main.c \
+            Makefile README.md CHANGELOG.md docs/ARCHITECTURE.md docs/ROADMAP.md \
+            .github/workflows/extract-boot-report-session.yml
+          git commit -m "Extract boot report session state"
+          git push origin HEAD:dev/0.4.0-michishirube
