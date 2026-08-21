@@ -3,6 +3,14 @@
 
 #define BOOTSTRAP_SOURCE_PATH_SIZE 64u
 
+enum {
+    BOOTSTRAP_SOURCE_SIZE_INVALID = -120,
+    BOOTSTRAP_SOURCE_SEEK_FAILED = -121,
+    BOOTSTRAP_SOURCE_ALLOC_FAILED = -122,
+    BOOTSTRAP_SOURCE_SHORT_READ = -123,
+    BOOTSTRAP_SOURCE_CAPACITY_INVALID = -124
+};
+
 typedef enum {
     BOOTSTRAP_SOURCE_STAGE_NONE = 0,
     BOOTSTRAP_SOURCE_STAGE_LOAD,
@@ -31,7 +39,7 @@ void bootstrap_source_init(bootstrap_source_t *source, unsigned int storage);
 /*
  * Load, bound-check, structurally validate, and capacity-check an installable
  * MBR KELF before MagicGate signing. No signing, confirmation, or HDD write is
- * performed here. Torii's -120..-123 load diagnostics and KELF result codes are
+ * performed here. Torii's historical load diagnostics and KELF result codes are
  * preserved in result->code.
  */
 int bootstrap_source_prepare(unsigned int storage, bootstrap_source_t *source,
