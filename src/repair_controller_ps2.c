@@ -43,6 +43,8 @@ static void print_plan(const apa_repair_plan_t *plan)
         scr_printf("BLOCKER: insufficient APA identity evidence\n");
     if ((plan->blockers & APA_REPAIR_BLOCKER_NOT_MASTER) != 0)
         scr_printf("BLOCKER: sector 0 is not reliably the APA master\n");
+    if ((plan->blockers & APA_REPAIR_BLOCKER_UNEXPLAINED_CHECKSUM) != 0)
+        scr_printf("BLOCKER: checksum does not corroborate one exact repair\n");
 }
 
 static int apply_header_repair(unsigned char header[APA_HEADER_SIZE],
