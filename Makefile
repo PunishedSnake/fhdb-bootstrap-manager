@@ -75,7 +75,7 @@ test-host:
 	./$(HOST_HDD_MUTATION_TEST) $(HOST_HDD_FIXTURE_DIR)
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
 		tests/test_hdd_repair_fixtures.c src/apa_repair.c src/apa.c \
-		-o $(HOST_HDD_REPAIR_FIXTURE_TEST)
+		src/hdd_bounds.c src/kelf.c -o $(HOST_HDD_REPAIR_FIXTURE_TEST)
 	./$(HOST_HDD_REPAIR_FIXTURE_TEST) $(HOST_HDD_FIXTURE_DIR)
 
 clean:
