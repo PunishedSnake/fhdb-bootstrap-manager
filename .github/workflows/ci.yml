@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   host-tests:
@@ -32,70 +32,3 @@ jobs:
           path: |
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
-
-  integrate-hdd-write:
-    if: github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: dev/0.4.0-michishirube
-          fetch-depth: 0
-
-      - name: Execute staged write-transport migration
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          lines = Path('.github/workflows/extract-hdd-write.yml').read_text().splitlines()
-          scripts = []
-          i = 0
-          while i < len(lines):
-              if lines[i] == '        run: |':
-                  i += 1
-                  block = []
-                  while i < len(lines):
-                      line = lines[i]
-                      if line and not line.startswith('          '):
-                          break
-                      block.append(line[10:] if line.startswith('          ') else '')
-                      i += 1
-                  scripts.append('\n'.join(block) + '\n')
-                  continue
-              i += 1
-
-          if len(scripts) != 3:
-              raise SystemExit(f'expected 3 block migration scripts, found {len(scripts)}')
-          for index, script in enumerate(scripts):
-              path = Path(f'/tmp/hdd-write-step-{index}.sh')
-              path.write_text('set -e\n' + script)
-
-          guard = Path('/tmp/hdd-write-step-0.sh')
-          text = guard.read_text()
-          old = "'write_and_verify_payload(', 'set_osd_mbr(', 'verify_values('):"
-          new = "'static int write_and_verify_payload(', 'static int set_osd_mbr(', 'static int verify_values('):"
-          if old not in text:
-              raise SystemExit('legacy-helper guard pattern not found')
-          guard.write_text(text.replace(old, new, 1))
-          PY
-
-          echo '==> extract transport'
-          bash /tmp/hdd-write-step-0.sh
-          echo '==> verify write-order invariants'
-          bash /tmp/hdd-write-step-1.sh
-          echo '==> portable regression suite'
-          make test-host
-          echo '==> R5900 release build'
-          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
-            sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
-          echo '==> commit verified extraction'
-          bash /tmp/hdd-write-step-2.sh
-
-      - name: Restore normal CI workflow
-        run: |
-          git checkout 3254738cc72e5eb2dc2a39cbab22d31047ca6ecb -- .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/ci.yml
-          git commit -m "Restore normal CI after write transport extraction"
-          git push origin HEAD:dev/0.4.0-michishirube
