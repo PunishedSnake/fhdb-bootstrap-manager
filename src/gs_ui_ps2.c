@@ -31,7 +31,7 @@
 
 #define GS_UI_WIDTH 640
 #define GS_UI_HEIGHT 224
-#define GS_UI_RESERVED_FRAME_HEIGHT 448
+#define GS_UI_FRAME_COUNT 2
 #define GS_UI_FONT_SRC_W 8
 #define GS_UI_FONT_SRC_H 8
 #define GS_UI_GLYPH_W 8
@@ -46,7 +46,7 @@
 
 extern const u8 msx[];
 
-static framebuffer_t frame;
+static framebuffer_t frames[GS_UI_FRAME_COUNT];
 static zbuffer_t zbuffer;
 static texbuffer_t font_texture;
 static clutbuffer_t no_clut;
@@ -54,6 +54,7 @@ static lod_t font_lod;
 static blend_t alpha_blend;
 static packet_t *render_packets[2];
 static unsigned int render_packet_index;
+static unsigned int draw_frame_index;
 static u32 font_atlas[GS_UI_ATLAS_W * GS_UI_ATLAS_H]
     __attribute__((aligned(64)));
 static char console_buffer[GS_UI_CONSOLE_BYTES];
@@ -210,33 +211,35 @@ static int setup_environment(void)
 {
     packet_t *packet;
     qword_t *q;
-    int reserved_frame;
+    unsigned int i;
     int texture_address;
 
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
 
-    /* init_scr() already configured VRAM 0 as the visible framebuffer. Keep a
-       deliberately conservative 640x448 allocator reservation so emergency
-       real-libdebug output cannot overlap our font atlas even though normal
-       application drawing is clipped to the native 640x224 field. */
+    /* init_scr() already configured VRAM 0 as the visible framebuffer. Two
+       native FIELD buffers occupy the same 640x448 reservation used by 0.4.0,
+       but let us draw off-screen and swap on VBlank instead of racing the CRT
+       read circuit. Frame zero remains compatible with emergency libdebug
+       output and is the buffer initially displayed by init_scr(). */
     graph_vram_clear();
-    reserved_frame = graph_vram_allocate(GS_UI_WIDTH,
-                                         GS_UI_RESERVED_FRAME_HEIGHT,
-                                         GS_PSM_32, GRAPH_ALIGN_PAGE);
-    if (reserved_frame != 0)
-        return -1;
+    for (i = 0; i < GS_UI_FRAME_COUNT; i++) {
+        int address = graph_vram_allocate(GS_UI_WIDTH, GS_UI_HEIGHT,
+                                          GS_PSM_32, GRAPH_ALIGN_PAGE);
+
+        if (address < 0 || (i == 0u && address != 0))
+            return -1;
+        frames[i].address = (unsigned int)address;
+        frames[i].width = GS_UI_WIDTH;
+        frames[i].height = GS_UI_HEIGHT;
+        frames[i].psm = GS_PSM_32;
+        frames[i].mask = 0;
+    }
 
     texture_address = graph_vram_allocate(GS_UI_ATLAS_W, GS_UI_ATLAS_H,
                                           GS_PSM_32, GRAPH_ALIGN_BLOCK);
     if (texture_address < 0)
         return -2;
-
-    frame.address = 0;
-    frame.width = GS_UI_WIDTH;
-    frame.height = GS_UI_HEIGHT;
-    frame.psm = GS_PSM_32;
-    frame.mask = 0;
 
     font_texture.address = (unsigned int)texture_address;
 
@@ -250,7 +253,9 @@ static int setup_environment(void)
     if (packet == NULL)
         return -3;
     q = packet->data;
-    q = draw_setup_environment(q, GS_UI_CONTEXT, &frame, &zbuffer);
+    draw_frame_index = 1u;
+    q = draw_setup_environment(q, GS_UI_CONTEXT,
+                               &frames[draw_frame_index], &zbuffer);
     /* libdraw draw2d primitives add the GS +2048 bias themselves. */
     q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
     q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
@@ -339,7 +344,7 @@ static qword_t *begin_frame(packet_t **packet_out)
     packet = render_packets[render_packet_index];
     q = packet->data;
 
-    q = draw_framebuffer(q, GS_UI_CONTEXT, &frame);
+    q = draw_framebuffer(q, GS_UI_CONTEXT, &frames[draw_frame_index]);
     q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
     q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
                           0, GS_UI_HEIGHT - 1);
@@ -353,9 +358,16 @@ static qword_t *begin_frame(packet_t **packet_out)
 
 static void end_frame(packet_t *packet, qword_t *q)
 {
+    unsigned int completed_frame = draw_frame_index;
+
     q = draw_finish(q);
     dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
                             (int)(q - packet->data), 0, 0);
+    draw_wait_finish();
+    graph_wait_vsync();
+    graph_set_framebuffer_filtered(frames[completed_frame].address,
+                                   GS_UI_WIDTH, GS_PSM_32, 0, 0);
+    draw_frame_index ^= 1u;
     render_packet_index ^= 1u;
     console_dirty = 0;
 }
