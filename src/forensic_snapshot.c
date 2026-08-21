@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "app_error.h"
+#include "disk_status_ps2.h"
 #include "sha256.h"
 #include "storage.h"
 
@@ -136,12 +137,19 @@ int forensic_snapshot_save(unsigned int storage,
         return fail_snapshot(FORENSIC_SNAPSHOT_INVALID_ARGUMENT,
                              "validate HDDMETA snapshot arguments");
 
+    disk_status_begin_at("Forensic repair safety snapshot",
+                         "Building HDDMETA from every header the plan may touch",
+                         "In-memory forensic evidence / original 1024-byte headers");
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 1, 3);
     result_code = build_snapshot_image(result, plan, &image, &image_size);
-    if (result_code < 0)
+    if (result_code < 0) {
+        disk_status_end();
         return result_code;
+    }
     verify = malloc(image_size);
     if (verify == NULL) {
         free(image);
+        disk_status_end();
         return fail_snapshot(FORENSIC_SNAPSHOT_ALLOC_FAILED,
                              "allocate HDDMETA read-back buffer");
     }
@@ -152,6 +160,8 @@ int forensic_snapshot_save(unsigned int storage,
         int stat_result;
 
         storage_path(path, sizeof(path), storage, snapshot_names[slot]);
+        disk_status_phase_at("Selecting non-overwriting HDDMETA slot", path);
+        disk_status_io(DISK_STATUS_SCAN, 0, 0, 1, 3);
         memset(&stat, 0, sizeof(stat));
         stat_result = fileXioGetStat(path, &stat);
         if (stat_result >= 0) {
@@ -162,21 +172,28 @@ int forensic_snapshot_save(unsigned int storage,
                 path_out[FORENSIC_SNAPSHOT_PATH_SIZE - 1u] = '\0';
                 free(verify);
                 free(image);
+                disk_status_end();
                 return 0;
             }
             continue;
         }
 
+        disk_status_phase_at("Writing complete pre-repair HDDMETA snapshot", path);
+        disk_status_io(DISK_STATUS_SCAN, 0, 0, 2, 3);
         if (write_whole_file(path, image, (int)image_size) < 0) {
             free(verify);
             free(image);
+            disk_status_end();
             return fail_snapshot(FORENSIC_SNAPSHOT_WRITE_FAILED,
                                  "write HDDMETA snapshot");
         }
+        disk_status_phase_at("Reading HDDMETA back and comparing every byte", path);
+        disk_status_io(DISK_STATUS_VERIFY, 0, 0, 3, 3);
         if (read_exact_file(path, verify, (int)image_size) < 0 ||
             memcmp(verify, image, image_size) != 0) {
             free(verify);
             free(image);
+            disk_status_end();
             return fail_snapshot(FORENSIC_SNAPSHOT_VERIFY_FAILED,
                                  "read back/compare HDDMETA snapshot");
         }
@@ -185,11 +202,13 @@ int forensic_snapshot_save(unsigned int storage,
         path_out[FORENSIC_SNAPSHOT_PATH_SIZE - 1u] = '\0';
         free(verify);
         free(image);
+        disk_status_end();
         return 0;
     }
 
     free(verify);
     free(image);
+    disk_status_end();
     return fail_snapshot(FORENSIC_SNAPSHOT_NO_SLOT,
                          "select non-overwriting HDDMETA slot");
 }
