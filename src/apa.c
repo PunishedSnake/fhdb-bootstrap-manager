@@ -10,7 +10,12 @@
 
 #include <string.h>
 
-/* Read an explicitly little-endian 32-bit value without alignment assumptions. */
+/* Read explicitly little-endian values without alignment assumptions. */
+uint16_t read_le16(const unsigned char *source)
+{
+    return (uint16_t)source[0] | ((uint16_t)source[1] << 8);
+}
+
 uint32_t read_le32(const unsigned char *source)
 {
     return (uint32_t)source[0] |
