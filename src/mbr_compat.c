@@ -13,6 +13,8 @@
  * work exactly as it did before 0.3.1.
  */
 
+/* Match main.c: this project intentionally talks to the IOP fileXio API. */
+#define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
 #include <io_common.h>
 
