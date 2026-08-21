@@ -26,6 +26,7 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - Extracted latest-report buffer/length/save-result state into `boot_report_session.c` / `boot_report_session.h`, preserving save-on-storage-change behavior while keeping rendering and PS2 device persistence in their existing modules.
 - Kept only diagnostics timing/presentation and the short diagnostics screen in `main.c`.
 - Extracted write-capable HDD transport into PS2-only `hdd_write.c` / `hdd_write.h`: raw sector write packets, write-side DMA/read-back buffers, flushes, payload byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back now live behind explicit primitives.
+- Extracted the already-authorized write commit sequence into portable `bootstrap_transaction.c` / `bootstrap_transaction.h`, with `bootstrap_transaction_ps2.c` binding it to `hdd_write`. The sequencer preserves the raw failing code and reports whether payload, pointer-set, or pointer-verification failed.
 
 ### Tests
 
@@ -37,15 +38,16 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - Added a byte-for-byte golden `BOOTCHAIN.TXT` fixture for a disabled bootstrap plus active-payload/hash, OSDMenu/module-evidence, assessment-precedence, and bounded-truncation fixtures.
 - Added portable `boot_payload` fixtures covering a valid sector-padded KELF, invalid-KELF sector-image hashing, and reset behavior for empty input.
 - Report tests verify the external-HDD-module/`Skip_HDD` advisory text and guarantee NUL termination even when the supplied output buffer is deliberately too small.
+- Added portable bootstrap-transaction failure injection covering pointer-only success/failure, payload failure with no pointer exposure, payload-buffer release before pointer update, pointer-set failure, pointer-verification failure, raw error propagation, and success ordering.
 - Every physical extraction from `main.c` is accepted only after the portable suite and pinned PS2DEV v2.0.0 R5900 release build pass; final trees are rechecked with normal CI.
 
 ### Safety
 
 - Read-only `HDIOC_READSECTOR`, live payload bounds checks, and active-image acquisition moved behind `hdd_read.c`; the interface exposes no write, flush, or pointer-update operation.
-- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flushes, payload comparison, and pointer read-back moved mechanically into `hdd_write.c`; historical numeric diagnostics and the I/O sequence inside those primitives are unchanged. Rescue/install policy, mandatory backup/confirmation, MagicGate signing, and payload-first/pointer-last ordering remain explicit in `main.c`.
+- `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flushes, payload comparison, and pointer read-back remain isolated in `hdd_write.c`; historical numeric diagnostics and primitive I/O behavior are unchanged. Portable `bootstrap_transaction` now enforces the already-authorized payload-first/pointer-last commit sequence, while rescue/install validation, mandatory backup/confirmation, MagicGate signing, and UI/error policy remain in `main.c`.
 - The new PS2 boot-chain scanner is read-only: it reads memory-card files and mounts PFS partitions with `FIO_MT_RDONLY` but owns no disk-changing operation.
 - KELF modularization changes only structural parsing. MagicGate signing remains PS2-specific and no encryption, signing, payload write, or activation behavior is moved into the portable module.
-- The report renderer cannot access storage. `boot_report_ps2` and `session_log` own only diagnostic-file persistence; active payload acquisition remains behind the read-only `boot_payload_ps2`/`hdd_read` boundary. `main.c` retains diagnostics presentation/timing and higher-level disk-changing transaction policy, while raw write mechanics are isolated in `hdd_write.c`.
+- The report renderer cannot access storage. `boot_report_ps2` and `session_log` own only diagnostic-file persistence; active payload acquisition remains behind the read-only `boot_payload_ps2`/`hdd_read` boundary. `main.c` retains diagnostics presentation/timing plus pre-write authorization/UI policy; raw write mechanics live in `hdd_write.c` and the post-confirmation commit sequence in portable `bootstrap_transaction`.
 
 ## [0.3.1] - 2026-08-21
 

@@ -35,13 +35,13 @@
 #include <unistd.h>
 
 #include "apa.h"
+#include "bootstrap_transaction_ps2.h"
 #include "boot_chain.h"
 #include "boot_diagnostics_ps2.h"
 #include "boot_report_session.h"
 #include "capsule_format.h"
 #include "hdd_limits.h"
 #include "hdd_read.h"
-#include "hdd_write.h"
 #include "kelf.h"
 #include "platform.h"
 #include "session_log.h"
@@ -779,6 +779,7 @@ static void disable_bootstrap(void)
 {
     const char *backup_path = save_backup();
     const char *rescue_path;
+    bootstrap_transaction_result_t transaction;
     int result;
 
     if (backup_path == NULL) {
@@ -801,12 +802,14 @@ static void disable_bootstrap(void)
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_CROSS))
         return;
 
-    result = hdd_write_set_osd_mbr(0, 0);
-    if (result < 0)
-        fatal_screen("HDIOC_SETOSDMBR failed.", result);
-    result = hdd_write_verify_osd_mbr(header_buffer, 0, 0);
-    if (result < 0)
-        fatal_screen("Disable verification failed. Keep the backup.", result);
+    result = bootstrap_transaction_ps2_set_pointer(
+        header_buffer, 0, 0, &transaction);
+    if (result < 0) {
+        if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_POINTER_SET)
+            fatal_screen("HDIOC_SETOSDMBR failed.", result);
+        else
+            fatal_screen("Disable verification failed. Keep the backup.", result);
+    }
 
     session_log_line("Bootstrap pointer disabled and verified; header backup=%s; "
              "rescue=%s", backup_path,
@@ -824,6 +827,7 @@ static void restore_legacy_pointer(void)
 {
     const char *backup_path = load_backup();
     const char *safety_backup;
+    bootstrap_transaction_result_t transaction;
     u32 start;
     u32 size;
     int result;
@@ -867,12 +871,14 @@ static void restore_legacy_pointer(void)
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_SQUARE))
         return;
 
-    result = hdd_write_set_osd_mbr(start, size);
-    if (result < 0)
-        fatal_screen("Bootstrap restore failed.", result);
-    result = hdd_write_verify_osd_mbr(header_buffer, start, size);
-    if (result < 0)
-        fatal_screen("Restore verification failed.", result);
+    result = bootstrap_transaction_ps2_set_pointer(
+        header_buffer, start, size, &transaction);
+    if (result < 0) {
+        if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_POINTER_SET)
+            fatal_screen("Bootstrap restore failed.", result);
+        else
+            fatal_screen("Restore verification failed.", result);
+    }
 
     session_log_line("Legacy pointer-only restore completed from %s; safety=%s",
              backup_path, safety_backup);
@@ -893,6 +899,7 @@ static void restore_rescue_capsule(void)
     unsigned int file_size = 0;
     const unsigned char *payload;
     const char *safety_backup;
+    bootstrap_transaction_result_t transaction;
     int result;
 
     result = find_rescue_capsule(rescue_path, sizeof(rescue_path), &info,
@@ -948,20 +955,22 @@ static void restore_rescue_capsule(void)
 
     scr_clear();
     scr_printf("Restoring and verifying rescue payload...\n");
-    result = hdd_write_payload_verified(payload, info.payload_bytes,
-                                        info.payload_start);
-    free(file_data);
-    if (result < 0)
-        fatal_screen("Rescue payload verification failed; pointer remains disabled.",
-                     result);
-    result = hdd_write_set_osd_mbr(info.payload_start, info.payload_sectors);
-    if (result < 0)
-        fatal_screen("Rescue payload verified, but pointer restore failed.",
-                     result);
-    result = hdd_write_verify_osd_mbr(
-        header_buffer, info.payload_start, info.payload_sectors);
-    if (result < 0)
-        fatal_screen("Rescue pointer read-back verification failed.", result);
+    result = bootstrap_transaction_ps2_activate(
+        header_buffer, payload, info.payload_bytes, info.payload_start,
+        info.payload_sectors, free, file_data, &transaction);
+    if (result < 0) {
+        if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_PAYLOAD)
+            fatal_screen(
+                "Rescue payload verification failed; pointer remains disabled.",
+                result);
+        else if (transaction.stage ==
+                 BOOTSTRAP_TRANSACTION_STAGE_POINTER_SET)
+            fatal_screen(
+                "Rescue payload verified, but pointer restore failed.", result);
+        else
+            fatal_screen("Rescue pointer read-back verification failed.",
+                         result);
+    }
 
     session_log_line("Full rescue restored from %s (%u bytes); safety backup=%s",
              rescue_path, file_size, safety_backup);
@@ -982,6 +991,7 @@ static void install_bootstrap(void)
     unsigned int payload_size = 0;
     unsigned int sectors;
     int signing_port;
+    bootstrap_transaction_result_t transaction;
     int result;
     iox_stat_t mbr_stat;
 
@@ -1092,17 +1102,21 @@ static void install_bootstrap(void)
 
     scr_clear();
     scr_printf("Writing and verifying signed payload...\n");
-    result = hdd_write_payload_verified(payload, payload_size, MBR_PAYLOAD_START);
-    free(payload);
-    if (result < 0)
-        fatal_screen("Payload write/read-back failed; pointer remains disabled.", result);
-
-    result = hdd_write_set_osd_mbr(MBR_PAYLOAD_START, sectors);
-    if (result < 0)
-        fatal_screen("Payload verified, but enabling its pointer failed.", result);
-    result = hdd_write_verify_osd_mbr(header_buffer, MBR_PAYLOAD_START, sectors);
-    if (result < 0)
-        fatal_screen("Installed pointer verification failed.", result);
+    result = bootstrap_transaction_ps2_activate(
+        header_buffer, payload, payload_size, MBR_PAYLOAD_START, sectors,
+        free, payload, &transaction);
+    if (result < 0) {
+        if (transaction.stage == BOOTSTRAP_TRANSACTION_STAGE_PAYLOAD)
+            fatal_screen(
+                "Payload write/read-back failed; pointer remains disabled.",
+                result);
+        else if (transaction.stage ==
+                 BOOTSTRAP_TRANSACTION_STAGE_POINTER_SET)
+            fatal_screen(
+                "Payload verified, but enabling its pointer failed.", result);
+        else
+            fatal_screen("Installed pointer verification failed.", result);
+    }
 
     session_log_line("Bootstrap installed and verified at sector 0x%08x (%u bytes, "
              "%u sectors)", MBR_PAYLOAD_START, payload_size, sectors);

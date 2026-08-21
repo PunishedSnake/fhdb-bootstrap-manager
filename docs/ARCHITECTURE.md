@@ -6,12 +6,14 @@ PS2 HDD Bootstrap Manager is intentionally conservative: it is allowed to be slo
 
 The `0.4.0-dev` **Michishirube** line is progressively converting the former monolithic EE application into explicit modules. The split is intentionally mechanical first: code moves behind headers without simultaneously changing storage semantics.
 
-- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install workflows, confirmation/safety policy, and explicit payload-first/pointer-last transaction ordering.
+- `src/main.c` — application state machine, diagnostics presentation/timing, rescue/install preconditions, backup/confirmation, MagicGate signing, and user-facing error policy.
 - `src/platform.c` — IOP reset, embedded IRX startup, pad initialization, button-edge input, and confirmation-chord input.
 - `src/storage.c` — storage target definitions, encapsulated selected-target state, launch-device selection, ROMVER access, and generic fileXio helpers. Callers read/change the selection through validated accessors instead of mutating module state directly.
 - `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
 - `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.
 - `src/hdd_write.c` — PS2-only write-capable transport: raw `HDIOC_WRITESECTOR` packets, write-side DMA/read-back buffers, flushes, byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back verification. It owns mechanics only, not backup/confirmation/signing or transaction ordering.
+- `src/bootstrap_transaction.c` — PS2SDK-free post-confirmation transaction sequencer. It preserves raw transport errors, records the failed stage, releases the caller-owned payload immediately after write/verify, and guarantees that pointer update/verification cannot occur after payload failure.
+- `src/bootstrap_transaction_ps2.c` — thin PS2 binding from the portable sequencer to `hdd_write`; it adds no policy of its own.
 - `src/boot_payload.c` — PS2SDK-free conversion of a sector-aligned active payload into byte counts, sector-image SHA-256, KELF structural result/size, and unpadded-KELF SHA-256.
 - `src/boot_payload_ps2.c` — narrow PS2 acquisition adapter that combines `hdd_read` with portable `boot_payload` fingerprinting and fills only payload-derived boot-chain evidence.
 - `src/boot_chain.c` — PS2SDK-free boot-chain evidence model, CNF parsing, ROMVER mapping, target parsing, and family-classification policy.
@@ -26,7 +28,7 @@ The `0.4.0-dev` **Michishirube** line is progressively converting the former mon
 - `src/sha256.c` — portable SHA-256 used for rescue integrity and payload fingerprints.
 - `src/capsule_format.c` — endian-stable rescue capsule serialization.
 - `include/` — module interfaces shared by the EE build and, where practical, host tests.
-- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, boot-payload, boot-report, and malformed KELF regression cases.
+- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, boot-payload, boot-report, bootstrap-transaction ordering/failure injection, and malformed KELF regression cases.
 - `docs/` — format, architecture, and roadmap documentation.
 
 ### Modularization rule
@@ -39,7 +41,7 @@ Moving code between translation units is easy; proving that initialization, DMA-
 4. complete a warning-clean R5900 release build with the pinned PS2DEV toolchain;
 5. only then consider API cleanup, state encapsulation, or additional optimization.
 
-Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split across portable header logic in `apa.c`, read-only raw transport/bounds in `hdd_read.c`, and write-capable transport/read-back mechanics in `hdd_write.c`. The higher-level rescue/install transaction policy remains visibly sequenced in `main.c`, so moving the transport does not hide backup, confirmation, signing, or payload-first/pointer-last ordering. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.
+Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. APA responsibility is now split across portable header logic in `apa.c`, read-only raw transport/bounds in `hdd_read.c`, write-capable transport/read-back mechanics in `hdd_write.c`, and a portable `bootstrap_transaction.c` sequencer with a narrow PS2 adapter. `main.c` still owns all pre-write authorization gates—validation, backup, confirmation, and signing—while the tested sequencer owns only the already-authorized payload-first/pointer-last commit phase. Boot-chain policy, filesystem evidence collection, payload fingerprinting, KELF format parsing, and report formatting are separated for the same reason.
 
 ## Non-negotiable write invariants
 
@@ -63,7 +65,9 @@ Read-only `HDIOC_READSECTOR` transport and active-payload bounds checks now live
 
 Write-capable transport is isolated in `hdd_write.c`: it owns the raw write packet, aligned verification buffers, `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, flushes, payload byte comparison, and final APA/pointer read-back. Its interface intentionally exposes those operations as separate steps rather than a single "install" call.
 
-The safety policy still lives in the higher-level workflows in `main.c`: current-header backup, rescue validation, user confirmation, MagicGate signing, and the explicit payload-write/verify before pointer-update/verify sequence. This separation makes the dangerous I/O implementation modular without making transaction order implicit.
+Pre-write authorization remains in `main.c`: current-header backup, rescue/capacity validation, user confirmation, and MagicGate signing all complete before the transaction sequencer is entered.
+
+The already-authorized commit phase lives in portable `bootstrap_transaction.c`. Host tests assert `payload -> release -> pointer set -> pointer verify`, assert immediate stop at each injected failure, and specifically prove that pointer exposure never follows a failed payload write/compare. `bootstrap_transaction_ps2.c` only binds those abstract operations to `hdd_write.c`, so the tested policy is independent of PS2SDK.
 
 Keeping read-only `hdd_read.c` separate from write-capable `hdd_write.c` also prevents diagnostics from acquiring a write interface merely because both paths need raw-sector read-back.
 
