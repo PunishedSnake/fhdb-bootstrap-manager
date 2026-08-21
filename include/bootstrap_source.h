@@ -24,6 +24,7 @@ typedef struct {
     int getstat_result;
     unsigned int mbr_start;
     unsigned int mbr_size;
+    unsigned int payload_sectors;
 } bootstrap_source_result_t;
 
 typedef struct {
