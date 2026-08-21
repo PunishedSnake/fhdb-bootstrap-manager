@@ -130,6 +130,10 @@ jobs:
           replace_once('read_payload_image(start, sectors, &payload, &payload_bytes)',
                        'hdd_read_payload_image(start, sectors, &payload, &payload_bytes)',
                        'rescue payload image read')
+          replace_once(
+              '    if (size <= 0 || size > MAX_MBR_PAYLOAD_SIZE) {\n',
+              '    if (size <= 0 || (unsigned int)size > MAX_MBR_PAYLOAD_SIZE) {\n',
+              'payload file size signedness')
 
           literal_leftovers = [
               'static int read_raw_sectors(',
