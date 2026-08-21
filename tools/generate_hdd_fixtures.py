@@ -11,7 +11,11 @@ SECTOR_SIZE = 512
 APA_HEADER_SIZE = 1024
 APA_MAGIC_OFFSET = 0x004
 APA_ID_OFFSET = 0x010
+APA_START_OFFSET = 0x040
+APA_LENGTH_OFFSET = 0x044
+APA_TYPE_OFFSET = 0x048
 APA_MBR_MAGIC_OFFSET = 0x100
+APA_MBR_VERSION_OFFSET = 0x120
 APA_OSD_START_OFFSET = 0x130
 APA_OSD_SIZE_OFFSET = 0x134
 PC_MBR_SIGNATURE_OFFSET = 0x1FE
@@ -57,8 +61,12 @@ def make_apa_header(start=0, sectors=0, pc_signature=False, gpt_header=False):
     header = bytearray(APA_HEADER_SIZE)
     header[APA_MAGIC_OFFSET:APA_MAGIC_OFFSET + 4] = b"APA\0"
     header[APA_ID_OFFSET:APA_ID_OFFSET + 5] = b"__mbr"
+    write_le32(header, APA_START_OFFSET, 0)
+    write_le32(header, APA_LENGTH_OFFSET, DEFAULT_MBR_SECTORS)
+    write_le16(header, APA_TYPE_OFFSET, 1)
     header[APA_MBR_MAGIC_OFFSET:APA_MBR_MAGIC_OFFSET + 32] = \
         b"Sony Computer Entertainment Inc."
+    write_le32(header, APA_MBR_VERSION_OFFSET, 2)
     write_le32(header, APA_OSD_START_OFFSET, start)
     write_le32(header, APA_OSD_SIZE_OFFSET, sectors)
     if pc_signature:
