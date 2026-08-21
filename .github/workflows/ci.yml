@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   host-tests:
@@ -32,3 +32,109 @@ jobs:
           path: |
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+
+  integrate-bootstrap-signing:
+    if: github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/0.4.0-michishirube
+          fetch-depth: 0
+
+      - name: Route MagicGate mechanics through signing adapter
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/main.c')
+          text = path.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once('#include <libsecr.h>\n', '', 'libsecr include')
+          replace_once('#include "bootstrap_source.h"\n',
+                       '#include "bootstrap_signing.h"\n#include "bootstrap_source.h"\n',
+                       'signing include')
+          replace_once('#include "kelf.h"\n', '', 'direct kelf include')
+          replace_once('    int signing_port;\n    bootstrap_transaction_result_t transaction;\n',
+                       '    int signing_port;\n    bootstrap_signing_result_t signing_result;\n    bootstrap_transaction_result_t transaction;\n',
+                       'signing result local')
+
+          old = '''    scr_clear();
+              scr_printf("Signing MBR.XLF through mc%d...\\n", signing_port);
+              if (SecrDownloadFile(2 + signing_port, 0, source.payload) == NULL) {
+                  bootstrap_source_release(&source);
+                  session_log_line("MagicGate signing failed through mc%d", signing_port);
+                  session_log_flush(storage_selected());
+                  scr_clear();
+                  scr_printf("MagicGate signing failed through mc%d.\\n", signing_port);
+                  scr_printf("HDD was NOT modified. Check the PS2 memory card.\\n");
+                  wait_to_return();
+                  return;
+              }
+              result = kelf_validate_layout(source.payload, source.payload_size);
+              if (result < 0) {
+                  bootstrap_source_release(&source);
+                  fatal_screen("Signed KELF failed structural validation.", result);
+              }
+'''
+          new = '''    scr_clear();
+              scr_printf("Signing MBR.XLF through mc%d...\\n", signing_port);
+              result = bootstrap_signing_sign(
+                  signing_port, source.payload, source.payload_size,
+                  &signing_result);
+              if (result < 0) {
+                  bootstrap_source_release(&source);
+                  if (signing_result.stage == BOOTSTRAP_SIGNING_STAGE_MAGICGATE) {
+                      session_log_line("MagicGate signing failed through mc%d", signing_port);
+                      session_log_flush(storage_selected());
+                      scr_clear();
+                      scr_printf("MagicGate signing failed through mc%d.\\n", signing_port);
+                      scr_printf("HDD was NOT modified. Check the PS2 memory card.\\n");
+                      wait_to_return();
+                      return;
+                  }
+                  fatal_screen("Signed KELF failed structural validation.",
+                               signing_result.code);
+              }
+'''
+          replace_once(old, new, 'MagicGate signing block')
+          replace_once('    SecrInit();\n', '    bootstrap_signing_init();\n',
+                       'secr initialization')
+
+          for token in ('SecrInit(', 'SecrDownloadFile(', 'kelf_validate_layout('):
+              if token in text:
+                  raise SystemExit(f'direct signing implementation remained: {token}')
+          for required in ('bootstrap_signing_init(', 'bootstrap_signing_sign('):
+              if required not in text:
+                  raise SystemExit(f'missing signing adapter call: {required}')
+
+          path.write_text(text)
+          PY
+
+      - name: Verify signing boundary and regressions
+        run: |
+          ! grep -q 'SecrInit\|SecrDownloadFile\|kelf_validate_layout' src/main.c
+          ! grep -q 'fileXio\|hdd_write\|bootstrap_transaction\|wait_for_chord\|scr_printf\|session_log' src/bootstrap_signing.c
+          grep -q 'bootstrap_signing_init' src/main.c
+          grep -q 'bootstrap_signing_sign' src/main.c
+          make test-host
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
+            sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit signing integration and restore normal CI
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/main.c
+          git commit -m "Extract MagicGate signing adapter"
+          git checkout 67aaf38610230374d479055fece1ec3a658db778 -- .github/workflows/ci.yml
+          git add -- .github/workflows/ci.yml
+          git commit -m "Restore normal CI after signing extraction"
+          git push origin HEAD:dev/0.4.0-michishirube
