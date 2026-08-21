@@ -1,0 +1,156 @@
+/* Versioned preservation of every APA header touched by forensic repair. */
+
+#include "forensic_snapshot.h"
+
+#include <stdlib.h>
+#include <string.h>
+
+#include "sha256.h"
+#include "storage.h"
+
+#define SNAPSHOT_HEADER_BYTES 64u
+#define SNAPSHOT_ENTRY_BYTES (4u + 32u + APA_HEADER_SIZE)
+#define SNAPSHOT_TRAILER_BYTES 32u
+
+static const unsigned char snapshot_magic[8] = {
+    'A', 'P', 'A', 'M', 'E', 'T', 'A', '1'
+};
+static const char *const snapshot_names[FORENSIC_SNAPSHOT_SLOT_COUNT] = {
+    "HDDMETA.BIN", "HDDMETA2.BIN"
+};
+
+static void write_le32_snapshot(unsigned char *destination, unsigned int value)
+{
+    destination[0] = (unsigned char)value;
+    destination[1] = (unsigned char)(value >> 8);
+    destination[2] = (unsigned char)(value >> 16);
+    destination[3] = (unsigned char)(value >> 24);
+}
+
+static int build_snapshot_image(const apa_forensic_result_t *result,
+                                const apa_forensic_repair_plan_t *plan,
+                                unsigned char **image_out,
+                                unsigned int *size_out)
+{
+    unsigned int size;
+    unsigned int offset;
+    unsigned int i;
+    unsigned char *image;
+
+    if (plan->patch_count == 0 || plan->patch_count > APA_FORENSIC_MAX_PATCHES)
+        return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+    if (plan->patch_count >
+        (0xffffffffu - SNAPSHOT_HEADER_BYTES - SNAPSHOT_TRAILER_BYTES) /
+            SNAPSHOT_ENTRY_BYTES)
+        return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+
+    size = SNAPSHOT_HEADER_BYTES +
+           plan->patch_count * SNAPSHOT_ENTRY_BYTES +
+           SNAPSHOT_TRAILER_BYTES;
+    image = malloc(size);
+    if (image == NULL)
+        return FORENSIC_SNAPSHOT_ALLOC_FAILED;
+    memset(image, 0, size);
+
+    memcpy(image, snapshot_magic, sizeof(snapshot_magic));
+    write_le32_snapshot(image + 8, FORENSIC_SNAPSHOT_VERSION);
+    write_le32_snapshot(image + 12, result->total_sectors);
+    write_le32_snapshot(image + 16, plan->map_index);
+    write_le32_snapshot(image + 20, plan->confidence);
+    write_le32_snapshot(image + 24, plan->patch_count);
+    write_le32_snapshot(image + 28, plan->corroborated_count);
+    write_le32_snapshot(image + 32, plan->speculative_count);
+
+    offset = SNAPSHOT_HEADER_BYTES;
+    for (i = 0; i < plan->patch_count; i++) {
+        const apa_forensic_patch_t *patch = &plan->patches[i];
+        const apa_forensic_node_t *node;
+        unsigned char digest[32];
+
+        if (patch->node_index >= result->node_count) {
+            free(image);
+            return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+        }
+        node = &result->nodes[patch->node_index];
+        if (node->lba != patch->lba) {
+            free(image);
+            return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+        }
+
+        write_le32_snapshot(image + offset, patch->lba);
+        sha256_buffer(node->header, APA_HEADER_SIZE, digest);
+        memcpy(image + offset + 4, digest, sizeof(digest));
+        memcpy(image + offset + 36, node->header, APA_HEADER_SIZE);
+        offset += SNAPSHOT_ENTRY_BYTES;
+    }
+
+    sha256_buffer(image, size - SNAPSHOT_TRAILER_BYTES,
+                  image + size - SNAPSHOT_TRAILER_BYTES);
+    *image_out = image;
+    *size_out = size;
+    return 0;
+}
+
+int forensic_snapshot_save(unsigned int storage,
+                           const apa_forensic_result_t *result,
+                           const apa_forensic_repair_plan_t *plan,
+                           char path_out[FORENSIC_SNAPSHOT_PATH_SIZE])
+{
+    unsigned char *image = NULL;
+    unsigned char *verify = NULL;
+    unsigned int image_size = 0;
+    unsigned int slot;
+    int result_code;
+
+    if (storage >= STORAGE_TARGET_COUNT || result == NULL || plan == NULL ||
+        path_out == NULL)
+        return FORENSIC_SNAPSHOT_INVALID_ARGUMENT;
+
+    result_code = build_snapshot_image(result, plan, &image, &image_size);
+    if (result_code < 0)
+        return result_code;
+    verify = malloc(image_size);
+    if (verify == NULL) {
+        free(image);
+        return FORENSIC_SNAPSHOT_ALLOC_FAILED;
+    }
+
+    for (slot = 0; slot < FORENSIC_SNAPSHOT_SLOT_COUNT; slot++) {
+        char path[FORENSIC_SNAPSHOT_PATH_SIZE];
+
+        storage_path(path, sizeof(path), storage, snapshot_names[slot]);
+        if (path_exists(path)) {
+            if (read_exact_file(path, verify, (int)image_size) == 0 &&
+                memcmp(verify, image, image_size) == 0) {
+                strncpy(path_out, path, FORENSIC_SNAPSHOT_PATH_SIZE - 1u);
+                path_out[FORENSIC_SNAPSHOT_PATH_SIZE - 1u] = '\0';
+                free(verify);
+                free(image);
+                return 0;
+            }
+            continue;
+        }
+
+        if (write_whole_file(path, image, (int)image_size) < 0) {
+            free(verify);
+            free(image);
+            return FORENSIC_SNAPSHOT_WRITE_FAILED;
+        }
+        if (read_exact_file(path, verify, (int)image_size) < 0 ||
+            memcmp(verify, image, image_size) != 0) {
+            free(verify);
+            free(image);
+            return FORENSIC_SNAPSHOT_VERIFY_FAILED;
+        }
+
+        strncpy(path_out, path, FORENSIC_SNAPSHOT_PATH_SIZE - 1u);
+        path_out[FORENSIC_SNAPSHOT_PATH_SIZE - 1u] = '\0';
+        free(verify);
+        free(image);
+        return 0;
+    }
+
+    free(verify);
+    free(image);
+    return FORENSIC_SNAPSHOT_NO_SLOT;
+}
