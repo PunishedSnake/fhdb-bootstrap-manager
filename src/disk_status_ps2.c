@@ -1,6 +1,7 @@
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
 #include <hdd-ioctl.h>
+#include <graph.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -9,6 +10,11 @@
 #include "gs_ui_ps2.h"
 
 #define STATUS_STACK_DEPTH 6u
+/* Raw forensic scanning can generate ~15k READ events on a 2 TB disk. Waiting
+ * for VBlank on every one would serialize the scan to display refresh speed.
+ * Keep the latest telemetry authoritative, but only present one out of each 32
+ * high-rate reads. Writes and phase changes remain uncoalesced. */
+#define STATUS_READ_RENDER_DIVISOR 32u
 
 static const char *operation_stack[STATUS_STACK_DEPTH];
 static const char *phase_stack[STATUS_STACK_DEPTH];
@@ -16,6 +22,7 @@ static const char *location_stack[STATUS_STACK_DEPTH];
 static unsigned int status_depth;
 static uint32_t cached_total_sectors;
 static int total_sectors_known;
+static unsigned int read_events_since_render;
 
 static const char *kind_name(disk_status_kind_t kind)
 {
@@ -97,6 +104,13 @@ static void render(disk_status_kind_t kind, unsigned int lba,
     write_sensitive = kind == DISK_STATUS_WRITE ||
                       kind == DISK_STATUS_FLUSH ||
                       kind == DISK_STATUS_POINTER;
+
+    /* The GS frontend draws directly into the hardware-proven visible FIELD
+     * framebuffer. Starting the full status-frame GIF DMA immediately after
+     * VBlank prevents the raster from scanning through a half-updated frame.
+     * High-rate READ coalescing happens before this function, so this wait does
+     * not turn raw disk throughput into a 50/60-Hz I/O throttle. */
+    graph_wait_vsync();
     gs_ui_render_disk_status(operation,
                              phase != NULL && phase[0] != '\0'
                                  ? phase : kind_name(kind),
@@ -118,6 +132,7 @@ void disk_status_begin_at(const char *operation, const char *phase,
     operation_stack[slot] = operation;
     phase_stack[slot] = phase;
     location_stack[slot] = location;
+    read_events_since_render = 0;
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -131,6 +146,7 @@ void disk_status_phase(const char *phase)
     if (status_depth == 0)
         return;
     phase_stack[status_depth - 1u] = phase;
+    read_events_since_render = 0;
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -139,6 +155,7 @@ void disk_status_location(const char *location)
     if (status_depth == 0)
         return;
     location_stack[status_depth - 1u] = location;
+    read_events_since_render = 0;
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -148,6 +165,7 @@ void disk_status_phase_at(const char *phase, const char *location)
         return;
     phase_stack[status_depth - 1u] = phase;
     location_stack[status_depth - 1u] = location;
+    read_events_since_render = 0;
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -155,13 +173,20 @@ void disk_status_io(disk_status_kind_t kind, unsigned int lba,
                     unsigned int sectors, unsigned int current,
                     unsigned int total)
 {
-    /* GS sprites + one GIF DMA packet are cheap enough to publish every event.
-       There is intentionally no presentation throttle here. */
+    if (kind == DISK_STATUS_READ) {
+        read_events_since_render++;
+        if (read_events_since_render < STATUS_READ_RENDER_DIVISOR)
+            return;
+        read_events_since_render = 0;
+    } else {
+        read_events_since_render = 0;
+    }
     render(kind, lba, sectors, current, total);
 }
 
 void disk_status_end(void)
 {
+    read_events_since_render = 0;
     if (status_depth != 0)
         status_depth--;
 }
