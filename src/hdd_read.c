@@ -7,6 +7,7 @@
  * fileXio RPC size used by the Torii write-verification path.
  */
 
+#define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
 #include <io_common.h>
 
