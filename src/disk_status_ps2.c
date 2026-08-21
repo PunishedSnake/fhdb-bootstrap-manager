@@ -3,6 +3,7 @@
 #include <hdd-ioctl.h>
 
 #include <stdint.h>
+#include <stdio.h>
 
 #include "disk_status_ps2.h"
 #include "gs_ui_ps2.h"
@@ -11,6 +12,7 @@
 
 static const char *operation_stack[STATUS_STACK_DEPTH];
 static const char *phase_stack[STATUS_STACK_DEPTH];
+static const char *location_stack[STATUS_STACK_DEPTH];
 static unsigned int status_depth;
 static uint32_t cached_total_sectors;
 static int total_sectors_known;
@@ -42,6 +44,22 @@ static void ensure_total_sectors(void)
     }
 }
 
+static const char *automatic_location(unsigned int lba,
+                                      unsigned int sectors,
+                                      char buffer[96])
+{
+    if (sectors == 0u)
+        return "Waiting for the next HDD command";
+    if (lba == 0u && sectors <= 2u)
+        return "APA master header / sectors 0-1";
+    if (lba < 0x2000u) {
+        snprintf(buffer, 96, "Reserved APA metadata area near LBA 0x%08x", lba);
+        return buffer;
+    }
+    snprintf(buffer, 96, "Physical HDD data near LBA 0x%08x", lba);
+    return buffer;
+}
+
 static void render(disk_status_kind_t kind, unsigned int lba,
                    unsigned int sectors, unsigned int current,
                    unsigned int total)
@@ -52,13 +70,17 @@ static void render(disk_status_kind_t kind, unsigned int lba,
     const char *phase = status_depth != 0
                             ? phase_stack[status_depth - 1u]
                             : NULL;
+    const char *location = status_depth != 0
+                               ? location_stack[status_depth - 1u]
+                               : NULL;
+    char automatic[96];
     uint32_t progress_current = current;
     uint32_t progress_total = total;
     unsigned int percent = 0;
     int write_sensitive;
 
     ensure_total_sectors();
-    if (progress_total == 0 && total_sectors_known) {
+    if (progress_total == 0 && total_sectors_known && sectors != 0u) {
         progress_current = lba;
         progress_total = cached_total_sectors;
     }
@@ -69,19 +91,24 @@ static void render(disk_status_kind_t kind, unsigned int lba,
             percent = 100u;
     }
 
+    if (location == NULL || location[0] == '\0')
+        location = automatic_location(lba, sectors, automatic);
+
     write_sensitive = kind == DISK_STATUS_WRITE ||
                       kind == DISK_STATUS_FLUSH ||
                       kind == DISK_STATUS_POINTER;
     gs_ui_render_disk_status(operation,
                              phase != NULL && phase[0] != '\0'
                                  ? phase : kind_name(kind),
+                             location,
                              kind_name(kind), percent,
                              (unsigned int)progress_current,
                              (unsigned int)progress_total,
                              lba, sectors, write_sensitive);
 }
 
-void disk_status_begin(const char *operation, const char *phase)
+void disk_status_begin_at(const char *operation, const char *phase,
+                          const char *location)
 {
     unsigned int slot = status_depth < STATUS_STACK_DEPTH
                             ? status_depth : STATUS_STACK_DEPTH - 1u;
@@ -90,7 +117,13 @@ void disk_status_begin(const char *operation, const char *phase)
         status_depth++;
     operation_stack[slot] = operation;
     phase_stack[slot] = phase;
+    location_stack[slot] = location;
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
+}
+
+void disk_status_begin(const char *operation, const char *phase)
+{
+    disk_status_begin_at(operation, phase, NULL);
 }
 
 void disk_status_phase(const char *phase)
@@ -98,6 +131,23 @@ void disk_status_phase(const char *phase)
     if (status_depth == 0)
         return;
     phase_stack[status_depth - 1u] = phase;
+    render(DISK_STATUS_SCAN, 0, 0, 0, 0);
+}
+
+void disk_status_location(const char *location)
+{
+    if (status_depth == 0)
+        return;
+    location_stack[status_depth - 1u] = location;
+    render(DISK_STATUS_SCAN, 0, 0, 0, 0);
+}
+
+void disk_status_phase_at(const char *phase, const char *location)
+{
+    if (status_depth == 0)
+        return;
+    phase_stack[status_depth - 1u] = phase;
+    location_stack[status_depth - 1u] = location;
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
