@@ -90,12 +90,13 @@ The long-standing normal paths retain their established safety model:
 The GitHub release publishes:
 
 ```text
+PS2_HDD_BOOTSTRAP_MANAGER-0.4.0.zip
 PS2_HDD_BOOTSTRAP_MANAGER-0.4.0.ELF
 SHA256SUMS.txt
 HDDMAN.CFG
 ```
 
-`HDDMAN.CFG` can normally be placed beside the ELF. The manager also supports changing the active theme from **System -> UI theme**.
+The ZIP is the recommended download and contains the ELF, `HDDMAN.CFG`, and `SHA256SUMS.txt` together. The individual files remain available for users who only need one component. `HDDMAN.CFG` can normally be placed beside the ELF. The manager also supports changing the active theme from **System -> UI theme**.
 
 ## What comes next
 

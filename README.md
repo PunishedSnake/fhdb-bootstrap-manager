@@ -381,10 +381,13 @@ make test-host
 GitHub Actions builds the stripped release ELF using `ps2dev/ps2dev:v2.0.0`, produces SHA-256, and publishes:
 
 ```text
+PS2_HDD_BOOTSTRAP_MANAGER-0.4.0.zip
 PS2_HDD_BOOTSTRAP_MANAGER-0.4.0.ELF
 SHA256SUMS.txt
 HDDMAN.CFG
 ```
+
+The ZIP is the recommended download and contains the ELF, `HDDMAN.CFG`, and `SHA256SUMS.txt` together. Individual assets remain available for targeted downloads.
 
 ## Roadmap
 

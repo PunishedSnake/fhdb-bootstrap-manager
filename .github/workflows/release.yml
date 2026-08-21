@@ -28,30 +28,39 @@ jobs:
           echo "codename=$codename" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
-      - name: Check whether release already exists
+      - name: Check release state
         id: existing
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          set -euo pipefail
+          bundle="PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.zip"
+          if assets="$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null)"; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            if grep -Fqx "$bundle" <<<"$assets"; then
+              echo "bundle_exists=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "bundle_exists=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "bundle_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run portable tests
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.existing.outputs.bundle_exists != 'true'
         run: make test-host
 
       - name: Build release ELF
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.existing.outputs.bundle_exists != 'true'
         run: >-
           docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
           sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
 
       - name: Package release assets
-        if: steps.existing.outputs.exists != 'true'
+        if: steps.existing.outputs.bundle_exists != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -59,6 +68,8 @@ jobs:
           mv PS2_HDD_BOOTSTRAP_MANAGER.ELF "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF"
           sha256sum "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" > SHA256SUMS.txt
           test -f HDDMAN.CFG
+          zip -9 "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.zip" \
+            "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" HDDMAN.CFG SHA256SUMS.txt
 
       - name: Publish stable GitHub release
         if: steps.existing.outputs.exists != 'true'
@@ -69,7 +80,20 @@ jobs:
           CODENAME: ${{ steps.version.outputs.codename }}
         run: |
           gh release create "$TAG" \
-            "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" SHA256SUMS.txt HDDMAN.CFG \
+            "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" \
+            "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.zip" \
+            SHA256SUMS.txt HDDMAN.CFG \
             --target "$GITHUB_SHA" \
             --title "PS2 HDD Bootstrap Manager ${VERSION} — ${CODENAME}" \
             --notes-file RELEASE_NOTES.md
+
+      - name: Add missing bundle to existing release
+        if: steps.existing.outputs.exists == 'true' && steps.existing.outputs.bundle_exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.zip"
+          gh release edit "$TAG" --notes-file RELEASE_NOTES.md
