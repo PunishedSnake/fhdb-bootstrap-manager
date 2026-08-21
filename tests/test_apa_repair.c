@@ -66,7 +66,7 @@ static int test_valid_header_has_no_repair(void)
            !plan.header_patch_safe && !plan.pointer_clear_recommended;
 }
 
-static int test_checksum_repair(void)
+static int test_checksum_only_is_refused(void)
 {
     unsigned char header[APA_HEADER_SIZE];
     apa_repair_plan_t plan;
@@ -76,8 +76,38 @@ static int test_checksum_repair(void)
     if (apa_repair_analyze(header, &plan) != 0)
         return 0;
     return plan.issues == APA_REPAIR_ISSUE_CHECKSUM &&
-           plan.safe_header_fixes == APA_REPAIR_ISSUE_CHECKSUM &&
-           plan.header_patch_safe && build_and_require_standard(header, &plan);
+           plan.safe_header_fixes == 0 && !plan.header_patch_safe &&
+           (plan.blockers & APA_REPAIR_BLOCKER_UNEXPLAINED_CHECKSUM) != 0;
+}
+
+static int test_known_bitflip_explains_checksum(void)
+{
+    unsigned char header[APA_HEADER_SIZE];
+    apa_repair_plan_t plan;
+
+    make_master(header, 0, 0);
+    /* Do not update checksum: this models a physical bit flip in a known field. */
+    header[APA_MAGIC_OFFSET] ^= 1u;
+    if (apa_repair_analyze(header, &plan) != 0)
+        return 0;
+    return (plan.issues & APA_REPAIR_ISSUE_APA_MAGIC) != 0 &&
+           (plan.issues & APA_REPAIR_ISSUE_CHECKSUM) != 0 &&
+           plan.header_patch_safe && plan.blockers == 0 &&
+           build_and_require_standard(header, &plan);
+}
+
+static int test_known_plus_unknown_corruption_is_refused(void)
+{
+    unsigned char header[APA_HEADER_SIZE];
+    apa_repair_plan_t plan;
+
+    make_master(header, 0, 0);
+    header[APA_MAGIC_OFFSET] ^= 1u;
+    header[0x220] ^= 1u;
+    if (apa_repair_analyze(header, &plan) != 0)
+        return 0;
+    return !plan.header_patch_safe &&
+           (plan.blockers & APA_REPAIR_BLOCKER_UNEXPLAINED_CHECKSUM) != 0;
 }
 
 static int test_single_identity_repairs(void)
@@ -198,7 +228,7 @@ static int test_inconsistent_pointer_recommends_clear(void)
            plan.pointer_clear_recommended && !plan.header_patch_safe;
 }
 
-static int test_torn_disable_repairs_checksum_only(void)
+static int test_torn_disable_is_diagnostic_only(void)
 {
     unsigned char header[APA_HEADER_SIZE];
     apa_repair_plan_t plan;
@@ -208,8 +238,8 @@ static int test_torn_disable_repairs_checksum_only(void)
     write_le32_test(header + APA_OSD_SIZE_OFFSET, 0);
     if (apa_repair_analyze(header, &plan) != 0)
         return 0;
-    return plan.safe_header_fixes == APA_REPAIR_ISSUE_CHECKSUM &&
-           build_and_require_standard(header, &plan);
+    return !plan.header_patch_safe && plan.safe_header_fixes == 0 &&
+           (plan.blockers & APA_REPAIR_BLOCKER_UNEXPLAINED_CHECKSUM) != 0;
 }
 
 static int test_random_data_is_refused(void)
@@ -232,22 +262,26 @@ int main(void)
 {
     if (!test_valid_header_has_no_repair())
         return fprintf(stderr, "Valid APA header produced a repair plan.\n"), 1;
-    if (!test_checksum_repair())
-        return fprintf(stderr, "Checksum repair planning failed.\n"), 2;
+    if (!test_checksum_only_is_refused())
+        return fprintf(stderr, "Checksum-only corruption was considered safe.\n"), 2;
+    if (!test_known_bitflip_explains_checksum())
+        return fprintf(stderr, "Known-field checksum evidence was not accepted.\n"), 3;
+    if (!test_known_plus_unknown_corruption_is_refused())
+        return fprintf(stderr, "Unexplained additional corruption was accepted.\n"), 4;
     if (!test_single_identity_repairs())
-        return fprintf(stderr, "Canonical identity repair failed.\n"), 3;
+        return fprintf(stderr, "Canonical identity repair failed.\n"), 5;
     if (!test_single_master_anchor_repairs())
-        return fprintf(stderr, "Master anchor repair failed.\n"), 4;
+        return fprintf(stderr, "Master anchor repair failed.\n"), 6;
     if (!test_ambiguous_damage_is_refused())
-        return fprintf(stderr, "Ambiguous APA damage was not refused.\n"), 5;
+        return fprintf(stderr, "Ambiguous APA damage was not refused.\n"), 7;
     if (!test_hybrid_is_never_repaired())
-        return fprintf(stderr, "Hybrid/GPT repair blocker failed.\n"), 6;
+        return fprintf(stderr, "Hybrid/GPT repair blocker failed.\n"), 8;
     if (!test_inconsistent_pointer_recommends_clear())
-        return fprintf(stderr, "Pointer repair recommendation failed.\n"), 7;
-    if (!test_torn_disable_repairs_checksum_only())
-        return fprintf(stderr, "Torn-disable checksum repair failed.\n"), 8;
+        return fprintf(stderr, "Pointer repair recommendation failed.\n"), 9;
+    if (!test_torn_disable_is_diagnostic_only())
+        return fprintf(stderr, "Torn disable was unsafely auto-repaired.\n"), 10;
     if (!test_random_data_is_refused())
-        return fprintf(stderr, "Random disk data was considered repairable.\n"), 9;
+        return fprintf(stderr, "Random disk data was considered repairable.\n"), 11;
 
     puts("All conservative APA repair planner tests passed.");
     return 0;
