@@ -24,14 +24,32 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 - [ ] Encapsulate storage selection state after the mechanical split has hardware coverage.
 - [x] `apa` portable core — endian parsing, checksum validation, normal `__mbr` recognition, hybrid-GPT detection, and same-disk header matching; covered by synthetic host tests.
 - [ ] `apa` transport/write half — raw sector transfer boundary, payload bounds, driver-mediated `osdStart`/`osdSize` updates, flush/read-back verification, and DMA buffers. This remains in `main.c` until the read-only core has a wider regression baseline.
-- [ ] `boot_chain` — configuration parsing, read-only evidence collection, classification, and report model.
+- [x] `boot_chain` portable core — shared evidence model, CNF parsing, `Skip_HDD`, ROMVER region mapping, OSDMenu/FHDB target parsing, and deterministic family classification.
+- [x] `boot_chain` PS2 read-only scanner — memory-card HDD modules, FMCB settings, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection.
+- [ ] `boot_chain` orchestration/report split — active payload fingerprinting currently crosses the raw-HDD transport boundary, while report rendering/logging still belongs to `main.c`.
 - [ ] `rescue` — capsule creation/lookup/validation plus restore orchestration while preserving payload-first/pointer-last semantics.
 - [ ] `ui` — menus, fatal/info screens, logging presentation, and confirmation text after core policy has explicit interfaces.
+
+### Test coverage now in place
+
+Portable CI now exercises:
+
+- SHA-256 streaming and complete-block paths;
+- rescue capsule round-trip and malformed metadata rejection;
+- synthetic APA header/checksum/hybrid-GPT/same-disk cases;
+- CNF parsing with comments, CRLF, whitespace, exact-key matching, and bounded output;
+- current and legacy `Skip_HDD` spellings plus conflicting-key precedence;
+- OSDMenu `$PSBBN`, `$HOSDSYS`, custom and absent `boot_auto` values;
+- FHDB `LK_Auto_E1`/`E2`/`E3` precedence;
+- ROMVER region-to-system-folder mapping;
+- boot-chain classification for invalid/disabled/unreadable/invalid-KELF states;
+- explicit OSDMenu targets overriding deliberately conflicting stale filesystem evidence;
+- FHDB, HOSDMenu, PSBBN, HDD-OSD, and unknown-KELF fallback classifications.
 
 ### Remaining engineering work
 
 - replace project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly;
-- expand host tests for configuration parsing, KELF length validation, and boot-chain classification using synthetic fixtures; APA checksum/header/same-disk tests are now in place;
+- move KELF structural parsing into a portable module and add malformed/truncated KELF fixtures;
 - add build-size/performance reporting so optimization work is measurable rather than flag-driven;
 - establish a hardware validation matrix across FAT console revisions, storage adapters/HDDs, memory-card layouts, and launch devices;
 - make classification evidence more data-driven so supporting another known environment does not require threading another special case through the UI.
