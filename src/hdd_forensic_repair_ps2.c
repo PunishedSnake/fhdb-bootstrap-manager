@@ -162,11 +162,13 @@ int hdd_forensic_repair_apply_verified(
                          "validate scan/plan arguments");
         return HDD_FORENSIC_REPAIR_INVALID_ARGUMENT;
     }
-    if (!plan->manual_allowed || plan->patch_count == 0 ||
+    if (scan->truncated || !plan->manual_allowed || plan->patch_count == 0 ||
         plan->map_index >= scan->map_count) {
         app_error_record(APP_ERROR_DOMAIN_FORENSIC_REPAIR,
                          HDD_FORENSIC_REPAIR_PLAN_BLOCKED,
-                         "validate forensic write gate");
+                         scan->truncated
+                             ? "validate forensic write gate: incomplete scan"
+                             : "validate forensic write gate");
         return HDD_FORENSIC_REPAIR_PLAN_BLOCKED;
     }
 
