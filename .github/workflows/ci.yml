@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev/0.4.0-michishirube]
   pull_request:
 
 permissions:
@@ -34,7 +34,7 @@ jobs:
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
 
   integrate-bootstrap-signing:
-    if: github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube'
+    if: (github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube') || (github.event_name == 'push' && github.ref == 'refs/heads/dev/0.4.0-michishirube')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
