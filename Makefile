@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o platform.o storage.o header_backup.o repair_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o app_ui_ps2.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o platform.o storage.o header_backup.o repair_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen -Wl,--wrap=fileXioDevctl
@@ -74,8 +74,8 @@ test-host:
 		-o $(HOST_HDD_MUTATION_TEST)
 	./$(HOST_HDD_MUTATION_TEST) $(HOST_HDD_FIXTURE_DIR)
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
-		tests/test_hdd_repair_fixtures.c src/apa_repair.c src/apa.c \
-		src/hdd_bounds.c src/kelf.c -o $(HOST_HDD_REPAIR_FIXTURE_TEST)
+		tests/test_hdd_repair_fixtures.c src/repair_health.c src/apa_repair.c \
+		src/apa.c src/hdd_bounds.c src/kelf.c -o $(HOST_HDD_REPAIR_FIXTURE_TEST)
 	./$(HOST_HDD_REPAIR_FIXTURE_TEST) $(HOST_HDD_FIXTURE_DIR)
 
 clean:
@@ -86,6 +86,15 @@ clean:
 # SDK include directories in EE_INCS, so custom rules for src/ must pass both
 # EE_CFLAGS and EE_INCS just like the stock compilation rule does.
 main.o: src/main.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+app_ui_ps2.o: src/app_ui_ps2.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+bootstrap_controller_ps2.o: src/bootstrap_controller_ps2.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+diagnostics_controller_ps2.o: src/diagnostics_controller_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 platform.o: src/platform.c
@@ -116,6 +125,9 @@ apa.o: src/apa.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 apa_repair.o: src/apa_repair.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+repair_health.o: src/repair_health.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 hdd_bounds.o: src/hdd_bounds.c
