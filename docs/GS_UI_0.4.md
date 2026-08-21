@@ -77,14 +77,17 @@ Low-level transports publish exact LBA information; higher layers publish the hu
 
 A large healthy-disk forensic scan performs thousands of raw reads. Waiting for one VBlank per read would serialize disk I/O to 50/60 operations per second, so 0.4.0 separates telemetry production from frame presentation.
 
-- actual status-frame submission waits for VBlank using PS2SDK `graph_wait_vsync()`;
+- complete frames are rendered into an off-screen native buffer and swapped on
+  VBlank using PS2SDK `graph_wait_vsync()` and
+  `graph_set_framebuffer_filtered()`;
 - high-rate ordinary READ events are coalesced and the newest state is presented every 32 reads;
 - WRITE / VERIFY / FLUSH / POINTER and semantic phase changes remain immediate;
 - disk I/O itself is not limited to the display frame rate.
 
 Physical retesting confirmed that visible forensic-scan screen tearing disappeared. The screen updates less frequently during rapid reads, which is intentional.
 
-If a future display combination still shows tearing, the next architectural step is true GS double buffering with VBlank framebuffer swap rather than increasingly aggressive read-event throttling.
+The two 640x224 buffers reuse the 640x448 VRAM reservation already budgeted by
+0.4.0, so true double buffering adds no framebuffer-memory overhead.
 
 ## Physical validation result
 
