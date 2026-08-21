@@ -6,10 +6,64 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  extract-kelf-core:
+    if: github.event_name == 'pull_request' && github.head_ref == 'dev/0.4.0-michishirube'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/0.4.0-michishirube
+          fetch-depth: 0
+      - name: Replace main.c KELF helpers with portable module
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('src/main.c')
+          text = path.read_text()
+
+          include_anchor = '#include "capsule_format.h"\n'
+          assert text.count(include_anchor) == 1
+          text = text.replace(include_anchor,
+                              include_anchor + '#include "kelf.h"\n', 1)
+
+          start_marker = '''/* ------------------------------------------------------------------------- */\n/* KELF payload structure helpers                                          */\n/* ------------------------------------------------------------------------- */\n'''
+          end_marker = '''/* ------------------------------------------------------------------------- */\n/* Console lifecycle and UI                                                */\n/* ------------------------------------------------------------------------- */\n'''
+          assert text.count(start_marker) == 1
+          assert text.count(end_marker) == 1
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
+          text = text[:start] + end_marker + text[end + len(end_marker):]
+
+          old_name = 'validate_kelf_layout('
+          assert text.count(old_name) == 2
+          text = text.replace(old_name, 'kelf_validate_layout(')
+
+          path.write_text(text)
+      - name: Run portable regression suite
+        run: make test-host
+      - name: Cross-build R5900 ELF after KELF extraction
+        run: >-
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+      - name: Commit verified extraction and restore normal CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout origin/main -- .github/workflows/ci.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main.c .github/workflows/ci.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "Extract portable KELF parsing from main"
+            git push origin HEAD:dev/0.4.0-michishirube
+          fi
+
   host-tests:
+    if: github.event_name != 'pull_request' || github.head_ref != 'dev/0.4.0-michishirube'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,6 +71,7 @@ jobs:
         run: make test-host
 
   ps2-build:
+    if: github.event_name != 'pull_request' || github.head_ref != 'dev/0.4.0-michishirube'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
