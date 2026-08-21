@@ -8,7 +8,7 @@ It began after a real console got trapped in a post-uninstall FHDB boot loop: FH
 
 `0.3.1` **Torii** is the current stable release. It keeps the hardware-proven normal pointer workflow, full rescue capsules, boot-chain diagnostics, guarded MagicGate installation, payload-first/pointer-last writes, and Sony-style `MBR.XIN` preference with `MBR.XLF` compatibility.
 
-`0.4.x` **Michishirube** is the active development line. Its purpose is to turn the project into a modular recovery toolkit while preserving Torii's normal write semantics. Michishirube now includes a portable forensic APA graph engine, degraded read-only reconstruction, candidate-map inspection, guarded multi-header topology repair, hierarchical UI, controller activity indication, guarded physical-HDD fault injection for validation, and startup-phase telemetry.
+`0.4.x` **Michishirube** is the active development line. Its purpose is to turn the project into a modular recovery toolkit while preserving Torii's normal write semantics. Michishirube now includes a portable forensic APA graph engine, degraded read-only reconstruction, candidate-map inspection, guarded multi-header topology repair, hierarchical UI, controller activity indication, guarded physical-HDD fault injection for validation, startup-phase telemetry, and an application-wide Graphics Synthesizer frontend.
 
 ## What the manager understands
 
@@ -28,10 +28,28 @@ The development branch is explicitly layered:
 - portable policy/format core — `apa`, `apa_repair`, `apa_forensic`, `repair_health`, `hdd_bounds`, `kelf`, `bootstrap_transaction`, rescue/report formats and SHA-256;
 - PS2 device/service adapters — `hdd_read`, normal `hdd_write`, exceptional `hdd_repair_ps2`, multi-header `hdd_forensic_repair_ps2`, backup/rescue/forensic snapshot storage, MagicGate, diagnostics acquisition and persistence;
 - application controllers — `bootstrap_controller_ps2`, `diagnostics_controller_ps2`, `repair_controller_ps2`, `forensic_controller_ps2`;
-- shared navigation/presentation/lifecycle — `manager_menu_ps2`, `app_ui_ps2`, and `platform`;
+- shared navigation/presentation/lifecycle — `manager_menu_ps2`, `app_ui_ps2`, `gs_ui_ps2`, and `platform`;
 - `main.c` — startup, normal APA admission, lightweight pending diagnostics state, and hand-off to the manager dashboard. Full PFS/MC boot-chain diagnostics are deferred until requested so they do not block ordinary startup.
 
 Portable recovery code decides what evidence means. PS2 adapters perform narrow I/O. Controllers authorize operations and present them. The composition root does not contain disk algorithms or raw write loops.
+
+### Graphics Synthesizer frontend
+
+Michishirube's development UI is rendered by one application-wide GS frontend rather than mixing libdebug text screens with a separate status overlay.
+
+`gs_ui_ps2` owns the normal video path:
+
+- `graph_initialize()` establishes the 640x448 interlaced framebuffer and read circuit;
+- `draw_setup_environment()` provides the normal libdraw coordinate environment (`XYOFFSET = 2048,2048`);
+- the built-in PS2SDK MSX glyph data is converted once into a 128x64 RGBA atlas and uploaded once to VRAM;
+- text is then rendered as textured GS sprites rather than per-character host-to-local framebuffer transfers;
+- menu cards, panels, selection bars, outlines and progress bars are ordinary GS primitives;
+- frames are submitted as GIF DMA packets through two alternating EE packet buffers;
+- live HDD telemetry remains event-driven and unthrottled by presentation code.
+
+The former debug renderer had a different logical coordinate convention. libdraw already adds the GS +2048 primitive bias internally, so applying an additional framebuffer-centering offset displaced the first GS HUD by +320 pixels horizontally and +112 pixels vertically. The application-wide renderer removes that mixed-coordinate path entirely.
+
+Existing controller screens that still construct text incrementally with `scr_clear()` / `scr_printf()` are intercepted by `gs_debug_compat_ps2` and rendered through the same GS frontend. Those names therefore remain in some controller source while libdebug itself no longer draws application pixels. The debug library is currently retained only for its built-in MSX font asset/toolchain compatibility.
 
 Full ownership and trust boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -72,7 +90,7 @@ A candidate map is not automatically considered healthy. Read-only reconstructio
 
 ## UI model
 
-Michishirube no longer assigns one feature to every spare DualShock button. The main screen is a dashboard with five sections:
+Michishirube no longer assigns one feature to every spare DualShock button. The main screen is a GS-rendered dashboard with five sections:
 
 ```text
 Bootstrap
@@ -302,38 +320,10 @@ Generated binaries and synthetic HDD images are not tracked in the source tree.
 
 The original pointer-disable workflow eliminated a real post-uninstall FHDB boot loop on PlayStation 2 hardware and Torii preserves that normal write behavior.
 
-Michishirube now also has an initial healthy-disk hardware pass with mutually consistent `HDDMBR.BIN`, `HDDRESCUE.BIN`, `BOOTCHAIN.TXT`, and `HDDMAN.LOG` evidence. See [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md).
+Michishirube still requires physical validation for its exceptional recovery paths and the new application-wide GS frontend. The first UI hardware gate should verify full-screen placement, PAL/NTSC field geometry, readable text scaling, menu selection state and live-HDD updates without the former mixed-renderer offset.
 
-Controlled destructive validation must use [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md). The fault injector defaults to dry-run and requires a fresh master SHA plus extra confirmation before a physical-drive write.
+For destructive recovery testing, use a sacrificial or fully backed-up APA HDD and capture the original raw headers externally before injecting corruption.
 
-The following Michishirube additions remain **not yet fully hardware-proven**:
+## License
 
-- exceptional raw sectors 0-1 master repair after deliberately injected corruption;
-- raw forensic scanning across the test HDD compared with a known host-side topology;
-- multi-header topology repair and master-last commit behavior;
-- `HDDMETA` snapshot/write/read-back behavior during destructive recovery;
-- ANALOG-lamp activity switching across original and third-party controllers;
-- the fast-start/timing change that defers full PFS/MC boot-chain diagnostics;
-- controlled interruption/power-loss boundaries.
-
-Host tests cannot prove DEV9/ATA timing, DMA/fileXio behavior, cache durability, APA journaling, adapter quirks, or exact physical power-loss effects. Physical-HDD validation remains the final gate before these paths can be treated as release-ready.
-
-## Project documentation
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module ownership, trust ladder, normal and recovery write invariants.
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames, scope boundaries, and engineering milestones.
-- [`docs/FORENSIC_RECOVERY.md`](docs/FORENSIC_RECOVERY.md) — forensic evidence model, shadow maps, `HDDMETA`, confidence and write authorization.
-- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — 30 mounted/deterministic raw images plus 9 full 512 MiB forensic regressions.
-- [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md) — current real-console evidence and hardware gaps.
-- [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded controlled-corruption procedure for sacrificial/backed-up HDDs.
-- [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — full rescue capsule format and restore rules.
-- [`docs/KELF_FORMAT.md`](docs/KELF_FORMAT.md) — KELF validation/signing assumptions.
-- [`docs/BOOT_REPORT.md`](docs/BOOT_REPORT.md) — boot-chain evidence and report semantics.
-
-## Current development warning
-
-`0.4.0-dev` is a hardware-validation build, not a stable release. The normal Torii-compatible write paths retain their existing contract, but Michishirube's exceptional raw recovery paths remain experimental until the destructive validation matrix is complete.
-
-Exact current branch/CI identity is intentionally kept in PR metadata rather than embedded here, because putting a branch SHA inside a file changes that SHA again.
-
-Kitsune ahead. Bring backups.
+MIT. See [`LICENSE`](LICENSE).
