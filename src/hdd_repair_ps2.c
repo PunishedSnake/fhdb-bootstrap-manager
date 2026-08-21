@@ -19,6 +19,8 @@
 #include <string.h>
 
 #include "apa.h"
+#include "app_error.h"
+#include "disk_status_ps2.h"
 #include "hdd_read.h"
 #include "hdd_repair_ps2.h"
 #include "platform.h"
@@ -36,51 +38,78 @@ static repair_write_packet_t repair_packet __attribute__((aligned(64)));
 static unsigned char repair_verify[APA_HEADER_SIZE]
     __attribute__((aligned(64)));
 
+static int fail_master_repair(int code, const char *stage)
+{
+    app_error_record(APP_ERROR_DOMAIN_MASTER_REPAIR, code, stage);
+    disk_status_end();
+    return code;
+}
+
 int hdd_repair_write_master_header_verified(
     const unsigned char repaired[APA_HEADER_SIZE],
     unsigned char readback[APA_HEADER_SIZE])
 {
     int result;
 
-    if (repaired == NULL || readback == NULL)
+    if (repaired == NULL || readback == NULL) {
+        app_error_record(APP_ERROR_DOMAIN_MASTER_REPAIR,
+                         HDD_REPAIR_INVALID_ARGUMENT,
+                         "validate recovery buffers");
         return HDD_REPAIR_INVALID_ARGUMENT;
+    }
 
     if (!is_standard_apa_header(repaired) || is_hybrid_gpt(repaired) ||
         read_le32(repaired + APA_START_OFFSET) != 0 ||
         read_le16(repaired + APA_TYPE_OFFSET) != APA_MASTER_TYPE_VALUE ||
         read_le32(repaired + APA_MBR_VERSION_OFFSET) !=
-            APA_MASTER_VERSION_VALUE)
+            APA_MASTER_VERSION_VALUE) {
+        app_error_record(APP_ERROR_DOMAIN_MASTER_REPAIR,
+                         HDD_REPAIR_UNSAFE_HEADER,
+                         "final canonical master validation");
         return HDD_REPAIR_UNSAFE_HEADER;
+    }
 
+    disk_status_begin("Exceptional APA master repair",
+                      "Writing repaired sectors 0-1");
     pad_activity_begin();
     repair_packet.lba = 0;
     repair_packet.size = 2;
     memcpy(repair_packet.data, repaired, APA_HEADER_SIZE);
+    disk_status_io(DISK_STATUS_WRITE, 0, 2, 0, 2);
     result = fileXioDevctl("hdd0:", HDIOC_WRITESECTOR_LOCAL,
                            &repair_packet, sizeof(repair_packet), NULL, 0);
     if (result < 0) {
         pad_activity_end();
-        return HDD_REPAIR_WRITE_FAILED;
+        return fail_master_repair(HDD_REPAIR_WRITE_FAILED,
+                                  "HDIOC_WRITESECTOR sectors 0-1");
     }
 
+    disk_status_phase("Flushing repaired APA master");
+    disk_status_io(DISK_STATUS_FLUSH, 0, 2, 2, 2);
     result = fileXioDevctl("hdd0:", HDIOC_FLUSH_LOCAL,
                            NULL, 0, NULL, 0);
     if (result < 0) {
         pad_activity_end();
-        return HDD_REPAIR_FLUSH_FAILED;
+        return fail_master_repair(HDD_REPAIR_FLUSH_FAILED,
+                                  "HDIOC_FLUSH repaired master");
     }
 
+    disk_status_phase("Reading sectors 0-1 back for exact verification");
+    disk_status_io(DISK_STATUS_VERIFY, 0, 2, 2, 2);
     result = hdd_read_raw_sectors(0, 2, repair_verify);
     if (result < 0) {
         pad_activity_end();
-        return HDD_REPAIR_READBACK_FAILED;
+        return fail_master_repair(HDD_REPAIR_READBACK_FAILED,
+                                  "read-back sectors 0-1");
     }
     if (memcmp(repair_verify, repaired, APA_HEADER_SIZE) != 0) {
         pad_activity_end();
-        return HDD_REPAIR_COMPARE_FAILED;
+        return fail_master_repair(HDD_REPAIR_COMPARE_FAILED,
+                                  "compare repaired master read-back");
     }
 
     memcpy(readback, repair_verify, APA_HEADER_SIZE);
     pad_activity_end();
+    disk_status_end();
     return 0;
 }
