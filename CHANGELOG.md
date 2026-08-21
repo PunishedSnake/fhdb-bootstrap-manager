@@ -2,6 +2,33 @@
 
 All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
+## [0.4.0-dev] - unreleased
+
+**Codename: Michishirube (道標)**
+
+### Changed
+
+- Began regression-gated decomposition of the former monolithic EE application without changing the established HDD write transaction.
+- Extracted IOP reset, embedded IRX startup, controller DMA lifetime, pad input, and confirmation chords into `platform.c` / `platform.h`.
+- Extracted storage-target selection, ROMVER access, and generic fileXio helpers into `storage.c` / `storage.h` while temporarily preserving the existing selected-storage state interface.
+- Extracted portable APA master-header parsing into `apa.c` / `apa.h`, leaving raw HDD transport and pointer updates in `main.c`.
+- Extracted the shared boot-chain evidence model, CNF parsing, ROMVER mapping, target parsing, and family-classification policy into PS2SDK-free `boot_chain.c` / `boot_chain.h`.
+- Extracted memory-card, FMCB, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection into read-only `boot_chain_ps2.c` / `boot_chain_ps2.h`.
+
+### Tests
+
+- Added synthetic APA fixtures covering valid/corrupt headers, checksum and pointer decoding, hybrid-GPT detection, and same-disk matching with mutable OSD fields.
+- Added a separate portable boot-chain suite covering CNF comments/whitespace/CRLF, exact-key matching, bounded output, current/legacy `Skip_HDD` spellings, conflicting-key precedence, OSDMenu targets, FHDB auto-target order, and ROMVER regions.
+- Added classification fixtures for inconsistent/disabled pointers, unreadable payloads, invalid KELFs, explicit OSDMenu targets, FHDB, HOSDMenu, PSBBN, HDD-OSD, and unknown KELFs.
+- Added deliberately conflicting evidence fixtures to ensure explicit OSDMenu `boot_auto` targets continue to outrank stale partition/executable evidence.
+- Every physical extraction from `main.c` is accepted only after the portable suite and pinned PS2DEV v2.0.0 R5900 release build pass; final trees are rechecked with normal CI.
+
+### Safety
+
+- `HDIOC_READSECTOR`, `HDIOC_WRITESECTOR`, live payload bounds checks, aligned raw-transfer buffers, `HDIOC_SETOSDMBR`, flush/read-back verification, rescue restore, MagicGate signing, and payload-first/pointer-last ordering remain unchanged in `main.c`.
+- The new PS2 boot-chain scanner is read-only: it reads memory-card files and mounts PFS partitions with `FIO_MT_RDONLY` but owns no disk-changing operation.
+- `analyze_boot_chain()` remains beside raw payload transport for now instead of creating a misleading dependency from the read-only scanner into write-capable APA infrastructure.
+
 ## [0.3.1] - 2026-08-21
 
 **Codename: Torii (鳥居)**
