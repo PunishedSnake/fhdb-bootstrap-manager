@@ -1,23 +1,17 @@
-#include <debug.h>
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
 #include <hdd-ioctl.h>
 
 #include <stdint.h>
-#include <string.h>
 
-#include "app_identity.h"
 #include "disk_status_ps2.h"
-#include "version.h"
+#include "gs_ui_ps2.h"
 
-#define STATUS_BAR_WIDTH 28u
 #define STATUS_STACK_DEPTH 6u
-#define STATUS_READ_REDRAW_EVERY 16u
 
 static const char *operation_stack[STATUS_STACK_DEPTH];
 static const char *phase_stack[STATUS_STACK_DEPTH];
 static unsigned int status_depth;
-static unsigned int event_counter;
 static uint32_t cached_total_sectors;
 static int total_sectors_known;
 
@@ -48,17 +42,6 @@ static void ensure_total_sectors(void)
     }
 }
 
-static void print_bar(unsigned int percent)
-{
-    unsigned int filled = (percent * STATUS_BAR_WIDTH) / 100u;
-    unsigned int i;
-
-    scr_printf("[");
-    for (i = 0; i < STATUS_BAR_WIDTH; i++)
-        scr_printf(i < filled ? "#" : "-");
-    scr_printf("] %3u%%\n", percent);
-}
-
 static void render(disk_status_kind_t kind, unsigned int lba,
                    unsigned int sectors, unsigned int current,
                    unsigned int total)
@@ -72,6 +55,7 @@ static void render(disk_status_kind_t kind, unsigned int lba,
     uint32_t progress_current = current;
     uint32_t progress_total = total;
     unsigned int percent = 0;
+    int write_sensitive;
 
     ensure_total_sectors();
     if (progress_total == 0 && total_sectors_known) {
@@ -85,28 +69,16 @@ static void render(disk_status_kind_t kind, unsigned int lba,
             percent = 100u;
     }
 
-    scr_clear();
-    scr_printf(APP_NAME " v%s\n", APP_VERSION);
-    scr_printf("LIVE HDD MONITOR\n\n");
-    scr_printf("Operation: %s\n", operation != NULL ? operation : "HDD activity");
-    scr_printf("Action   : %s\n", phase != NULL && phase[0] != '\0'
-                                      ? phase : kind_name(kind));
-    scr_printf("I/O      : %s\n", kind_name(kind));
-    if (progress_total != 0) {
-        print_bar(percent);
-        scr_printf("Position : 0x%08x / 0x%08x sectors\n",
-                   (unsigned int)progress_current,
-                   (unsigned int)progress_total);
-    } else {
-        scr_printf("[disk position: total size unavailable]\n");
-    }
-    if (sectors != 0) {
-        scr_printf("Sector   : 0x%08x", lba);
-        if (sectors > 1u)
-            scr_printf(" .. 0x%08x", lba + sectors - 1u);
-        scr_printf("  (%u sector%s)\n", sectors, sectors == 1u ? "" : "s");
-    }
-    scr_printf("\nDo not reset/remove power during WRITE/FLUSH.\n");
+    write_sensitive = kind == DISK_STATUS_WRITE ||
+                      kind == DISK_STATUS_FLUSH ||
+                      kind == DISK_STATUS_POINTER;
+    gs_ui_render_disk_status(operation,
+                             phase != NULL && phase[0] != '\0'
+                                 ? phase : kind_name(kind),
+                             kind_name(kind), percent,
+                             (unsigned int)progress_current,
+                             (unsigned int)progress_total,
+                             lba, sectors, write_sensitive);
 }
 
 void disk_status_begin(const char *operation, const char *phase)
@@ -118,7 +90,6 @@ void disk_status_begin(const char *operation, const char *phase)
         status_depth++;
     operation_stack[slot] = operation;
     phase_stack[slot] = phase;
-    event_counter = 0;
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -127,7 +98,6 @@ void disk_status_phase(const char *phase)
     if (status_depth == 0)
         return;
     phase_stack[status_depth - 1u] = phase;
-    event_counter = 0;
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -135,12 +105,8 @@ void disk_status_io(disk_status_kind_t kind, unsigned int lba,
                     unsigned int sectors, unsigned int current,
                     unsigned int total)
 {
-    int force = kind != DISK_STATUS_READ && kind != DISK_STATUS_SCAN;
-
-    event_counter++;
-    if (!force && (event_counter % STATUS_READ_REDRAW_EVERY) != 0u &&
-        current != 0u && current != total)
-        return;
+    /* GS sprites + one GIF DMA packet are cheap enough to publish every event.
+       There is intentionally no presentation throttle here. */
     render(kind, lba, sectors, current, total);
 }
 
@@ -148,5 +114,4 @@ void disk_status_end(void)
 {
     if (status_depth != 0)
         status_depth--;
-    event_counter = 0;
 }
