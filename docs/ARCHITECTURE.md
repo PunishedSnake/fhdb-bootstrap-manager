@@ -6,10 +6,13 @@ PS2 HDD Bootstrap Manager is intentionally conservative: it is allowed to be slo
 
 The `0.4.0-dev` **Michishirube** line is progressively converting the former monolithic EE application into explicit modules. The split is intentionally mechanical first: code moves behind headers without simultaneously changing storage semantics.
 
-- `src/main.c` — application state machine, raw active-payload acquisition, report persistence/orchestration, rescue/install workflows, logging policy, raw HDD transport, and guarded pointer/write ordering that has not yet been extracted.
+- `src/main.c` — application state machine, report persistence/orchestration, rescue/install workflows, logging policy, write-capable APA transport, and guarded pointer/write ordering that has not yet been extracted.
 - `src/platform.c` — IOP reset, embedded IRX startup, pad initialization, button-edge input, and confirmation-chord input.
 - `src/storage.c` — storage target definitions, launch-device selection, ROMVER access, and generic fileXio helpers. The first split temporarily exposes the selected target state so call sites remain behaviorally identical; later Michishirube work will encapsulate it after regression coverage exists.
 - `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
+- `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.
+- `src/boot_payload.c` — PS2SDK-free conversion of a sector-aligned active payload into byte counts, sector-image SHA-256, KELF structural result/size, and unpadded-KELF SHA-256.
+- `src/boot_payload_ps2.c` — narrow PS2 acquisition adapter that combines `hdd_read` with portable `boot_payload` fingerprinting and fills only payload-derived boot-chain evidence.
 - `src/boot_chain.c` — PS2SDK-free boot-chain evidence model, CNF parsing, ROMVER mapping, target parsing, and family-classification policy.
 - `src/boot_chain_ps2.c` — PS2-only but read-only evidence collection from memory cards and PFS partitions. It owns no raw HDD write or pointer update.
 - `src/boot_report.c` — PS2SDK-free, bounded rendering of a completed evidence snapshot into the human-readable `BOOTCHAIN.TXT` image. It performs no device access or persistence.
@@ -51,22 +54,25 @@ An optimization or refactor that changes any of these semantics is a behavior ch
 
 `apa.c` is deliberately portable and has no fileXio or PS2SDK dependency. Synthetic host tests construct a valid 1024-byte `__mbr` header, verify the checksum and pointer decoding, exercise hybrid-GPT detection, reject corrupted identity data, and confirm that same-disk matching ignores only the checksum and mutable `osdStart`/`osdSize` fields.
 
-The following operations still belong to the not-yet-extracted transport half in `main.c`:
+Read-only `HDIOC_READSECTOR` transport and active-payload bounds checks now live in `hdd_read.c`. The module uses its own aligned two-sector read buffer and can only return bytes or validation errors; it cannot flush, write sectors, or update `osdStart`/`osdSize`.
 
-- `HDIOC_READSECTOR` / `HDIOC_WRITESECTOR` RPC packets and aligned transfer buffers;
-- active-payload bounds checks against the actual `hdd0:__mbr` partition;
-- `HDIOC_SETOSDMBR` pointer changes and flushes;
-- post-write sector comparison and final header read-back.
+The following operations deliberately remain in the not-yet-extracted write-capable half in `main.c`:
 
-Keeping that boundary explicit prevents a testable parser extraction from accidentally becoming an unreviewed rewrite of the write path.
+- `HDIOC_WRITESECTOR` packets and the aligned write/verification buffers used by install/restore;
+- `HDIOC_SETOSDMBR` pointer changes and write-cache flushes;
+- post-write sector comparison and final APA-header read-back;
+- rescue/install transaction ordering, including payload-first/pointer-last activation.
+
+Keeping the read boundary separate from the write transaction lets diagnostics reuse one raw-read implementation without turning a parser refactor into an unreviewed rewrite of disk-changing behavior.
 
 ## Boot-chain reporting boundary
 
-Boot-chain diagnostics now have three explicit layers instead of one function that both understood evidence and owned output state:
+Boot-chain diagnostics now have explicit acquisition, policy, rendering, and persistence layers instead of one function that understood every device and output detail:
 
-1. `boot_chain.c` and `boot_chain_ps2.c` define/collect the evidence that can be obtained without raw write access.
-2. `main.c` still acquires and fingerprints the active raw HDD payload because that operation crosses the not-yet-extracted APA transport boundary.
-3. `boot_report.c` receives the completed `boot_chain_info_t` plus explicit `osdStart`/`osdSize` values and renders the bounded text image. `main.c` remains responsible for saving that image as `BOOTCHAIN.TXT`, appending the save result to `HDDMAN.LOG`, and presenting the short UI summary.
+1. `boot_chain.c` and `boot_chain_ps2.c` define the evidence model, portable classification policy, and filesystem/configuration evidence that does not require raw HDD writes.
+2. `boot_payload_ps2.c` acquires the active sector image through read-only `hdd_read.c`; portable `boot_payload.c` performs hashing and KELF-size/structure conversion.
+3. `main.c` combines those evidence sources and calls `classify_boot_chain()`; it no longer owns the raw active-payload read loop or payload fingerprinting implementation.
+4. `boot_report.c` receives the completed `boot_chain_info_t` plus explicit `osdStart`/`osdSize` values and renders the bounded text image. `main.c` remains responsible for saving that image as `BOOTCHAIN.TXT`, appending the save result to `HDDMAN.LOG`, and presenting the short UI summary.
 
 The renderer has no fileXio, PFS, memory-card, or raw-HDD dependency. Its complete section order, assessment precedence, SHA-256 text, and truncation behavior can therefore be checked on a host. A full disabled-state golden fixture protects the human-readable contract users paste into bug reports, while targeted fixtures cover active evidence, warning/critical branches, the external-HDD-module note, and NUL termination under a deliberately tiny output capacity.
 

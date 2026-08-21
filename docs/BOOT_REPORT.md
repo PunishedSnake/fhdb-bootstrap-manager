@@ -6,7 +6,7 @@
 
 The report pipeline has three distinct responsibilities:
 
-1. **Evidence acquisition** — `boot_chain_ps2.c` reads FMCB configuration, memory-card modules, `__sysconf`, `__system`, and related filesystem evidence. `main.c` still acquires the active raw payload and its hashes because that crosses the raw-HDD transport boundary.
+1. **Evidence acquisition** — `boot_chain_ps2.c` reads FMCB configuration, memory-card modules, `__sysconf`, `__system`, and related filesystem evidence. `boot_payload_ps2.c` acquires the active raw payload through read-only `hdd_read.c`, while portable `boot_payload.c` computes the sector-image/KELF fingerprints and KELF result fields. `main.c` only orchestrates these completed evidence sources.
 2. **Rendering** — `boot_report.c` receives a completed `boot_chain_info_t`, explicit `osdStart`/`osdSize`, and application identity strings. It performs no device access and returns one bounded NUL-terminated text image.
 3. **Persistence/presentation** — `main.c` writes the rendered bytes to `BOOTCHAIN.TXT`, records the result in `HDDMAN.LOG`, and shows the short console summary.
 

@@ -25,6 +25,10 @@ Manual installation has the opposite problem. Copying an MBR program to a disk i
 
 Torii keeps the full-payload rescue and boot-chain inspection work stable while preserving the write-safety model. Portable SHA-256/capsule logic is covered by host-side tests and release builds are cross-compiled with the pinned PS2DEV v2.0.0 toolchain. Broader real-console coverage is still welcome; stable means the release gates are satisfied, not that twenty-year-old disks have suddenly become immortal. Keep irreplaceable data copied elsewhere.
 
+## Development branch
+
+The active `dev/0.4.0-michishirube` branch is refactoring internals behind regression-gated module boundaries without changing Torii's write transaction. Read-only raw HDD acquisition now lives in `hdd_read.c`; payload/KELF fingerprinting is split between portable `boot_payload.c` and PS2-specific `boot_payload_ps2.c`. `main.c` still owns report persistence, rescue/install policy, MagicGate signing, and every write-capable APA operation. This work remains development-only until the branch completes its hardware-validation gate.
+
 ## Features
 
 - Validates the complete 1024-byte APA `__mbr` header and checksum.
