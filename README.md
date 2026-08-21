@@ -28,7 +28,7 @@ The development branch is explicitly layered:
 - portable policy/format core — `apa`, `apa_repair`, `apa_forensic`, `repair_health`, `hdd_bounds`, `kelf`, `bootstrap_transaction`, rescue/report formats and SHA-256;
 - PS2 device/service adapters — `hdd_read`, normal `hdd_write`, exceptional `hdd_repair_ps2`, multi-header `hdd_forensic_repair_ps2`, backup/rescue/forensic snapshot storage, MagicGate, diagnostics acquisition and persistence;
 - application controllers — `bootstrap_controller_ps2`, `diagnostics_controller_ps2`, `repair_controller_ps2`, `forensic_controller_ps2`;
-- shared navigation/presentation/lifecycle — `manager_menu_ps2`, `app_ui_ps2`, `gs_ui_ps2`, and `platform`;
+- shared navigation/presentation/lifecycle — `manager_menu_ps2`, `app_ui_ps2`, `gs_ui_ps2`, `disk_status_ps2`, and `platform`;
 - `main.c` — startup, normal APA admission, lightweight pending diagnostics state, and hand-off to the manager dashboard. Full PFS/MC boot-chain diagnostics are deferred until requested so they do not block ordinary startup.
 
 Portable recovery code decides what evidence means. PS2 adapters perform narrow I/O. Controllers authorize operations and present them. The composition root does not contain disk algorithms or raw write loops.
@@ -37,21 +37,46 @@ Portable recovery code decides what evidence means. PS2 adapters perform narrow 
 
 Michishirube's development UI is rendered by one application-wide GS frontend rather than mixing libdebug text screens with a separate status overlay.
 
-`gs_ui_ps2` owns the normal video path:
+Physical validation established the display contract now used by the branch:
 
-- `graph_initialize()` establishes the 640x448 interlaced framebuffer and read circuit;
-- `draw_setup_environment()` provides the normal libdraw coordinate environment (`XYOFFSET = 2048,2048`);
+- `init_scr()` is retained only as the hardware-proven CRT/read-circuit bootstrap;
+- the visible framebuffer remains at VRAM address 0 in the proven 640x224 FIELD drawing space;
+- `gs_ui_ps2` renders every normal application pixel through libdraw/GIF DMA and does not reprogram the proven display mode;
+- `draw_setup_environment()` uses the standard libdraw coordinate environment (`XYOFFSET = 2048,2048`);
 - the built-in PS2SDK MSX glyph data is converted once into a 128x64 RGBA atlas and uploaded once to VRAM;
-- text is then rendered as textured GS sprites rather than per-character host-to-local framebuffer transfers;
-- menu cards, panels, selection bars, outlines and progress bars are ordinary GS primitives;
+- every glyph is now rendered 8x8 source -> 8x8 destination in native 640x224 coordinates with nearest sampling — there is no 448->224 fractional Y transform;
+- menu cards, panels, selection/disabled states, outlines and progress bars are ordinary GS primitives;
 - frames are submitted as GIF DMA packets through two alternating EE packet buffers;
-- live HDD telemetry remains event-driven and unthrottled by presentation code.
+- live operation telemetry remains event-driven and unthrottled by presentation code.
 
-The former debug renderer had a different logical coordinate convention. libdraw already adds the GS +2048 primitive bias internally, so applying an additional framebuffer-centering offset displaced the first GS HUD by +320 pixels horizontally and +112 pixels vertically. The application-wide renderer removes that mixed-coordinate path entirely.
+The hardware history matters. The first mixed-renderer HUD was displaced into the lower-right because the code added a second coordinate compensation on top of libdraw's existing GS bias. A later standalone `graph_initialize(640x448)` path produced a black screen on the real console. Returning to the proven CRT bootstrap fixed video output and full-screen placement, but the first full-screen build still compressed a virtual 448-line UI into the 224-line field raster; physical photographs showed missing/stretched glyph rows. The current renderer therefore authors the entire UI directly in native 640x224 coordinates.
 
-Existing controller screens that still construct text incrementally with `scr_clear()` / `scr_printf()` are intercepted by `gs_debug_compat_ps2` and rendered through the same GS frontend. Those names therefore remain in some controller source while libdebug itself no longer draws application pixels. The debug library is currently retained only for its built-in MSX font asset/toolchain compatibility.
+Existing controller screens that still construct text incrementally with `scr_clear()` / `scr_printf()` are intercepted by linker wrappers and `gs_debug_compat_ps2`, then rendered through the same GS frontend. Real libdebug drawing remains available only as a last-resort renderer-init failure screen.
 
-Full ownership and trust boundaries are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The physical UI migration and validation checklist live in [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md).
+Full ownership and physical validation history are documented in [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md).
+
+### Themes and UI config
+
+Michishirube includes four predefined palettes that keep the same layout and safety colors:
+
+- `aqua` — default cyan/blue;
+- `amber` — warm service-console palette;
+- `sakura` — pink/violet accent palette;
+- `mono` — neutral grayscale/high-compatibility palette.
+
+Themes can be changed live through **System -> UI theme** without restarting. The preference is stored in:
+
+```text
+MICHISHIRUBE.CFG
+```
+
+with the intentionally tiny format:
+
+```text
+theme=aqua
+```
+
+When the launcher supplies a useful `argv[0]`, the manager reads/writes that file beside the ELF. If no usable launch directory is available, it falls back to the selected backup/report storage root. Missing or unwritable config never blocks the manager; the chosen palette remains active for the current session. CI artifacts ship with a default `MICHISHIRUBE.CFG` beside the ELF.
 
 ## Main features
 
@@ -79,6 +104,7 @@ Full ownership and trust boundaries are documented in [`docs/ARCHITECTURE.md`](d
 - Tracks one/two-bit link changes explicitly; stale checksum plus independent graph evidence can corroborate an exact two-bit repair.
 - Includes `tools/hardware_fault_injector.py`, a deliberately gated host test utility for controlled master/link corruption on sacrificial or fully backed-up HDDs.
 - Records per-phase pre-dashboard startup timing in `HDDMAN.LOG`.
+- Renders live operation/action/location/I/O/LBA/progress state throughout startup, diagnostics, backup, install/restore/disable, deterministic recovery and forensic recovery.
 
 ## What it deliberately does not do
 
@@ -108,15 +134,17 @@ X           enter / execute
 TRIANGLE    back
 ```
 
-Unavailable operations remain visible with an explanation instead of disappearing. Confirmation chords are still used for destructive operations, but feature discovery and navigation no longer consume `R1`, `L2`, `START`, `SELECT`, etc. as global one-action shortcuts.
+Unavailable operations remain visible because their reason is useful information. They now use a dedicated **LOCKED** visual state: muted full-row background, warning border/accent, dim text, explicit `LOCKED` marker, and the existing explanatory hint. They remain non-executable.
+
+Confirmation chords are still used for destructive operations, but feature discovery and navigation no longer consume `R1`, `L2`, `START`, `SELECT`, etc. as global one-action shortcuts.
 
 ### Bootstrap
 
-Contains backup/disable, restore, and sign/install operations. Actions that conflict with the current pointer state are shown disabled with a reason.
+Contains backup/disable, restore, and sign/install operations. Actions that conflict with the current pointer state are shown locked with a reason.
 
 ### Diagnostics
 
-Runs boot-chain inspection and saves reports through the selected external storage target. In Michishirube development builds this heavy PFS/MC evidence pass is deliberately lazy rather than part of ordinary startup.
+Runs boot-chain inspection and saves reports through the selected external storage target. The live status view walks through ROM identity, active payload evidence, FMCB `Skip_HDD`, memory-card boot files, `__sysconf`, `__system`, classification and report persistence. This heavy PFS/MC evidence pass is deliberately lazy rather than part of ordinary startup.
 
 ### Recovery
 
@@ -131,7 +159,26 @@ Creates full rescue data and selects `mc0:`, `mc1:`, or `mass:`.
 
 ### System
 
-Controlled restart/power actions and application information.
+Controller/activity information, live UI-theme selection, and controlled restart/power actions.
+
+## Live operation monitor
+
+The status view is shared infrastructure, not a forensic-only widget. It can display:
+
+```text
+OPERATION   high-level workflow
+ACTION      current phase
+LOCATION    semantic region/device being inspected or modified
+I/O         READ / WRITE / VERIFY / FLUSH / POINTER UPDATE / SCAN
+PROGRESS    operation step or disk-relative position
+SECTOR      exact physical LBA/range when a raw HDD command exists
+```
+
+Low-level HDD transport publishes exact LBA/ranges. Higher layers publish the reason for that access. As a result a raw read can be shown as e.g. **Boot-chain diagnostics -> active bootstrap payload -> reserved __mbr -> READ -> LBA ...** instead of the old context-free `Raw HDD activity / READ`.
+
+Current instrumentation covers startup admission, diagnostics, header/rescue backup preparation, disable, legacy/full restore, MBR source validation, MagicGate signing, install, payload read/write/read-back, pointer update/read-back, deterministic health assessment, HDDRAW snapshot creation, exceptional master repair, HDDMETA snapshot creation, and multi-header forensic repair.
+
+Non-HDD phases such as memory-card signing or writing evidence to external storage say so explicitly and do not invent a physical HDD sector. Presentation is deliberately unthrottled; if rapid event updates expose field tearing, synchronization should be fixed rather than hiding I/O events.
 
 ## Controller ANALOG lamp as activity indication
 
@@ -260,100 +307,105 @@ If both names are present, `MBR.XIN` is selected. If the preferred file exists b
 For the classic stale-pointer boot loop, first make the console capable of reaching homebrew with the HDD connected. In Free McBoot Configurator enable:
 
 ```text
-Configure OSDSYS Options -> Skip HDD Update Check = ON
+Configure OSDSYS Options
+  -> Skip HDD Update Check = ON
 ```
 
-Some FMCB layouts also load HDD modules from their regional system directory. If necessary, back up and temporarily remove the relevant `hddload.irx`, `dev9.irx`, and `atad.irx` from the active `BIEXEC-SYSTEM`, `BAEXEC-SYSTEM`, `BEEXEC-SYSTEM`, or `BCEXEC-SYSTEM` folder.
+If the machine still takes the HDD path, inspect the expected system folder on the memory card and remove stale HDD launcher modules such as:
 
-Once the manager starts, use the **Bootstrap** section for the ordinary stale-pointer workflow. If the master itself is damaged but raw-readable, startup may offer guarded single-master recovery before normal admission. Heavier corruption belongs in **Recovery -> APA forensic / degraded read-only**.
+```text
+hddload.irx
+dev9.irx
+atad.irx
+```
 
-## Technical details
+Run the manager, create a verified backup, then disable the active pointer. Do not delete or reformat partitions merely to stop the ROM bootstrap.
 
-The ELF embeds the required PS2SDK IOP dependencies for fileXio, memory cards, MagicGate, USB mass storage, power, DEV9/ATA, APA HDD, and read-only PFS diagnostics.
+## Host regression gates
 
-Important device operations include:
+`make test-host` executes the portable format, KELF, report, transaction, rescue, APA-repair and forensic suites, plus two file-backed HDD laboratories.
 
-- `HDIOC_READSECTOR` (`0x6836`) — raw APA/payload/forensic reads;
-- `HDIOC_WRITESECTOR` (`0x6837`) — normal reserved bootstrap payload writes and separately gated recovery metadata writes;
-- `HDIOC_SETOSDMBR` (`0x6833`) — normal OSD pointer changes;
-- `HDIOC_FLUSH` (`0x4804`) — durability boundary before read-back verification;
-- `SecrDownloadFile()` — console-side KELF signing;
-- read-only `pfs0:` mounts — downstream diagnostics;
-- `padSetMainMode()` — best-effort ANALOG lamp/activity state through controller mode switching;
-- `ExecOSD("BootBrowser")` — controlled restart.
+The first laboratory contains **30 sparse 16 MiB images** covering healthy masters, malformed/corrupted APA identity fields, one-bit physical-style damage, pointer inconsistencies, GPT/protective signatures, interrupted payload/pointer sequences, damaged active payloads, and the current deterministic repair matrix:
 
-The normal bootstrap writer retains the conservative two-sector raw transfer size. Forensic metadata repair writes one APA header at a time and verifies every write.
+- 4 no-repair;
+- 6 guarded header-repair;
+- 8 pointer-clear;
+- 12 blocked.
 
-## Testing
+The second laboratory contains **9 sparse 512 MiB forensic HDD images** whose headers live at realistic APA LBAs. It exercises healthy forward/reverse reconstruction, stale-checksum link repair, an exact two-bit link flip, checksum-valid wrong links, off-grid subpartitions, a missing master, overlap, two damaged headers, and conflict cases. Map deduplication is part of production behavior, so safety tests assert conflict/overlap invariants on whichever equivalent candidate survives rather than depending on a particular map label.
 
-Portable tests do not require PS2SDK:
+The host suite also mutation-tests the normal payload-first/pointer-last model and verifies that the pointer remains disabled whenever the payload write/verification stage is interrupted.
+
+## Guarded physical-HDD fault injection
+
+`tools/hardware_fault_injector.py` is the host-side validation helper for a **sacrificial or fully backed-up test disk**. It is intentionally not a general raw-sector editor.
+
+Supported scenarios currently include:
+
+```text
+master-magic-1bit
+next-1bit
+next-2bit
+```
+
+Physical-drive mutation requires a fresh master SHA-256 from `probe`, explicit `--apply`, and `--confirm-physical-write`. The tool saves the exact original 1024-byte header plus a manifest before mutation, flushes and reads back the write, and will not restore from the manifest unless the current bytes match the expected mutated state or are already the saved original. Run one scenario at a time and return to a verified baseline before the next.
+
+The full procedure is documented in [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md).
+
+## Current hardware-validation state
+
+A healthy physical-PS2 pass has already established a useful baseline: normal APA admission succeeded; hierarchical menu navigation and state-dependent feature blocking behaved as intended; boot-chain diagnostics reported a disabled pointer with `$HOSDSYS`; standalone header/full-rescue backup succeeded; and the captured `HDDMBR.BIN` matched the master embedded in `HDDRESCUE.BIN` byte-for-byte.
+
+The same pass exposed the first significant UX regression: startup took roughly 1–2 minutes because the manager automatically ran the full memory-card/PFS boot-chain scan before displaying the dashboard. Michishirube now defers that heavy scan until Diagnostics and logs per-phase startup timings (`iop`, `modules`, `services`, `pad`, `hdd_status`, `header`, `total`) so remaining hardware latency can be measured rather than guessed.
+
+GS UI hardware work has also progressed through the mixed-renderer displacement, standalone-black-screen, and full-screen-but-font-scaled stages described above. The next display pass is specifically for the native 640x224 font raster, LOCKED state, theme/config behavior and operation-wide live status.
+
+A separate sacrificial HDD is intended for destructive fault-injection validation so ordinary healthy-console testing does not share the same physical disk.
+
+## 0.4 hardware gate
+
+`0.4.x` remains a development line until physical testing establishes at least:
+
+- native 640x224 GS font/UI readability on real displays;
+- clear disabled/LOCKED state and theme/config behavior;
+- live status coverage for startup/diagnostics/bootstrap/recovery paths;
+- forensic scan consistency with healthy real-disk topology;
+- verified master-header repair on expendable media;
+- at least one full multi-header repair with byte-for-byte before/after evidence;
+- snapshot/report behavior on the intended storage targets;
+- restart behavior after exceptional raw repair;
+- regression fixtures for every reproducible hardware discrepancy;
+- targeted power-loss testing before any forensic write path is considered release-ready.
+
+## Project documents
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module ownership, write invariants, forensic trust model and future recovery boundaries.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release train, Michishirube hardware gate and post-0.4 scope guardrails.
+- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — both raw-HDD regression laboratories and expected classifications.
+- [`docs/FORENSIC_RECOVERY.md`](docs/FORENSIC_RECOVERY.md) — degraded read-only workflow, candidate maps, `HDDMETA`, authorization and rollback expectations.
+- [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md) — hardware-first validation procedure for the healthy physical HDD and later repair tests.
+- [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded host-side corruption/restore procedure for sacrificial physical HDDs.
+- [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — full-screen GS frontend design and display-validation checklist.
+
+## Build
+
+A normal PS2DEV/PS2SDK environment can build the ELF with:
+
+```sh
+make
+```
+
+Host-only regression tests do not require PS2SDK:
 
 ```sh
 make test-host
-python3 tools/hardware_fault_injector.py selftest
 ```
 
-The host suite includes:
+GitHub Actions builds the stripped PS2 ELF with `ps2dev/ps2dev:v2.0.0`, records SHA-256, and uploads the ELF, checksum, and default `MICHISHIRUBE.CFG` artifact.
 
-- APA/capsule/SHA-256 format tests;
-- conservative master repair policy;
-- portable forensic graph reconstruction;
-- healthy, broken-link, heuristic-only, off-grid subpartition, missing-master write-gate, and exact two-bit link-corruption cases;
-- boot-chain/payload/report/KELF suites;
-- bootstrap transaction ordering/failure injection;
-- rescue validation;
-- **30 deterministic sparse HDD fixtures** for parser/bounds/KELF and mounted repair policy;
-- **9 sparse 512 MiB raw-HDD forensic E2E fixtures** using production `apa_forensic_scan()` at realistic APA grid LBAs;
-- byte-level mutation tests for normal payload and pointer ordering;
-- guarded hardware fault-injector self-test for one-bit master, one-bit link, exact two-bit link, verified write, and exact restoration.
+## Credits
 
-For the PS2 ELF, use PS2DEV/PS2SDK or the pinned CI container:
-
-```sh
-docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
-  sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
-```
-
-Generated binaries and synthetic HDD images are not tracked in the source tree.
-
-## Hardware validation
-
-The original pointer-disable workflow eliminated a real post-uninstall FHDB boot loop on PlayStation 2 hardware and Torii preserves that normal write behavior.
-
-Michishirube now also has an initial healthy-disk hardware pass with mutually consistent `HDDMBR.BIN`, `HDDRESCUE.BIN`, `BOOTCHAIN.TXT`, and `HDDMAN.LOG` evidence. See [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md).
-
-Controlled destructive validation must use [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md). The fault injector defaults to dry-run and requires a fresh master SHA plus extra confirmation before a physical-drive write.
-
-The following Michishirube additions remain **not yet fully hardware-proven**:
-
-- exceptional raw sectors 0-1 master repair after deliberately injected corruption;
-- raw forensic scanning across the test HDD compared with a known host-side topology;
-- multi-header topology repair and master-last commit behavior;
-- `HDDMETA` snapshot/write/read-back behavior during destructive recovery;
-- ANALOG-lamp activity switching across original and third-party controllers;
-- the fast-start/timing change that defers full PFS/MC boot-chain diagnostics;
-- application-wide GS frontend full-screen placement, PAL/NTSC geometry, font scaling, long-screen clipping, and live-HDD rendering after removal of the mixed libdebug/GS path;
-- controlled interruption/power-loss boundaries.
-
-Host tests cannot prove DEV9/ATA timing, DMA/fileXio behavior, cache durability, APA journaling, adapter quirks, exact physical display timing, or power-loss effects. Physical-HDD validation remains the final gate before these paths can be treated as release-ready.
-
-## Project documentation
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module ownership, trust ladder, normal and recovery write invariants.
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames, scope boundaries, and engineering milestones.
-- [`docs/FORENSIC_RECOVERY.md`](docs/FORENSIC_RECOVERY.md) — forensic evidence model, shadow maps, `HDDMETA`, confidence and write authorization.
-- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — 30 mounted/deterministic raw images plus 9 full 512 MiB forensic regressions.
-- [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md) — current real-console evidence and hardware gaps.
-- [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded controlled-corruption procedure for sacrificial/backed-up HDDs.
-- [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — application-wide Graphics Synthesizer frontend and physical display validation gate.
-- [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — full rescue capsule format and restore rules.
-- [`docs/KELF_FORMAT.md`](docs/KELF_FORMAT.md) — KELF validation/signing assumptions.
-- [`docs/BOOT_REPORT.md`](docs/BOOT_REPORT.md) — boot-chain evidence and report semantics.
-
-## Current development warning
-
-`0.4.0-dev` is a hardware-validation build, not a stable release. The normal Torii-compatible write paths retain their existing contract, but Michishirube's exceptional raw recovery paths remain experimental until the destructive validation matrix is complete.
-
-Exact current branch/CI identity is intentionally kept in PR metadata rather than embedded here, because putting a branch SHA inside a file changes that SHA again.
-
-Kitsune ahead. Bring backups.
+- **Hifu Himejima** — project author / hardware validation
+- **OpenAI Codex / ChatGPT** — implementation assistance
+- **PS2DEV / PS2SDK contributors** — underlying EE/IOP toolchain and libraries
+- reverse-engineering references and historical PS2 HDD tooling are credited in the source and project history where applicable.
