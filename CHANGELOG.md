@@ -20,7 +20,9 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - Extracted read-only `HDIOC_READSECTOR` transport, live `hdd0:__mbr` payload bounds checks, and sector-aligned active-payload reads into PS2-only `hdd_read.c` / `hdd_read.h`.
 - Extracted payload hashing and KELF-size/structure conversion into portable `boot_payload.c` / `boot_payload.h`, with `boot_payload_ps2.c` / `boot_payload_ps2.h` providing the narrow PS2 acquisition adapter.
 - `analyze_boot_chain()` now delegates active-payload evidence acquisition instead of owning raw sector loops and fingerprinting directly.
-- Kept report persistence and the short diagnostics UI in `main.c`; existing save/log behavior remains outside the portable layer.
+- Extracted `BOOTCHAIN.TXT` path/retry/write persistence into PS2-only `boot_report_ps2.c` / `boot_report_ps2.h`; the portable renderer remains completely storage-free.
+- Extracted bounded ordered session buffering plus `HDDMAN.LOG` append/rotation/retry behavior into `session_log.c` / `session_log.h`.
+- Kept only report/log orchestration, the last report-save result used by the diagnostics UI, and the short diagnostics screen in `main.c`.
 
 ### Tests
 
@@ -40,7 +42,7 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
 - `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write/verification buffers, flush/read-back verification, rescue restore, MagicGate signing, and payload-first/pointer-last ordering remain in `main.c` with their Torii semantics unchanged.
 - The new PS2 boot-chain scanner is read-only: it reads memory-card files and mounts PFS partitions with `FIO_MT_RDONLY` but owns no disk-changing operation.
 - KELF modularization changes only structural parsing. MagicGate signing remains PS2-specific and no encryption, signing, payload write, or activation behavior is moved into the portable module.
-- The report renderer cannot access storage. Active payload acquisition is now delegated to the read-only `boot_payload_ps2`/`hdd_read` boundary, while `main.c` still owns `BOOTCHAIN.TXT` persistence, `HDDMAN.LOG` updates, diagnostics-screen presentation, and every disk-changing transaction.
+- The report renderer cannot access storage. `boot_report_ps2` and `session_log` own only diagnostic-file persistence; active payload acquisition remains behind the read-only `boot_payload_ps2`/`hdd_read` boundary, while `main.c` still owns diagnostics orchestration/UI and every disk-changing transaction.
 
 ## [0.3.1] - 2026-08-21
 

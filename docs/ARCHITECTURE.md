@@ -6,7 +6,7 @@ PS2 HDD Bootstrap Manager is intentionally conservative: it is allowed to be slo
 
 The `0.4.0-dev` **Michishirube** line is progressively converting the former monolithic EE application into explicit modules. The split is intentionally mechanical first: code moves behind headers without simultaneously changing storage semantics.
 
-- `src/main.c` — application state machine, report persistence/orchestration, rescue/install workflows, logging policy, write-capable APA transport, and guarded pointer/write ordering that has not yet been extracted.
+- `src/main.c` — application state machine, diagnostics orchestration/UI, rescue/install workflows, write-capable APA transport, and guarded pointer/write ordering that has not yet been extracted.
 - `src/platform.c` — IOP reset, embedded IRX startup, pad initialization, button-edge input, and confirmation-chord input.
 - `src/storage.c` — storage target definitions, launch-device selection, ROMVER access, and generic fileXio helpers. The first split temporarily exposes the selected target state so call sites remain behaviorally identical; later Michishirube work will encapsulate it after regression coverage exists.
 - `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
@@ -16,6 +16,8 @@ The `0.4.0-dev` **Michishirube** line is progressively converting the former mon
 - `src/boot_chain.c` — PS2SDK-free boot-chain evidence model, CNF parsing, ROMVER mapping, target parsing, and family-classification policy.
 - `src/boot_chain_ps2.c` — PS2-only but read-only evidence collection from memory cards and PFS partitions. It owns no raw HDD write or pointer update.
 - `src/boot_report.c` — PS2SDK-free, bounded rendering of a completed evidence snapshot into the human-readable `BOOTCHAIN.TXT` image. It performs no device access or persistence.
+- `src/boot_report_ps2.c` — PS2-only `BOOTCHAIN.TXT` persistence, including storage-path construction and the existing USB mount grace period; it performs no rendering or classification.
+- `src/session_log.c` — bounded ordered session logging plus `HDDMAN.LOG` append/rotation/USB-retry persistence. It owns no boot-chain classification or HDD write transaction.
 - `src/kelf.c` — portable structural KELF parser and recovery of the real file length from a sector-padded HDD image. It reads the PS2SDK-defined wire fields explicitly as little-endian bytes rather than relying on a target-native struct cast.
 - `src/mbr_compat.c` — narrow `MBR.XIN` / `MBR.XLF` filename compatibility interposition.
 - `src/sha256.c` — portable SHA-256 used for rescue integrity and payload fingerprints.
@@ -72,7 +74,8 @@ Boot-chain diagnostics now have explicit acquisition, policy, rendering, and per
 1. `boot_chain.c` and `boot_chain_ps2.c` define the evidence model, portable classification policy, and filesystem/configuration evidence that does not require raw HDD writes.
 2. `boot_payload_ps2.c` acquires the active sector image through read-only `hdd_read.c`; portable `boot_payload.c` performs hashing and KELF-size/structure conversion.
 3. `main.c` combines those evidence sources and calls `classify_boot_chain()`; it no longer owns the raw active-payload read loop or payload fingerprinting implementation.
-4. `boot_report.c` receives the completed `boot_chain_info_t` plus explicit `osdStart`/`osdSize` values and renders the bounded text image. `main.c` remains responsible for saving that image as `BOOTCHAIN.TXT`, appending the save result to `HDDMAN.LOG`, and presenting the short UI summary.
+4. `boot_report.c` receives the completed `boot_chain_info_t` plus explicit `osdStart`/`osdSize` values and renders the bounded text image.
+5. `boot_report_ps2.c` persists that already-rendered image as `BOOTCHAIN.TXT`; `session_log.c` owns ordered `HDDMAN.LOG` buffering, append/rotation, and storage retry policy. `main.c` retains only orchestration, the last report-save result used by the UI, and the short diagnostics screen.
 
 The renderer has no fileXio, PFS, memory-card, or raw-HDD dependency. Its complete section order, assessment precedence, SHA-256 text, and truncation behavior can therefore be checked on a host. A full disabled-state golden fixture protects the human-readable contract users paste into bug reports, while targeted fixtures cover active evidence, warning/critical branches, the external-HDD-module note, and NUL termination under a deliberately tiny output capacity.
 

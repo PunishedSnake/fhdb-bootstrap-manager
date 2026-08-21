@@ -8,7 +8,8 @@ The report pipeline has three distinct responsibilities:
 
 1. **Evidence acquisition** — `boot_chain_ps2.c` reads FMCB configuration, memory-card modules, `__sysconf`, `__system`, and related filesystem evidence. `boot_payload_ps2.c` acquires the active raw payload through read-only `hdd_read.c`, while portable `boot_payload.c` computes the sector-image/KELF fingerprints and KELF result fields. `main.c` only orchestrates these completed evidence sources.
 2. **Rendering** — `boot_report.c` receives a completed `boot_chain_info_t`, explicit `osdStart`/`osdSize`, and application identity strings. It performs no device access and returns one bounded NUL-terminated text image.
-3. **Persistence/presentation** — `main.c` writes the rendered bytes to `BOOTCHAIN.TXT`, records the result in `HDDMAN.LOG`, and shows the short console summary.
+3. **Persistence** — `boot_report_ps2.c` writes the rendered bytes to `BOOTCHAIN.TXT` with the existing storage-path and USB retry semantics. `session_log.c` records scan/save results in the bounded `HDDMAN.LOG` session and owns append/rotation.
+4. **Presentation/orchestration** — `main.c` retains the latest save result for the short console summary and coordinates when the report and log are persisted.
 
 This separation is intentional. A formatter must never gain the ability to mount PFS, inspect a memory card, change an APA pointer, or decide whether a write is safe.
 
@@ -74,7 +75,7 @@ The golden fixture intentionally checks the complete report, not only selected s
 - read or write `hdd0:` sectors;
 - mount or unmount PFS;
 - read memory cards or USB storage;
-- save `BOOTCHAIN.TXT` or append `HDDMAN.LOG`;
+- save `BOOTCHAIN.TXT` or append `HDDMAN.LOG` (those operations belong to the PS2-only persistence modules);
 - classify a boot chain independently of `boot_chain.c`;
 - validate/decrypt/sign KELFs;
 - decide whether a rescue/install operation is permitted.

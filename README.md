@@ -27,7 +27,7 @@ Torii keeps the full-payload rescue and boot-chain inspection work stable while 
 
 ## Development branch
 
-The active `dev/0.4.0-michishirube` branch is refactoring internals behind regression-gated module boundaries without changing Torii's write transaction. Read-only raw HDD acquisition now lives in `hdd_read.c`; payload/KELF fingerprinting is split between portable `boot_payload.c` and PS2-specific `boot_payload_ps2.c`. `main.c` still owns report persistence, rescue/install policy, MagicGate signing, and every write-capable APA operation. This work remains development-only until the branch completes its hardware-validation gate.
+The active `dev/0.4.0-michishirube` branch is refactoring internals behind regression-gated module boundaries without changing Torii's write transaction. Read-only raw HDD acquisition now lives in `hdd_read.c`; payload/KELF fingerprinting is split between portable `boot_payload.c` and PS2-specific `boot_payload_ps2.c`. `boot_report_ps2.c` owns `BOOTCHAIN.TXT` persistence and `session_log.c` owns bounded `HDDMAN.LOG` buffering, rotation, and flush policy. `main.c` still owns diagnostics orchestration/UI, rescue/install policy, MagicGate signing, and every write-capable APA operation. This work remains development-only until the branch completes its hardware-validation gate.
 
 ## Features
 
