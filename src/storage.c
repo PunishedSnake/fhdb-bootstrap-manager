@@ -415,18 +415,9 @@ int ui_theme_config_path(char *destination, unsigned int capacity)
                                     UI_THEME_CONFIG_FILENAME);
 }
 
-int ui_theme_load_config(void)
+static int parse_theme_config(char *buffer)
 {
-    char path[STORAGE_LAUNCH_PATH_SIZE];
-    char buffer[UI_THEME_CONFIG_BYTES];
     char *line;
-    int result;
-
-    if (ui_theme_config_path(path, sizeof(path)) < 0)
-        return -1;
-    result = read_text_file(path, buffer, sizeof(buffer));
-    if (result < 0)
-        return result;
 
     line = strtok(buffer, "\r\n");
     while (line != NULL) {
@@ -462,6 +453,36 @@ int ui_theme_load_config(void)
         line = strtok(NULL, "\r\n");
     }
     return -2;
+}
+
+int ui_theme_load_config(void)
+{
+    char path[STORAGE_LAUNCH_PATH_SIZE];
+    char legacy_path[STORAGE_LAUNCH_PATH_SIZE];
+    char buffer[UI_THEME_CONFIG_BYTES];
+    int result;
+
+    if (ui_theme_config_path(path, sizeof(path)) < 0)
+        return -1;
+
+    result = read_text_file(path, buffer, sizeof(buffer));
+    if (result >= 0)
+        return parse_theme_config(buffer);
+
+    /* A present HDDMAN.CFG is authoritative. Do not hide a malformed or
+       unreadable current config behind an older development filename. */
+    if (path_exists(path))
+        return result;
+
+    if (storage_launch_file_path(legacy_path, sizeof(legacy_path),
+                                 UI_THEME_LEGACY_CONFIG_FILENAME) < 0)
+        return result;
+    if (read_text_file(legacy_path, buffer, sizeof(buffer)) < 0)
+        return result;
+
+    /* Migration is deliberately read-only: do not rewrite/delete the old file
+       during startup. The next explicit save always creates HDDMAN.CFG. */
+    return parse_theme_config(buffer);
 }
 
 int ui_theme_save_config(void)
