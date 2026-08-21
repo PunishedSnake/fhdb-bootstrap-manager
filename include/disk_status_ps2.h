@@ -13,12 +13,15 @@ typedef enum {
 /*
  * Live PS2-side HDD activity publisher. Low-level transports provide real
  * LBA/range information while nested operations provide human-readable phase
- * context. Presentation is GS/GIF-DMA backed and intentionally unthrottled:
- * every published event may become a hardware-rendered HUD frame without the
- * old per-character framebuffer uploads performed by scr_printf().
+ * and semantic-location context. Presentation is GS/GIF-DMA backed and
+ * intentionally unthrottled: every published event may become a frame.
  */
 void disk_status_begin(const char *operation, const char *phase);
+void disk_status_begin_at(const char *operation, const char *phase,
+                          const char *location);
 void disk_status_phase(const char *phase);
+void disk_status_location(const char *location);
+void disk_status_phase_at(const char *phase, const char *location);
 void disk_status_io(disk_status_kind_t kind, unsigned int lba,
                     unsigned int sectors, unsigned int current,
                     unsigned int total);
