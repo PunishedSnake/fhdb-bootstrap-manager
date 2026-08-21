@@ -21,7 +21,8 @@ enum {
 enum {
     APA_REPAIR_BLOCKER_HYBRID_GPT = 1u << 0,
     APA_REPAIR_BLOCKER_LOW_IDENTITY = 1u << 1,
-    APA_REPAIR_BLOCKER_NOT_MASTER = 1u << 2
+    APA_REPAIR_BLOCKER_NOT_MASTER = 1u << 2,
+    APA_REPAIR_BLOCKER_UNEXPLAINED_CHECKSUM = 1u << 3
 };
 
 typedef struct {
@@ -37,7 +38,9 @@ typedef struct {
 /*
  * Inspect only fields whose canonical values are defined by the APA master
  * format. The planner never guesses partition-chain pointers, length,
- * passwords, timestamps, sub-partitions, or filesystem contents.
+ * passwords, timestamps, sub-partitions, or filesystem contents. A checksum
+ * mismatch alone is diagnostic: without another known bad field (or an
+ * external trusted backup) it cannot identify which protected word changed.
  */
 int apa_repair_analyze(const unsigned char header[APA_HEADER_SIZE],
                        apa_repair_plan_t *plan);
