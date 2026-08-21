@@ -26,6 +26,7 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 - [ ] `apa` transport/write half — raw sector transfer boundary, payload bounds, driver-mediated `osdStart`/`osdSize` updates, flush/read-back verification, and DMA buffers. This remains in `main.c` until the read-only core has a wider regression baseline.
 - [x] `boot_chain` portable core — shared evidence model, CNF parsing, `Skip_HDD`, ROMVER region mapping, OSDMenu/FHDB target parsing, and deterministic family classification.
 - [x] `boot_chain` PS2 read-only scanner — memory-card HDD modules, FMCB settings, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection.
+- [x] `kelf` portable core — endian-safe KELF structural validation and recovery of the unpadded file size from a sector-aligned HDD image, with named stable result codes.
 - [ ] `boot_chain` orchestration/report split — active payload fingerprinting currently crosses the raw-HDD transport boundary, while report rendering/logging still belongs to `main.c`.
 - [ ] `rescue` — capsule creation/lookup/validation plus restore orchestration while preserving payload-first/pointer-last semantics.
 - [ ] `ui` — menus, fatal/info screens, logging presentation, and confirmation text after core policy has explicit interfaces.
@@ -44,12 +45,15 @@ Portable CI now exercises:
 - ROMVER region-to-system-folder mapping;
 - boot-chain classification for invalid/disabled/unreadable/invalid-KELF states;
 - explicit OSDMenu targets overriding deliberately conflicting stale filesystem evidence;
-- FHDB, HOSDMenu, PSBBN, HDD-OSD, and unknown-KELF fallback classifications.
+- FHDB, HOSDMenu, PSBBN, HDD-OSD, and unknown-KELF fallback classifications;
+- valid low/high KELF header layouts, the optional length-prefixed section, and the 63-entry BIT-table boundary;
+- plain ELF, truncated/impossible header, BIT overflow, missing variable/key area, and malformed sector-image rejection;
+- recovery of the exact unpadded KELF size from a sector-aligned payload image.
 
 ### Remaining engineering work
 
-- replace project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly;
-- move KELF structural parsing into a portable module and add malformed/truncated KELF fixtures;
+- continue replacing project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly; KELF format results are now named without changing their historical numeric values;
+- split boot-chain report rendering/orchestration from raw payload acquisition so diagnostics no longer depend on the main application state machine;
 - add build-size/performance reporting so optimization work is measurable rather than flag-driven;
 - establish a hardware validation matrix across FAT console revisions, storage adapters/HDDs, memory-card layouts, and launch devices;
 - make classification evidence more data-driven so supporting another known environment does not require threading another special case through the UI.
