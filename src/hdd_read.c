@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app_error.h"
+#include "disk_status_ps2.h"
 #include "hdd_bounds.h"
 #include "hdd_limits.h"
 #include "hdd_read.h"
@@ -33,13 +35,18 @@ int hdd_read_raw_sectors(unsigned int lba, unsigned int sectors,
                          unsigned char *destination)
 {
     hdd_raw_transfer_t transfer;
+    int result;
 
     transfer.lba = lba;
     transfer.size = sectors;
+    disk_status_io(DISK_STATUS_READ, lba, sectors, 0, 0);
     memset(destination, 0, sectors * HDD_SECTOR_SIZE);
-    return fileXioDevctl("hdd0:", HDIOC_READSECTOR_LOCAL,
-                         &transfer, sizeof(transfer), destination,
-                         sectors * HDD_SECTOR_SIZE);
+    result = fileXioDevctl("hdd0:", HDIOC_READSECTOR_LOCAL,
+                           &transfer, sizeof(transfer), destination,
+                           sectors * HDD_SECTOR_SIZE);
+    if (result < 0)
+        app_error_record(APP_ERROR_DOMAIN_IOP, result, "HDIOC_READSECTOR");
+    return result;
 }
 
 int hdd_validate_payload_bounds(unsigned int start, unsigned int sectors)
@@ -49,17 +56,27 @@ int hdd_validate_payload_bounds(unsigned int start, unsigned int sectors)
 
     /* Preserve Torii's error precedence before asking the IOP for geometry. */
     result = hdd_validate_payload_shape(start, sectors);
-    if (result < 0)
+    if (result < 0) {
+        app_error_record(APP_ERROR_DOMAIN_HDD_BOUNDS, result,
+                         "bootstrap pointer shape");
         return result;
+    }
 
     memset(&mbr_status, 0, sizeof(mbr_status));
     result = fileXioGetStat("hdd0:__mbr", &mbr_status);
-    if (result < 0)
+    if (result < 0) {
+        app_error_record(APP_ERROR_DOMAIN_IOP, result,
+                         "fileXioGetStat hdd0:__mbr");
         return result;
+    }
 
-    return hdd_validate_payload_bounds_geometry(
+    result = hdd_validate_payload_bounds_geometry(
         start, sectors, (unsigned int)mbr_status.private_5,
         (unsigned int)mbr_status.size);
+    if (result < 0)
+        app_error_record(APP_ERROR_DOMAIN_HDD_BOUNDS, result,
+                         "live __mbr geometry");
+    return result;
 }
 
 int hdd_read_payload_image(unsigned int start, unsigned int sectors,
@@ -80,15 +97,20 @@ int hdd_read_payload_image(unsigned int start, unsigned int sectors,
     if (payload == NULL)
         return HDD_PAYLOAD_ERR_ALLOC;
 
+    disk_status_begin("Bootstrap payload read",
+                      "Reading active bootstrap payload");
     while (sector_offset < sectors) {
         unsigned int chunk_sectors = sectors - sector_offset;
         int result;
 
         if (chunk_sectors > HDD_TRANSFER_SECTORS)
             chunk_sectors = HDD_TRANSFER_SECTORS;
+        disk_status_io(DISK_STATUS_READ, start + sector_offset,
+                       chunk_sectors, sector_offset, sectors);
         result = hdd_read_raw_sectors(start + sector_offset, chunk_sectors,
                                       read_transfer_buffer);
         if (result < 0) {
+            disk_status_end();
             free(payload);
             return result;
         }
@@ -97,6 +119,7 @@ int hdd_read_payload_image(unsigned int start, unsigned int sectors,
         sector_offset += chunk_sectors;
         offset += chunk_sectors * HDD_SECTOR_SIZE;
     }
+    disk_status_end();
 
     *payload_out = payload;
     *bytes_out = bytes;
