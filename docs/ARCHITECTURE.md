@@ -6,15 +6,17 @@ PS2 HDD Bootstrap Manager is intentionally conservative: it is allowed to be slo
 
 The `0.4.0-dev` **Michishirube** line is progressively converting the former monolithic EE application into explicit modules. The split is intentionally mechanical first: code moves behind headers without simultaneously changing storage semantics.
 
-- `src/main.c` — application state machine, KELF policy, boot-chain inspection, rescue/install workflows, logging policy, raw HDD transport, and guarded pointer/write ordering that has not yet been extracted.
+- `src/main.c` — application state machine, KELF/payload analysis, rescue/install workflows, report rendering, logging policy, raw HDD transport, and guarded pointer/write ordering that has not yet been extracted.
 - `src/platform.c` — IOP reset, embedded IRX startup, pad initialization, button-edge input, and confirmation-chord input.
 - `src/storage.c` — storage target definitions, launch-device selection, ROMVER access, and generic fileXio helpers. The first split temporarily exposes the selected target state so call sites remain behaviorally identical; later Michishirube work will encapsulate it after regression coverage exists.
 - `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
+- `src/boot_chain.c` — PS2SDK-free boot-chain model and policy: CNF parsing, `Skip_HDD`, ROMVER folder mapping, FHDB/OSDMenu target parsing, and evidence classification.
+- `src/boot_chain_ps2.c` — PS2-only but read-only evidence collector for memory cards, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, HDD-OSD, and FMCB settings.
 - `src/mbr_compat.c` — narrow `MBR.XIN` / `MBR.XLF` filename compatibility interposition.
 - `src/sha256.c` — portable SHA-256 used for rescue integrity and payload fingerprints.
 - `src/capsule_format.c` — endian-stable rescue capsule serialization.
 - `include/` — module interfaces shared by the EE build and, where practical, host tests.
-- `tests/` — portable code that can run without PS2SDK, including synthetic APA header regression cases.
+- `tests/` — portable regression code that can run without PS2SDK, including synthetic APA and boot-chain fixtures.
 - `docs/` — format, architecture, and roadmap documentation.
 
 ### Modularization rule
@@ -28,6 +30,8 @@ Moving code between translation units is easy; proving that initialization, DMA-
 5. only then consider API cleanup, state encapsulation, or additional optimization.
 
 Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. The APA module is intentionally split in two: its pure header logic has moved and is host-tested, while raw sector transport and pointer updates remain in `main.c` until a later gated step.
+
+Boot-chain work follows the same pattern but uses two layers. `boot_chain.c` contains deterministic policy that can be fed synthetic evidence on a PC. `boot_chain_ps2.c` only gathers real-console evidence with read-only file and PFS operations. This prevents filesystem probing from becoming inseparable from classification policy again.
 
 ## Non-negotiable write invariants
 
@@ -55,6 +59,22 @@ The following operations still belong to the not-yet-extracted transport half in
 - post-write sector comparison and final header read-back.
 
 Keeping that boundary explicit prevents a testable parser extraction from accidentally becoming an unreviewed rewrite of the write path.
+
+## Boot-chain module boundary
+
+`boot_chain_info_t` is now the shared evidence model instead of a private type embedded in `main.c`. The portable core has no PS2SDK dependency and owns:
+
+- exact, case-insensitive CNF key parsing with bounded output;
+- current `OSDSYS_Skip_HDD` plus legacy `Skip_HDD` interpretation;
+- `boot_auto` and `LK_Auto_E1`/`E2`/`E3` target interpretation;
+- ROMVER region-to-FMCB-folder mapping;
+- classification priority and confidence labels.
+
+The PS2 scanner owns only observation: memory-card module presence, configuration reads, read-only PFS mounts, downstream executable checks, and PSBBN partition evidence. It does not write a file, raw sector, APA field, or rescue capsule.
+
+`analyze_boot_chain()` intentionally remains in `main.c` for now. It still reads the active MBR payload through the raw-HDD transport layer, validates/fingerprints its KELF, then combines those results with the read-only scanner. Moving it before the APA transport boundary is explicit would create a misleading dependency direction. Report rendering also remains separate from the evidence model until its output contract is tested.
+
+The portable boot-chain suite includes deliberately contradictory fixtures. In particular, explicit OSDMenu `$PSBBN` / `$HOSDSYS` / custom targets must outrank stale partitions or executables, preserving the Torii safety fix against confident misclassification of leftover environments.
 
 ## EE / IOP boundary
 
