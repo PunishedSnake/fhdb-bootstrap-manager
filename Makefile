@@ -21,8 +21,9 @@ HOST_KELF_TEST = tests/test_kelf
 HOST_BOOTSTRAP_TRANSACTION_TEST = tests/test_bootstrap_transaction
 HOST_RESCUE_IMAGE_TEST = tests/test_rescue_image
 HOST_HDD_FIXTURE_TEST = tests/test_hdd_fixtures
+HOST_HDD_MUTATION_TEST = tests/test_hdd_mutations
 HOST_HDD_FIXTURE_DIR = tests/generated_hdds
-HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST)
+HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST)
 
 all: $(EE_BIN)
 
@@ -62,6 +63,10 @@ test-host:
 		tests/test_hdd_fixtures.c src/apa.c src/hdd_bounds.c src/kelf.c \
 		-o $(HOST_HDD_FIXTURE_TEST)
 	./$(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_FIXTURE_DIR)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_hdd_mutations.c src/apa.c src/kelf.c \
+		-o $(HOST_HDD_MUTATION_TEST)
+	./$(HOST_HDD_MUTATION_TEST) $(HOST_HDD_FIXTURE_DIR)
 
 clean:
 	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TESTS)
