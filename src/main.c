@@ -36,6 +36,7 @@
 #include <unistd.h>
 
 #include "apa.h"
+#include "boot_chain.h"
 #include "capsule_format.h"
 #include "platform.h"
 #include "sha256.h"
@@ -109,41 +110,7 @@ typedef struct {
 
 static raw_write_packet_t write_packet __attribute__((aligned(64)));
 
-/* Evidence collected without modifying either the HDD or memory cards. */
-typedef struct {
-    char romver[RESCUE_CAPSULE_ROMVER_SIZE];
-    char expected_system_folder[20];
-    char family[RESCUE_CAPSULE_FAMILY_SIZE];
-    char confidence[RESCUE_CAPSULE_CONFIDENCE_SIZE];
-    char next_stage[96];
-    int pointer_consistent;
-    int payload_read_result;
-    int payload_kelf_result;
-    unsigned int payload_bytes;
-    unsigned int kelf_file_bytes;
-    unsigned char payload_sha256[32];
-    unsigned char kelf_sha256[32];
-    int skip_hdd[3];
-    int mc_module_count[2];
-    unsigned int mc_folder_mask[2];
-    unsigned int mc_folder_module_mask[2][4];
-    int fhdb_config;
-    int fhdb_boot_elf;
-    char fhdb_config_path[64];
-    char fhdb_auto_path[96];
-    int osdmenu_mbr_config;
-    int osdmenu_auto_target;
-    char osdmenu_auto_path[96];
-    int psbbn_boot;
-    int psbbn_partition_count;
-    int hosdmenu_boot;
-    int hddosd_boot;
-    char hddosd_path[96];
-    int legacy_osdmain;
-    int sysconf_mount_result;
-    int system_mount_result;
-} boot_chain_info_t;
-
+/* Read-only evidence is modeled in boot_chain.h. */
 static boot_chain_info_t boot_chain;
 
 /* Forward declarations for logging paths used by early fatal screens. */
@@ -334,77 +301,21 @@ static void wait_to_return(void)
 /* ------------------------------------------------------------------------- */
 
 /* Case-insensitive ASCII comparison used by old FMCB-style CNF files. */
-static int ascii_equal_nocase(char a, char b)
-{
-    if (a >= 'A' && a <= 'Z')
-        a = (char)(a - 'A' + 'a');
-    if (b >= 'A' && b <= 'Z')
-        b = (char)(b - 'A' + 'a');
-    return a == b;
-}
+
 
 /* Find a simple key/value entry while ignoring comments and whitespace. */
-static int config_value(const char *text, const char *key,
-                        char *value, unsigned int value_capacity)
-{
-    const char *line = text;
-    size_t key_length = strlen(key);
 
-    while (*line != '\0') {
-        const char *cursor = line;
-        const char *end = strchr(line, '\n');
-        size_t i;
-
-        if (end == NULL)
-            end = line + strlen(line);
-        while (cursor < end && (*cursor == ' ' || *cursor == '\t' ||
-                                *cursor == '\r'))
-            cursor++;
-        if (cursor < end && *cursor != '#' &&
-            (size_t)(end - cursor) >= key_length) {
-            for (i = 0; i < key_length; i++) {
-                if (!ascii_equal_nocase(cursor[i], key[i]))
-                    break;
-            }
-            if (i == key_length) {
-                cursor += key_length;
-                while (cursor < end && (*cursor == ' ' || *cursor == '\t'))
-                    cursor++;
-                if (cursor < end && *cursor == '=') {
-                    unsigned int copied = 0;
-
-                    cursor++;
-                    while (cursor < end && (*cursor == ' ' || *cursor == '\t'))
-                        cursor++;
-                    while (cursor < end && copied + 1 < value_capacity &&
-                           *cursor != '#' && *cursor != '\r')
-                        value[copied++] = *cursor++;
-                    while (copied > 0 &&
-                           (value[copied - 1] == ' ' ||
-                            value[copied - 1] == '\t'))
-                        copied--;
-                    value[copied] = '\0';
-                    return 1;
-                }
-            }
-        }
-        line = *end == '\0' ? end : end + 1;
-    }
-    return 0;
-}
 
 /* Parse FMCB's numeric or textual Skip_HDD setting from one configuration. */
 static int read_skip_hdd_setting(const char *path)
 {
     char *text = malloc(TEXT_FILE_LIMIT);
-    char value[32];
     int attempts = (selected_storage == 2 &&
                     strncmp(path, "mass:", 5) == 0) ? 20 : 1;
     int result;
 
     if (text == NULL)
         return -2;
-    memset(value, 0, sizeof(value));
     do {
         result = read_text_file(path, text, TEXT_FILE_LIMIT);
         if (result >= 0)
@@ -415,23 +326,9 @@ static int read_skip_hdd_setting(const char *path)
         free(text);
         return -1;
     }
-    if (!config_value(text, "OSDSYS_Skip_HDD", value, sizeof(value)) &&
-        !config_value(text, "Skip_HDD", value, sizeof(value))) {
-        free(text);
-        return -2;
-    }
+    result = parse_skip_hdd_text(text);
     free(text);
-    if (value[0] == '1' || ascii_equal_nocase(value[0], 'y') ||
-        ascii_equal_nocase(value[0], 't') ||
-        (ascii_equal_nocase(value[0], 'o') &&
-         ascii_equal_nocase(value[1], 'n')))
-        return 1;
-    if (value[0] == '0' || ascii_equal_nocase(value[0], 'n') ||
-        ascii_equal_nocase(value[0], 'f') ||
-        (ascii_equal_nocase(value[0], 'o') &&
-         ascii_equal_nocase(value[1], 'f')))
-        return 0;
-    return -2;
+    return result;
 }
 
 /* Append only the unsaved portion of this session to one selected device. */
@@ -779,23 +676,7 @@ static int write_and_verify_payload(const unsigned char *payload,
 /* ------------------------------------------------------------------------- */
 
 /* Map ROMVER's region character to the memory-card system folder family. */
-static void expected_system_folder(const char *romver, char *destination,
-                                   unsigned int capacity)
-{
-    const char *folder = "unknown";
 
-    if (strlen(romver) >= 5) {
-        switch (romver[4]) {
-            case 'J': folder = "BIEXEC-SYSTEM"; break;
-            case 'A':
-            case 'H': folder = "BAEXEC-SYSTEM"; break;
-            case 'E': folder = "BEEXEC-SYSTEM"; break;
-            case 'C': folder = "BCEXEC-SYSTEM"; break;
-            default: break;
-        }
-    }
-    snprintf(destination, capacity, "%s", folder);
-}
 
 /* Inspect all known regional FMCB folders because cross-model cards can mix them. */
 static void scan_memory_card_boot_files(boot_chain_info_t *info)
@@ -940,95 +821,7 @@ static void scan_system_partition(boot_chain_info_t *info)
 }
 
 /* Classify the probable family separately from the directly observed evidence. */
-static void classify_boot_chain(boot_chain_info_t *info, u32 start, u32 sectors)
-{
-    if ((start == 0) != (sectors == 0)) {
-        snprintf(info->family, sizeof(info->family), "Invalid pointer state");
-        snprintf(info->confidence, sizeof(info->confidence), "certain");
-        snprintf(info->next_stage, sizeof(info->next_stage), "none safely inferable");
-        return;
-    }
-    if (start == 0) {
-        snprintf(info->family, sizeof(info->family), "No active payload");
-        snprintf(info->confidence, sizeof(info->confidence), "certain");
-        snprintf(info->next_stage, sizeof(info->next_stage), "none");
-        return;
-    }
-    if (info->payload_read_result < 0) {
-        snprintf(info->family, sizeof(info->family), "Unreadable payload");
-        snprintf(info->confidence, sizeof(info->confidence), "certain");
-        snprintf(info->next_stage, sizeof(info->next_stage), "unknown");
-        return;
-    }
-    if (info->payload_kelf_result < 0) {
-        snprintf(info->family, sizeof(info->family), "Other / invalid KELF");
-        snprintf(info->confidence, sizeof(info->confidence), "high");
-        snprintf(info->next_stage, sizeof(info->next_stage), "unknown");
-        return;
-    }
 
-    /* An explicit OSDMenu target is stronger evidence than old partitions
-       that may merely have survived a previous installation. */
-    if (info->osdmenu_mbr_config && info->osdmenu_auto_target == 1) {
-        snprintf(info->family, sizeof(info->family), "PSBBN / OSDMenu MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "%s",
-                 info->psbbn_boot ? "high" : "medium");
-        snprintf(info->next_stage, sizeof(info->next_stage),
-                 "hdd0:__system:pfs:/p2lboot/osdboot.elf");
-    } else if (info->osdmenu_mbr_config &&
-               info->osdmenu_auto_target == 2) {
-        snprintf(info->family, sizeof(info->family),
-                 "HDD-OSD / OSDMenu MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "%s",
-                 (info->hosdmenu_boot || info->hddosd_boot) ?
-                     "high" : "medium");
-        snprintf(info->next_stage, sizeof(info->next_stage), "%s",
-                 info->hosdmenu_boot ?
-                     "hdd0:__system:pfs:/osdmenu/hosdmenu.elf" :
-                 info->hddosd_boot ? info->hddosd_path :
-                     "OSDMenu built-in $HOSDSYS target");
-    } else if (info->osdmenu_mbr_config &&
-               info->osdmenu_auto_target == 3) {
-        snprintf(info->family, sizeof(info->family), "Custom OSDMenu MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "high");
-        snprintf(info->next_stage, sizeof(info->next_stage), "%s",
-                 info->osdmenu_auto_path[0] != '\0' ?
-                     info->osdmenu_auto_path : "custom target");
-    } else if (info->fhdb_config) {
-        snprintf(info->family, sizeof(info->family), "FHDB-compatible MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "medium");
-        if (info->legacy_osdmain)
-            snprintf(info->next_stage, sizeof(info->next_stage),
-                     "hdd0:__system:pfs:/osd/osdmain.elf");
-        else if (info->hddosd_boot)
-            snprintf(info->next_stage, sizeof(info->next_stage),
-                     "hdd0:__system:pfs:/osd100 + __sysconf:/FMCB");
-        else
-            snprintf(info->next_stage, sizeof(info->next_stage),
-                     "hdd0:__sysconf:pfs:/FMCB (OSD stage unknown)");
-    } else if (info->hosdmenu_boot || info->osdmenu_mbr_config) {
-        snprintf(info->family, sizeof(info->family), "HOSDMenu / OSDMenu MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "high");
-        snprintf(info->next_stage, sizeof(info->next_stage),
-                 "hdd0:__system:pfs:/osdmenu/hosdmenu.elf");
-    } else if (info->psbbn_boot || info->psbbn_partition_count >= 4) {
-        snprintf(info->family, sizeof(info->family), "PSBBN-compatible MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "medium");
-        snprintf(info->next_stage, sizeof(info->next_stage),
-                 "hdd0:__system:pfs:/p2lboot/osdboot.elf");
-    } else if (info->hddosd_boot || info->legacy_osdmain) {
-        snprintf(info->family, sizeof(info->family), "HDD-OSD-compatible MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "medium");
-        snprintf(info->next_stage, sizeof(info->next_stage),
-                 "%s", info->hddosd_boot ?
-                     info->hddosd_path :
-                     "hdd0:__system:pfs:/osd/osdmain.elf");
-    } else {
-        snprintf(info->family, sizeof(info->family), "Other / unknown KELF");
-        snprintf(info->confidence, sizeof(info->confidence), "low");
-        snprintf(info->next_stage, sizeof(info->next_stage), "not detected");
-    }
-}
 
 /* Read the active payload, fingerprint it, and collect downstream evidence. */
 static void analyze_boot_chain(boot_chain_info_t *info)
