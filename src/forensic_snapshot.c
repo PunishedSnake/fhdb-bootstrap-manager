@@ -64,7 +64,6 @@ static int build_snapshot_image(const apa_forensic_result_t *result,
     write_le32_snapshot(image + 24, plan->patch_count);
     write_le32_snapshot(image + 28, plan->corroborated_count);
     write_le32_snapshot(image + 32, plan->speculative_count);
-    write_le32_snapshot(image + 36, plan->one_or_two_bit_count);
 
     offset = SNAPSHOT_HEADER_BYTES;
     for (i = 0; i < plan->patch_count; i++) {
