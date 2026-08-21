@@ -355,8 +355,9 @@ static qword_t *begin_frame(packet_t **packet_out)
     packet = render_packet;
     q = packet->data;
 
-    q = draw_framebuffer(q, GS_UI_CONTEXT, &frames[draw_frame_index]);
     if (draw_state_dirty) {
+        q = draw_setup_environment(q, GS_UI_CONTEXT,
+                                   &frames[draw_frame_index], &zbuffer);
         q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
         q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
                               0, GS_UI_HEIGHT * (int)render_scale_y - 1);
@@ -364,6 +365,8 @@ static qword_t *begin_frame(packet_t **packet_out)
         q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
         q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
         draw_state_dirty = 0;
+    } else {
+        q = draw_framebuffer(q, GS_UI_CONTEXT, &frames[draw_frame_index]);
     }
 
     *packet_out = packet;
