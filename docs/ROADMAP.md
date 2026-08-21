@@ -22,11 +22,15 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 - [x] `platform` — IOP reset, embedded IRX startup, pad DMA lifetime, button-edge input, and confirmation chords.
 - [x] `storage` — storage targets, encapsulated selected-target state, launch-device selection, ROMVER/file helpers, exact/bounded reads, and generic writes.
 - [x] `header_backup` safety storage — mandatory non-overwriting header backup/reuse, exact read-back verification, legacy same-disk lookup, and per-slot diagnostics are outside `main.c`; the application still fails closed when no safe slot exists.
+- [x] `rescue_image` portable validation — complete rescue-image metadata/hash/APA/KELF consistency and protected-slot state matching are host-testable without PS2SDK.
+- [x] `rescue_storage` lifecycle — protected rescue slots, active-payload acquisition, USB/file I/O, save/read-back verification, same-disk lookup, and damaged-capsule fallback policy are outside `main.c`.
+- [x] `bootstrap_source` installation preparation — MBR.XIN/XLF-compatible loading, size bound, unsigned-KELF validation, sector count, and live `__mbr` capacity validation are outside `main.c` and cannot sign or write the HDD.
+- [x] `bootstrap_signing` security adapter — `SecrInit`, console-side `SecrDownloadFile`, and post-sign KELF validation are isolated from card-selection UI and HDD transaction code.
 - [x] `apa` portable core — endian parsing, checksum validation, normal `__mbr` recognition, hybrid-GPT detection, and same-disk header matching; covered by synthetic host tests.
 - [x] `hdd_read` read-only transport — `HDIOC_READSECTOR`, the conservative aligned two-sector read buffer, live `hdd0:__mbr` payload bounds checks, and sector-aligned active-payload acquisition are isolated behind a PS2-only interface that exposes no write, flush, or pointer-update operation.
 - [x] `hdd_write` write-capable transport — `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, write-side DMA/read-back buffers, flushes, payload byte comparison, and final pointer verification are isolated behind a PS2-only interface.
 - [x] `bootstrap_transaction` commit policy — portable failure-injected tests cover payload/release/pointer/verify ordering, and the PS2 adapter binds that policy to `hdd_write` without owning pre-write authorization.
-- [ ] higher-level write workflow split — rescue-capsule lifecycle, user confirmation, MagicGate signing, and UI/error presentation still live in `main.c`; mandatory header-backup storage mechanics are now isolated in `header_backup`.
+- [ ] higher-level write workflow/UI split — `main.c` still owns operation selection, the fail-closed decision around subsystem results, confirmation screens/chords, signing-card selection, and operation-specific error presentation; the underlying rescue/source/signing/transport/transaction mechanics are now modular.
 - [x] `boot_chain` portable core — shared evidence model, CNF parsing, `Skip_HDD`, ROMVER region mapping, OSDMenu/FHDB target parsing, and deterministic family classification.
 - [x] `boot_chain` PS2 read-only scanner — memory-card HDD modules, FMCB settings, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection.
 - [x] `kelf` portable core — endian-safe KELF structural validation and recovery of the unpadded file size from a sector-aligned HDD image, with named stable result codes.
@@ -38,15 +42,15 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 - [x] `boot_diagnostics_ps2` orchestration — ROMVER initialization, active-payload evidence, FMCB/PFS evidence collection, and final family classification are combined outside `main.c` behind a read-only PS2-specific entry point.
 - [x] `boot_report_session` state — latest rendered report bytes, length, and last persistence result are outside `main.c`, while rendering and device I/O remain delegated to their existing narrow modules.
 - [ ] diagnostics presentation/UI — `main.c` still decides when to scan/render/persist and owns the short diagnostics screen itself.
-- [ ] `rescue` — capsule creation/lookup/validation plus restore orchestration while preserving payload-first/pointer-last semantics.
-- [ ] `ui` — menus, fatal/info screens, logging presentation, and confirmation text after core policy has explicit interfaces.
+- [ ] `ui` — menus, power/fatal/info screens, storage/signing-card choice, logging presentation, and confirmation text after core policy has explicit interfaces.
 
 ### Test coverage now in place
 
 Portable CI now exercises:
 
 - SHA-256 streaming and complete-block paths;
-- rescue capsule round-trip and malformed metadata rejection;
+- rescue capsule metadata round-trip and malformed metadata rejection;
+- complete rescue-image validation including APA/payload hash corruption, header-only images, and protected-slot state identity;
 - synthetic APA header/checksum/hybrid-GPT/same-disk cases;
 - CNF parsing with comments, CRLF, whitespace, exact-key matching, and bounded output;
 - current and legacy `Skip_HDD` spellings plus conflicting-key precedence;
@@ -68,9 +72,9 @@ Portable CI now exercises:
 
 ### Remaining engineering work
 
-- continue replacing project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly; KELF and read-only payload-bound results are now named without changing their historical numeric values;
-- reduce the remaining diagnostics presentation/UI state without moving classification policy, evidence acquisition, or storage operations back into `main.c`;
-- hardware-validate the combined `hdd_write` + `bootstrap_transaction` boundary before moving rescue-capsule lifecycle, signing, confirmation, or error/UI orchestration; payload-first/pointer-last remains an explicit tested invariant;
+- continue replacing project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly; KELF, read-only payload-bound, rescue-image, rescue-storage, and source-preparation result domains are now named where useful without changing historical diagnostics;
+- reduce the remaining UI/controller code in `main.c` now that storage formats, rescue lifecycle, source preparation, signing mechanics, raw write transport, and commit ordering have explicit interfaces;
+- hardware-validate the combined `header_backup` + `rescue_storage` + `bootstrap_source` + `bootstrap_signing` + `hdd_write` + `bootstrap_transaction` boundaries on a real HDD before treating the refactor as behavior-equivalent to Torii;
 - add build-size/performance reporting so optimization work is measurable rather than flag-driven;
 - establish a hardware validation matrix across FAT console revisions, storage adapters/HDDs, memory-card layouts, and launch devices;
 - make classification evidence more data-driven so supporting another known environment does not require threading another special case through the UI.
