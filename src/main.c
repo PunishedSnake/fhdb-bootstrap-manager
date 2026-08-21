@@ -28,12 +28,14 @@
 #include "app_ui_ps2.h"
 #include "bootstrap_signing.h"
 #include "boot_chain.h"
+#include "disk_status_ps2.h"
 #include "gs_ui_ps2.h"
 #include "hdd_read.h"
 #include "manager_menu_ps2.h"
 #include "platform.h"
 #include "session_log.h"
 #include "storage.h"
+#include "ui_theme_ps2.h"
 #include "version.h"
 
 extern void __real_scr_clear(void);
@@ -96,6 +98,8 @@ int main(int argc, char **argv)
     u64 stage_end;
     int result;
     int hdd_status;
+    int theme_config_result;
+    char theme_path[STORAGE_LAUNCH_PATH_SIZE];
 
     memset(&timing, 0, sizeof(timing));
     total_start = GetTimerSystemTime();
@@ -140,9 +144,13 @@ int main(int argc, char **argv)
     fileXioInit();
     poweroffInit();
     bootstrap_signing_init();
+    theme_config_result = ui_theme_load_config();
     stage_end = GetTimerSystemTime();
     timing.services_ms = elapsed_ms(stage_start, stage_end);
 
+    /* A successful config load changes the palette immediately because every
+       GS frame resolves ui_theme_current() at render time. Missing config is a
+       normal first-run condition and deliberately does not delay startup. */
     scr_printf("Initializing controller...\n");
     stage_start = GetTimerSystemTime();
     result = init_pad();
@@ -154,7 +162,9 @@ int main(int argc, char **argv)
         SleepThread();
     }
 
-    scr_printf("Checking HDD...\n");
+    disk_status_begin_at("Startup HDD admission",
+                         "Querying ps2hdd device status",
+                         "hdd0: device / APA admission");
     stage_start = GetTimerSystemTime();
     /* hdd_recovery_wrap intercepts only this first HDIOC_STATUS. A readable
        but damaged master can enter the narrowly guarded startup recovery path
@@ -162,21 +172,35 @@ int main(int argc, char **argv)
     hdd_status = fileXioDevctl("hdd0:", HDIOC_STATUS, NULL, 0, NULL, 0);
     stage_end = GetTimerSystemTime();
     timing.hdd_status_ms = elapsed_ms(stage_start, stage_end);
-    if (hdd_status != 0)
+    if (hdd_status != 0) {
+        disk_status_end();
         app_ui_fatal_screen(
             "HDD is missing, locked, or not valid APA.", hdd_status);
+    }
 
-    scr_printf("Reading APA master...\n");
+    disk_status_phase_at("Reading and validating APA master",
+                         "APA master header / sectors 0-1");
     stage_start = GetTimerSystemTime();
     result = read_header(header_buffer);
     stage_end = GetTimerSystemTime();
     timing.header_ms = elapsed_ms(stage_start, stage_end);
-    if (result < 0)
+    if (result < 0) {
+        disk_status_end();
         app_ui_fatal_screen("Could not read sectors 0-1.", result);
-    if (!is_standard_apa_header(header_buffer))
+    }
+    disk_status_phase_at("Checking APA checksum and master identity",
+                         "APA master header / canonical fields");
+    if (!is_standard_apa_header(header_buffer)) {
+        disk_status_end();
         app_ui_fatal_screen("Invalid APA __mbr header or checksum.", -101);
-    if (is_hybrid_gpt(header_buffer))
+    }
+    disk_status_phase_at("Checking for hybrid GPT signatures",
+                         "Sector 0 protective/PC partition metadata");
+    if (is_hybrid_gpt(header_buffer)) {
+        disk_status_end();
         app_ui_fatal_screen("Hybrid APA/GPT layout is not supported.", -102);
+    }
+    disk_status_end();
 
     mark_boot_chain_pending(&boot_chain);
     timing.total_ms = elapsed_ms(total_start, GetTimerSystemTime());
@@ -189,6 +213,10 @@ int main(int argc, char **argv)
                          header_buffer + APA_OSD_START_OFFSET),
                      (unsigned int)read_le32(
                          header_buffer + APA_OSD_SIZE_OFFSET));
+    if (ui_theme_config_path(theme_path, sizeof(theme_path)) >= 0)
+        session_log_line("UI theme: %s; config=%s; load=%d",
+                         ui_theme_name(ui_theme_current_id()),
+                         theme_path, theme_config_result);
     session_log_line(
         "Startup timing ms: iop=%u modules=%u services=%u pad=%u hdd_status=%u header=%u total=%u",
         timing.iop_reset_ms, timing.modules_ms, timing.services_ms,
