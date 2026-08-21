@@ -176,6 +176,7 @@ static int setup_environment(void)
     packet_t *packet;
     qword_t *q;
     int reserved_frame;
+    int texture_address;
 
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
@@ -186,10 +187,11 @@ static int setup_environment(void)
     if (reserved_frame != 0)
         return -1;
 
-    font_texture.address = graph_vram_allocate(GS_UI_ATLAS_W, GS_UI_ATLAS_H,
-                                               GS_PSM_32, GRAPH_ALIGN_BLOCK);
-    if ((int)font_texture.address < 0)
+    texture_address = graph_vram_allocate(GS_UI_ATLAS_W, GS_UI_ATLAS_H,
+                                          GS_PSM_32, GRAPH_ALIGN_BLOCK);
+    if (texture_address < 0)
         return -2;
+    font_texture.address = (unsigned int)texture_address;
 
     frame.address = 0;
     frame.width = GS_UI_WIDTH;
@@ -198,7 +200,7 @@ static int setup_environment(void)
     frame.mask = 0;
 
     zbuffer.enable = DRAW_DISABLE;
-    zbuffer.method = ZTEST_METHOD_ALWAYS;
+    zbuffer.method = ZTEST_METHOD_ALLPASS;
     zbuffer.address = 0;
     zbuffer.zsm = GS_ZBUF_32;
     zbuffer.mask = 1;
