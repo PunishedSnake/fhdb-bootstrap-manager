@@ -54,11 +54,11 @@ static texbuffer_t font_texture;
 static clutbuffer_t no_clut;
 static lod_t font_lod;
 static blend_t alpha_blend;
-static packet_t *render_packets[2];
-static unsigned int render_packet_index;
+static packet_t *render_packet;
 static unsigned int draw_frame_index;
 static unsigned int render_scale_y = 1u;
 static gs_ui_video_mode_t video_mode = GS_UI_VIDEO_NATIVE;
+static int draw_state_dirty;
 static u32 font_atlas[GS_UI_ATLAS_W * GS_UI_ATLAS_H]
     __attribute__((aligned(64)));
 static char console_buffer[GS_UI_CONSOLE_BYTES];
@@ -66,6 +66,13 @@ static unsigned int console_used;
 static int console_dirty;
 static int renderer_ready;
 static int blending_enabled = -1;
+
+static float scaled_y(float value)
+{
+    /* Native output is the default and pays no COP1 multiply. Progressive
+       output uses an exact integer expansion, expressed as an addition. */
+    return render_scale_y == 1u ? value : value + value;
+}
 
 static void select_blending(int enabled)
 {
@@ -93,10 +100,10 @@ static qword_t *filled_rect_rgb(qword_t *q, float x0, float y0,
     rect_t rect;
 
     rect.v0.x = x0;
-    rect.v0.y = y0 * (float)render_scale_y;
+    rect.v0.y = scaled_y(y0);
     rect.v0.z = 1;
     rect.v1.x = x1;
-    rect.v1.y = y1 * (float)render_scale_y;
+    rect.v1.y = scaled_y(y1);
     rect.v1.z = 1;
     set_color(&rect.color, rgb);
     select_blending(0);
@@ -109,10 +116,10 @@ static qword_t *outline_rect_rgb(qword_t *q, float x0, float y0,
     rect_t rect;
 
     rect.v0.x = x0;
-    rect.v0.y = y0 * (float)render_scale_y;
+    rect.v0.y = scaled_y(y0);
     rect.v0.z = 1;
     rect.v1.x = x1;
-    rect.v1.y = y1 * (float)render_scale_y;
+    rect.v1.y = scaled_y(y1);
     rect.v1.z = 1;
     set_color(&rect.color, rgb);
     select_blending(0);
@@ -132,10 +139,10 @@ static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
     glyph_y = ((unsigned int)ch >> 4) * GS_UI_FONT_SRC_H;
 
     glyph.v0.x = x;
-    glyph.v0.y = y * (float)render_scale_y;
+    glyph.v0.y = scaled_y(y);
     glyph.v0.z = 2;
     glyph.v1.x = x + GS_UI_GLYPH_W;
-    glyph.v1.y = (y + GS_UI_GLYPH_H) * (float)render_scale_y;
+    glyph.v1.y = scaled_y(y + GS_UI_GLYPH_H);
     glyph.v1.z = 2;
     glyph.t0.u = (float)glyph_x;
     glyph.t0.v = (float)glyph_y;
@@ -263,7 +270,7 @@ static int setup_environment(void)
     /* libdraw draw2d primitives add the GS +2048 bias themselves. */
     q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
     q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
-                          0, GS_UI_PROGRESSIVE_HEIGHT - 1);
+                          0, GS_UI_HEIGHT - 1);
     q = draw_finish(q);
     dma_wait_fast();
     dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
@@ -345,16 +352,19 @@ static qword_t *begin_frame(packet_t **packet_out)
     qword_t *q;
 
     dma_wait_fast();
-    packet = render_packets[render_packet_index];
+    packet = render_packet;
     q = packet->data;
 
     q = draw_framebuffer(q, GS_UI_CONTEXT, &frames[draw_frame_index]);
-    q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
-    q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
-                          0, GS_UI_HEIGHT * (int)render_scale_y - 1);
-    q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
-    q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
-    q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
+    if (draw_state_dirty) {
+        q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
+        q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
+                              0, GS_UI_HEIGHT * (int)render_scale_y - 1);
+        q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
+        q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
+        q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
+        draw_state_dirty = 0;
+    }
 
     *packet_out = packet;
     return q;
@@ -372,7 +382,6 @@ static void end_frame(packet_t *packet, qword_t *q)
     graph_set_framebuffer_filtered(frames[completed_frame].address,
                                    GS_UI_WIDTH, GS_PSM_32, 0, 0);
     draw_frame_index ^= 1u;
-    render_packet_index ^= 1u;
     console_dirty = 0;
 }
 
@@ -416,15 +425,17 @@ int gs_ui_initialize(void)
     if (setup_texture_state() < 0)
         return -3;
 
-    render_packets[0] = packet_init(GS_UI_PACKET_QWORDS, PACKET_NORMAL);
-    render_packets[1] = packet_init(GS_UI_PACKET_QWORDS, PACKET_NORMAL);
-    if (render_packets[0] == NULL || render_packets[1] == NULL)
+    /* end_frame() waits for GS FINISH before returning, so a second 256 KiB
+       packet cannot overlap useful work. Reuse one packet and leave that EE
+       memory available to the forensic workspace. */
+    render_packet = packet_init(GS_UI_PACKET_QWORDS, PACKET_NORMAL);
+    if (render_packet == NULL)
         return -4;
 
     console_buffer[0] = '\0';
     console_used = 0;
     console_dirty = 0;
-    render_packet_index = 0;
+    draw_state_dirty = 0;
     blending_enabled = -1;
     renderer_ready = 1;
     gs_ui_render_message("Starting",
@@ -464,6 +475,7 @@ static void restore_native_video(void)
     video_mode = GS_UI_VIDEO_NATIVE;
     draw_frame_index = 1u;
     blending_enabled = -1;
+    draw_state_dirty = 1;
 }
 
 int gs_ui_video_mode_apply(gs_ui_video_mode_t mode)
@@ -498,6 +510,7 @@ int gs_ui_video_mode_apply(gs_ui_video_mode_t mode)
     render_scale_y = 2u;
     video_mode = GS_UI_VIDEO_480P;
     blending_enabled = -1;
+    draw_state_dirty = 1;
     graph_enable_output();
     return 0;
 }

@@ -16,7 +16,12 @@
 
 The built-in PS2SDK MSX glyph data is converted once into a 128x64 RGBA atlas and uploaded once to VRAM. Every glyph is rendered **8x8 source -> 8x8 destination** with nearest-neighbour sampling and integer native field coordinates. There is no 448->224 scaling stage.
 
-Panels, cards, selection/disabled rows, outlines, status areas and progress bars are ordinary GS primitives. Frames are submitted through GIF DMA with alternating EE packet buffers and two GS framebuffers.
+Panels, cards, selection/disabled rows, outlines, status areas and progress bars
+are ordinary GS primitives. Frames are submitted through GIF DMA into two GS
+framebuffers. Because presentation waits for GS FINISH before the VBlank swap,
+one reusable 256 KiB EE packet replaces the previously redundant pair. Stable
+GS environment registers are emitted once and refreshed only after a video-mode
+reset; each ordinary frame changes only its draw framebuffer.
 
 ## Experimental application video mode
 
