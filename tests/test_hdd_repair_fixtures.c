@@ -5,6 +5,7 @@
 #include "hdd_bounds.h"
 #include "hdd_limits.h"
 #include "kelf.h"
+#include "repair_health.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -107,8 +108,6 @@ static int pointer_clear_postcondition(
         read_le32(cleared + APA_OSD_SIZE_OFFSET) != 0)
         return 0;
 
-    /* A successful SETOSDMBR(0,0) postcondition may alter only the checksum
-       word and the two OSD pointer words in this host byte model. */
     for (i = 0; i < APA_HEADER_SIZE; i++) {
         if (i < 4 ||
             (i >= APA_OSD_START_OFFSET && i < APA_OSD_SIZE_OFFSET + 4))
@@ -124,22 +123,55 @@ static expected_repair_t classify_case(const char *directory,
                                        int *detail_out)
 {
     unsigned char header[APA_HEADER_SIZE];
-    apa_repair_plan_t plan;
+    repair_health_t health;
+    boot_chain_info_t evidence;
     unsigned int start;
     unsigned int sectors;
+    int bounds_result = 0;
     int result;
 
     *detail_out = 0;
-    if (!read_bytes(directory, test->name, 0, header, sizeof(header)) ||
-        apa_repair_analyze(header, &plan) != 0) {
+    if (!read_bytes(directory, test->name, 0, header, sizeof(header))) {
         *detail_out = -1;
         return EXPECT_BLOCKED;
     }
 
-    if (plan.header_patch_safe) {
+    memset(&evidence, 0, sizeof(evidence));
+    start = read_le32(header + APA_OSD_START_OFFSET);
+    sectors = read_le32(header + APA_OSD_SIZE_OFFSET);
+    if (start != 0 && sectors != 0)
+        bounds_result = hdd_validate_payload_bounds_geometry(
+            start, sectors, 0, test->mbr_size);
+
+    if (test->inspect_active_payload && start != 0 && sectors != 0 &&
+        bounds_result >= 0) {
+        unsigned char payload[HDD_SECTOR_SIZE];
+        unsigned int file_bytes = 0;
+
+        if (!read_bytes(directory, test->name,
+                        (long)start * HDD_SECTOR_SIZE,
+                        payload, sizeof(payload))) {
+            evidence.payload_read_result = -3;
+        } else {
+            evidence.payload_read_result = 0;
+            evidence.payload_kelf_result =
+                kelf_size_from_disk_image(payload, sizeof(payload), &file_bytes);
+        }
+    }
+
+    result = repair_health_assess(
+        header, test->inspect_active_payload ? &evidence : NULL,
+        bounds_result, &health);
+    if (result < 0) {
+        *detail_out = result;
+        return EXPECT_BLOCKED;
+    }
+
+    if (health.header_plan.header_patch_safe) {
         unsigned char repaired[APA_HEADER_SIZE];
 
-        if (apa_repair_build_header(header, &plan, repaired) != 0 ||
+        if (apa_repair_build_header(
+                header, &health.header_plan, repaired) != 0 ||
             !is_standard_apa_header(repaired) ||
             !master_anchors_match(repaired) || is_hybrid_gpt(repaired)) {
             *detail_out = -2;
@@ -148,57 +180,23 @@ static expected_repair_t classify_case(const char *directory,
         return EXPECT_HEADER_REPAIR;
     }
 
-    if (plan.blockers != 0) {
+    if (health.header_plan.blockers != 0) {
         unsigned char forbidden[APA_HEADER_SIZE];
 
-        if (apa_repair_build_header(header, &plan, forbidden) == 0) {
+        if (apa_repair_build_header(
+                header, &health.header_plan, forbidden) == 0) {
             *detail_out = -4;
             return EXPECT_HEADER_REPAIR;
         }
         return EXPECT_BLOCKED;
     }
 
-    if (plan.pointer_clear_recommended) {
+    if (health.pointer_clear_recommended) {
         if (!pointer_clear_postcondition(header)) {
             *detail_out = -5;
             return EXPECT_BLOCKED;
         }
         return EXPECT_POINTER_CLEAR;
-    }
-
-    start = read_le32(header + APA_OSD_START_OFFSET);
-    sectors = read_le32(header + APA_OSD_SIZE_OFFSET);
-    if (start == 0 && sectors == 0)
-        return EXPECT_NO_REPAIR;
-
-    result = hdd_validate_payload_bounds_geometry(
-        start, sectors, 0, test->mbr_size);
-    if (result < 0) {
-        *detail_out = result;
-        if (!pointer_clear_postcondition(header))
-            return EXPECT_BLOCKED;
-        return EXPECT_POINTER_CLEAR;
-    }
-
-    if (test->inspect_active_payload) {
-        unsigned char payload[HDD_SECTOR_SIZE];
-        unsigned int file_bytes = 0;
-
-        if (!read_bytes(directory, test->name,
-                        (long)start * HDD_SECTOR_SIZE,
-                        payload, sizeof(payload))) {
-            *detail_out = -3;
-            if (!pointer_clear_postcondition(header))
-                return EXPECT_BLOCKED;
-            return EXPECT_POINTER_CLEAR;
-        }
-        result = kelf_size_from_disk_image(payload, sizeof(payload), &file_bytes);
-        if (result < 0) {
-            *detail_out = result;
-            if (!pointer_clear_postcondition(header))
-                return EXPECT_BLOCKED;
-            return EXPECT_POINTER_CLEAR;
-        }
     }
 
     return EXPECT_NO_REPAIR;
