@@ -5,15 +5,11 @@
 
 #include "apa.h"
 
-/* Standard APA allocations are aligned to at least 128 MiB. The forensic
- * scanner also follows every surviving next/prev/main/sub reference, so a
- * referenced header outside the coarse grid is still inspected directly. */
 #define APA_FORENSIC_SCAN_STEP 0x40000u
 #define APA_FORENSIC_MAX_NODES 512u
 #define APA_FORENSIC_MAX_MAPS 3u
 #define APA_FORENSIC_MAX_PATCHES APA_FORENSIC_MAX_NODES
 
-/* Independent pieces of evidence retained for UI/reporting and repair gates. */
 enum {
     APA_FORENSIC_EVIDENCE_MAGIC = 1u << 0,
     APA_FORENSIC_EVIDENCE_SELF_START = 1u << 1,
@@ -90,7 +86,6 @@ typedef struct {
     uint32_t old_prev;
     uint32_t new_next;
     uint32_t new_prev;
-    unsigned int changed_bits;
     int checksum_corroborated;
 } apa_forensic_patch_t;
 
@@ -98,7 +93,6 @@ typedef struct {
     unsigned int map_index;
     unsigned int patch_count;
     unsigned int corroborated_count;
-    unsigned int one_or_two_bit_count;
     unsigned int speculative_count;
     unsigned int confidence;
     int automatic_safe;
@@ -106,29 +100,38 @@ typedef struct {
     apa_forensic_patch_t patches[APA_FORENSIC_MAX_PATCHES];
 } apa_forensic_repair_plan_t;
 
-/*
- * Build candidate partition graphs entirely from raw read-only evidence.
- * The core performs no allocation and no PS2SDK calls. It first samples the
- * standard APA alignment grid, then directly follows surviving graph/subpart
- * references so broken master links do not prevent discovery.
- */
+/* Exact Hamming distance across the only fields a topology patch may change.
+ * A checksum-corroborated distance of 1 or 2 is direct regression-testable
+ * evidence for the physical bit-flip recovery cases discussed by the project. */
+static inline unsigned int apa_forensic_patch_bit_distance(
+    const apa_forensic_patch_t *patch)
+{
+    uint32_t values[2];
+    unsigned int count = 0;
+    unsigned int i;
+
+    values[0] = patch->old_next ^ patch->new_next;
+    values[1] = patch->old_prev ^ patch->new_prev;
+    for (i = 0; i < 2; i++) {
+        uint32_t value = values[i];
+        while (value != 0) {
+            value &= value - 1u;
+            count++;
+        }
+    }
+    return count;
+}
+
 int apa_forensic_scan(apa_forensic_read_fn reader, void *reader_context,
                       uint32_t total_sectors,
                       apa_forensic_progress_fn progress,
                       void *progress_context,
                       apa_forensic_result_t *result);
 
-/* Build a topology-only repair plan for one candidate map. Missing headers,
- * geometry changes and filesystem reconstruction are deliberately excluded.
- * changed_bits records the exact Hamming distance across prev/next; therefore
- * stale-checksum one- and two-bit link corruptions are explicit evidence, not
- * a special-case guess hidden inside the UI. */
 int apa_forensic_build_repair_plan(const apa_forensic_result_t *result,
                                    unsigned int map_index,
                                    apa_forensic_repair_plan_t *plan);
 
-/* Produce one patched header without writing it. Only prev/next/checksum may
- * change, allowing host tests and the PS2 writer to share exact bytes. */
 int apa_forensic_build_patched_header(
     const apa_forensic_result_t *result,
     const apa_forensic_patch_t *patch,
