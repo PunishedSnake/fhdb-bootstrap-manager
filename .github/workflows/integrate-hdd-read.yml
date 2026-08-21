@@ -1,0 +1,277 @@
+name: Integrate read-only HDD acquisition
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-hdd-read:
+    if: github.head_ref == 'dev/0.4.0-michishirube'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev/0.4.0-michishirube
+
+      - name: Replace monolithic raw-read and payload acquisition code
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/main.c')
+          text = path.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '#include "boot_chain_ps2.h"\n#include "boot_report.h"\n',
+              '#include "boot_chain_ps2.h"\n#include "boot_payload_ps2.h"\n#include "boot_report.h"\n',
+              'boot payload include')
+          replace_once(
+              '#include "capsule_format.h"\n#include "kelf.h"\n',
+              '#include "capsule_format.h"\n#include "hdd_limits.h"\n#include "hdd_read.h"\n#include "kelf.h"\n',
+              'HDD read includes')
+
+          replace_once(
+              '#define MBR_PAYLOAD_START 0x2000\n'
+              '#define SECTOR_SIZE 512\n'
+              '#define TRANSFER_SECTORS 2\n'
+              '#define TRANSFER_BYTES (SECTOR_SIZE * TRANSFER_SECTORS)\n'
+              '#define MAX_MBR_PAYLOAD_SIZE (4 * 1024 * 1024)\n',
+              '#define MBR_PAYLOAD_START HDD_MBR_PAYLOAD_START\n'
+              '#define SECTOR_SIZE HDD_SECTOR_SIZE\n'
+              '#define TRANSFER_SECTORS HDD_TRANSFER_SECTORS\n'
+              '#define TRANSFER_BYTES HDD_TRANSFER_BYTES\n'
+              '#define MAX_MBR_PAYLOAD_SIZE HDD_MAX_MBR_PAYLOAD_SIZE\n',
+              'shared HDD limits')
+
+          replace_once('#define HDIOC_READSECTOR_LOCAL 0x6836\n', '',
+                       'local raw-read ioctl')
+
+          replace_once(
+              '/* Argument layout used by the raw read devctl. */\n'
+              'typedef struct {\n'
+              '    u32 lba;\n'
+              '    u32 size;\n'
+              '} raw_transfer_t;\n\n',
+              '',
+              'raw transfer struct')
+
+          old_read_header = '''/* Read sectors 0 and 1, which contain the complete APA master header. */
+          static int read_header(unsigned char *destination)
+          {
+              raw_transfer_t transfer;
+
+              transfer.lba = 0;
+              transfer.size = 2;
+              memset(destination, 0, APA_HEADER_SIZE);
+              return fileXioDevctl("hdd0:", HDIOC_READSECTOR_LOCAL,
+                                   &transfer, sizeof(transfer),
+                                   destination, APA_HEADER_SIZE);
+          }
+          '''.replace('          ', '')
+          new_read_header = '''/* Read sectors 0 and 1, which contain the complete APA master header. */
+          static int read_header(unsigned char *destination)
+          {
+              return hdd_read_raw_sectors(0, 2, destination);
+          }
+          '''.replace('          ', '')
+          replace_once(old_read_header, new_read_header, 'read_header')
+
+          old_raw_helpers = '''/* Read a small raw sector range for post-write payload verification. */
+          static int read_raw_sectors(u32 lba, u32 sectors, unsigned char *destination)
+          {
+              raw_transfer_t transfer;
+
+              transfer.lba = lba;
+              transfer.size = sectors;
+              memset(destination, 0, sectors * SECTOR_SIZE);
+              return fileXioDevctl("hdd0:", HDIOC_READSECTOR_LOCAL,
+                                   &transfer, sizeof(transfer), destination,
+                                   sectors * SECTOR_SIZE);
+          }
+
+          /* Validate an active pointer against both policy limits and __mbr capacity. */
+          static int validate_payload_bounds(u32 start, u32 sectors,
+                                             iox_stat_t *mbr_status)
+          {
+              int result;
+
+              if (start == 0 || sectors == 0)
+                  return -170;
+              if (sectors > MAX_MBR_PAYLOAD_SIZE / SECTOR_SIZE)
+                  return -171;
+              if (start < MBR_PAYLOAD_START)
+                  return -172;
+              memset(mbr_status, 0, sizeof(*mbr_status));
+              result = fileXioGetStat("hdd0:__mbr", mbr_status);
+              if (result < 0)
+                  return result;
+              if (mbr_status->private_5 != 0 || start >= mbr_status->size ||
+                  sectors > mbr_status->size - start)
+                  return -173;
+              return 0;
+          }
+
+          /* Read an active sector-aligned payload through the DMA-safe transfer buffer. */
+          static int read_payload_image(u32 start, u32 sectors,
+                                        unsigned char **payload_out,
+                                        unsigned int *bytes_out)
+          {
+              unsigned int bytes;
+              unsigned int offset = 0;
+              u32 sector_offset = 0;
+              unsigned char *payload;
+
+              if (sectors == 0 || sectors > MAX_MBR_PAYLOAD_SIZE / SECTOR_SIZE)
+                  return -174;
+              bytes = sectors * SECTOR_SIZE;
+              payload = malloc(bytes);
+              if (payload == NULL)
+                  return -175;
+              while (sector_offset < sectors) {
+                  u32 chunk_sectors = sectors - sector_offset;
+                  int result;
+
+                  if (chunk_sectors > TRANSFER_SECTORS)
+                      chunk_sectors = TRANSFER_SECTORS;
+                  result = read_raw_sectors(start + sector_offset, chunk_sectors,
+                                            sector_verify_buffer);
+                  if (result < 0) {
+                      free(payload);
+                      return result;
+                  }
+                  memcpy(payload + offset, sector_verify_buffer,
+                         chunk_sectors * SECTOR_SIZE);
+                  sector_offset += chunk_sectors;
+                  offset += chunk_sectors * SECTOR_SIZE;
+              }
+              *payload_out = payload;
+              *bytes_out = bytes;
+              return 0;
+          }
+
+          '''.replace('          ', '')
+          replace_once(old_raw_helpers, '', 'raw read helpers')
+
+          text = text.replace('result = read_raw_sectors(',
+                              'result = hdd_read_raw_sectors(')
+
+          old_analyze = '''/* Read the active payload, fingerprint it, and collect downstream evidence. */
+          static void analyze_boot_chain(boot_chain_info_t *info)
+          {
+              u32 start = read_le32(header_buffer + APA_OSD_START_OFFSET);
+              u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);
+              unsigned char *payload = NULL;
+              unsigned int payload_bytes = 0;
+              iox_stat_t mbr_status;
+
+              memset(info, 0, sizeof(*info));
+              info->skip_hdd[0] = -1;
+              info->skip_hdd[1] = -1;
+              info->skip_hdd[2] = -1;
+              info->payload_read_result = -1;
+              info->payload_kelf_result = -1;
+              read_romver(info->romver);
+              expected_system_folder(info->romver, info->expected_system_folder,
+                                     sizeof(info->expected_system_folder));
+              info->pointer_consistent = ((start == 0) == (sectors == 0));
+
+              if (start != 0 && sectors != 0) {
+                  info->payload_read_result =
+                      validate_payload_bounds(start, sectors, &mbr_status);
+                  if (info->payload_read_result == 0)
+                      info->payload_read_result =
+                          read_payload_image(start, sectors, &payload, &payload_bytes);
+                  if (info->payload_read_result == 0) {
+                      info->payload_bytes = payload_bytes;
+                      sha256_buffer(payload, payload_bytes, info->payload_sha256);
+                      info->payload_kelf_result =
+                          kelf_size_from_disk_image(payload, payload_bytes,
+                                                    &info->kelf_file_bytes);
+                      if (info->payload_kelf_result == 0)
+                          sha256_buffer(payload, info->kelf_file_bytes,
+                                        info->kelf_sha256);
+                  }
+              }
+
+              scan_skip_hdd_settings(info);
+              scan_memory_card_boot_files(info);
+              scan_sysconf_partition(info);
+              scan_system_partition(info);
+              classify_boot_chain(info, start, sectors);
+              free(payload);
+          }
+          '''.replace('          ', '')
+          new_analyze = '''/* Collect active-payload and downstream evidence, then classify it. */
+          static void analyze_boot_chain(boot_chain_info_t *info)
+          {
+              u32 start = read_le32(header_buffer + APA_OSD_START_OFFSET);
+              u32 sectors = read_le32(header_buffer + APA_OSD_SIZE_OFFSET);
+
+              memset(info, 0, sizeof(*info));
+              info->skip_hdd[0] = -1;
+              info->skip_hdd[1] = -1;
+              info->skip_hdd[2] = -1;
+              read_romver(info->romver);
+              expected_system_folder(info->romver, info->expected_system_folder,
+                                     sizeof(info->expected_system_folder));
+              scan_active_payload_evidence(info, start, sectors);
+              scan_skip_hdd_settings(info);
+              scan_memory_card_boot_files(info);
+              scan_sysconf_partition(info);
+              scan_system_partition(info);
+              classify_boot_chain(info, start, sectors);
+          }
+          '''.replace('          ', '')
+          replace_once(old_analyze, new_analyze, 'boot-chain analyzer')
+
+          replace_once('    iox_stat_t mbr_status;\n    int result;\n',
+                       '    int result;\n',
+                       'rescue local mbr status')
+          replace_once('result = validate_payload_bounds(start, sectors, &mbr_status);',
+                       'result = hdd_validate_payload_bounds(start, sectors);',
+                       'rescue bounds call')
+          text = text.replace('read_payload_image(start, sectors,',
+                              'hdd_read_payload_image(start, sectors,')
+
+          leftovers = [
+              'static int read_raw_sectors(',
+              'static int validate_payload_bounds(',
+              'static int read_payload_image(',
+              'HDIOC_READSECTOR_LOCAL',
+              'raw_transfer_t',
+              'validate_payload_bounds(start, sectors',
+              'read_payload_image(start, sectors'
+          ]
+          for token in leftovers:
+              if token in text:
+                  raise SystemExit(f'leftover monolithic token: {token}')
+
+          path.write_text(text)
+          PY
+
+      - name: Run full portable regression suite
+        run: make test-host
+
+      - name: Cross-build integrated R5900 ELF
+        run: >-
+          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+
+      - name: Commit verified integration and remove migration workflow
+        run: |
+          rm .github/workflows/integrate-hdd-read.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main.c .github/workflows/integrate-hdd-read.yml
+          git commit -m "Integrate read-only HDD payload acquisition"
+          git push origin HEAD:dev/0.4.0-michishirube
