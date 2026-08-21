@@ -6,14 +6,15 @@ PS2 HDD Bootstrap Manager is intentionally conservative: it is allowed to be slo
 
 The `0.4.0-dev` **Michishirube** line is progressively converting the former monolithic EE application into explicit modules. The split is intentionally mechanical first: code moves behind headers without simultaneously changing storage semantics.
 
-- `src/main.c` — application state machine, APA/KELF policy, boot-chain inspection, rescue/install workflows, logging policy, and guarded HDD write ordering.
+- `src/main.c` — application state machine, KELF policy, boot-chain inspection, rescue/install workflows, logging policy, raw HDD transport, and guarded pointer/write ordering that has not yet been extracted.
 - `src/platform.c` — IOP reset, embedded IRX startup, pad initialization, button-edge input, and confirmation-chord input.
-- `src/storage.c` — storage target definitions, launch-device selection, and generic fileXio helpers. The first split temporarily exposes the selected target state so call sites remain behaviorally identical; later Michishirube work will encapsulate it after regression coverage exists.
+- `src/storage.c` — storage target definitions, launch-device selection, ROMVER access, and generic fileXio helpers. The first split temporarily exposes the selected target state so call sites remain behaviorally identical; later Michishirube work will encapsulate it after regression coverage exists.
+- `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
 - `src/mbr_compat.c` — narrow `MBR.XIN` / `MBR.XLF` filename compatibility interposition.
 - `src/sha256.c` — portable SHA-256 used for rescue integrity and payload fingerprints.
 - `src/capsule_format.c` — endian-stable rescue capsule serialization.
 - `include/` — module interfaces shared by the EE build and, where practical, host tests.
-- `tests/` — portable code that can run without PS2SDK.
+- `tests/` — portable code that can run without PS2SDK, including synthetic APA header regression cases.
 - `docs/` — format, architecture, and roadmap documentation.
 
 ### Modularization rule
@@ -22,11 +23,11 @@ Moving code between translation units is easy; proving that initialization, DMA-
 
 1. move one coherent responsibility with the smallest possible call-site diff;
 2. preserve existing function names and return values during the mechanical pass when useful;
-3. run portable tests;
+3. add or extend portable regression tests whenever the code has no PS2SDK dependency;
 4. complete a warning-clean R5900 release build with the pinned PS2DEV toolchain;
 5. only then consider API cleanup, state encapsulation, or additional optimization.
 
-Platform and generic storage helpers are the first extracted boundaries because they do not own the dangerous APA write transaction. APA and rescue modules are deliberately later steps.
+Platform and generic storage helpers were extracted first because they do not own the dangerous APA write transaction. The APA module is intentionally split in two: its pure header logic has moved and is host-tested, while raw sector transport and pointer updates remain in `main.c` until a later gated step.
 
 ## Non-negotiable write invariants
 
@@ -41,6 +42,19 @@ Every HDD-changing path must preserve these rules:
 7. Treat a damaged or wrong-disk full rescue capsule as an error, not as permission to silently fall back to a weaker restore.
 
 An optimization or refactor that changes any of these semantics is a behavior change, not a cleanup.
+
+## APA module boundary
+
+`apa.c` is deliberately portable and has no fileXio or PS2SDK dependency. Synthetic host tests construct a valid 1024-byte `__mbr` header, verify the checksum and pointer decoding, exercise hybrid-GPT detection, reject corrupted identity data, and confirm that same-disk matching ignores only the checksum and mutable `osdStart`/`osdSize` fields.
+
+The following operations still belong to the not-yet-extracted transport half in `main.c`:
+
+- `HDIOC_READSECTOR` / `HDIOC_WRITESECTOR` RPC packets and aligned transfer buffers;
+- active-payload bounds checks against the actual `hdd0:__mbr` partition;
+- `HDIOC_SETOSDMBR` pointer changes and flushes;
+- post-write sector comparison and final header read-back.
+
+Keeping that boundary explicit prevents a testable parser extraction from accidentally becoming an unreviewed rewrite of the write path.
 
 ## EE / IOP boundary
 
