@@ -1,60 +1,31 @@
-# PS2 HDD Bootstrap Manager 0.3.0 — Torii
+# PS2 HDD Bootstrap Manager 0.3.1 — Torii
 
-The bootstrap manager can now preserve the program behind the pointer, not merely the pointer and a firm belief that its sectors will remain fine forever.
+A small compatibility update, exactly the sort of patch release that should stay small.
 
-This stable release adds a complete rescue capsule, full payload restoration, a read-only boot-chain inspector, and persistent diagnostics on `mass:`, `mc0:`, or `mc1:`. It attempts to distinguish FHDB, PSBBN/OSDMenu, HOSDMenu/HDD-OSD, custom OSDMenu, and unknown payloads from KELF structure plus downstream filesystem evidence.
+## What changed
 
-## Highlights
+- `MBR.XIN` is now preferred when the 0.3.x installer path opens its MBR payload.
+- `MBR.XLF` remains accepted as a compatibility fallback for existing community installer layouts.
+- If both files exist, `MBR.XIN` wins. If that preferred file exists but cannot be opened or fails the existing KELF checks, the manager does not silently hide it behind `MBR.XLF`.
+- Once `MBR.XIN` is selected, the source path used by subsequent installation diagnostics is updated to the actual filename.
 
-- `START` saves both the traditional 1024-byte APA header backup and a versioned `HDDRESCUE*.BIN` capsule.
-- An enabled bootstrap capsule includes every referenced payload sector, the unpadded KELF length, metadata, and SHA-256 digests.
-- `SQUARE` prefers a valid same-disk full capsule and restores the payload before enabling its pointer.
-- A corrupt or wrong-disk capsule is reported instead of silently falling through to an older pointer-only restore.
-- `R1` scans the boot chain and writes a standalone `BOOTCHAIN.TXT` report.
-- `HDDMAN.LOG` records ordered session diagnostics and write results.
-- The selected destination is inferred from the ELF launch path and can still be changed with `SELECT`.
-- The inspector checks ROMVER, all regional FMCB folders, `OSDSYS_Skip_HDD`, external HDD modules, OSDMenu configuration, PFS next-stage files, and characteristic PSBBN partitions.
-- Explicit OSDMenu `boot_auto` configuration wins over stale partition evidence.
-- SHA-256 uses a smaller 16-word rolling schedule and hashes complete input blocks without an unnecessary intermediate copy.
-- Portable SHA-256 and capsule-format tests are included in the source tree and run independently of PS2SDK.
-- Source, headers, documentation, CI, and release artifacts now have distinct homes instead of sharing the repository root like a very small student flat.
+The compatibility layer is deliberately narrow: it interposes the existing `fileXioOpen()` call only for a root-level `MBR.XLF` source path. There is no rescue-capsule format change, no APA write-path change, no signing change, and no change to payload verification or pointer-last activation.
 
-## Files written to the selected device
+## Why XIN?
 
-```text
-HDDMBR.BIN / HDDMBR2.BIN          1024-byte APA header backups
-HDDRESCUE.BIN / HDDRESCUE2.BIN    versioned header + payload capsules
-HDDMAN.LOG                         append-only session diagnostics
-BOOTCHAIN.TXT                      latest complete boot-chain report
-```
+`MBR.XIN` is used by established PS2 HDD tooling for the installable MBR KELF. `MBR.XLF` remains useful as a compatibility spelling because existing community installer layouts already use it. The bytes still go through the same structural KELF validation and MagicGate signing path; 0.3.1 is correcting source-file handling, not inventing another payload format.
 
-Existing differing backup and capsule files are preserved. A session log at or above 128 KiB is replaced at the next flush; `BOOTCHAIN.TXT` always represents the latest scan.
+## Credit
 
-## Identification limits
-
-The manager does not pretend encrypted KELFs contain convenient plaintext name tags. Family names are probable classifications derived from structural validation and observable downstream files. The report includes confidence and the exact evidence, allowing a human to disagree with the machine in an informed manner—a feature apparently considered optional by several generations of boot tools.
-
-## Safety changes
-
-- Capsule metadata, size relationships, flags, APA header, same-disk identity, KELF structure, payload bounds, and SHA-256 digests must all validate before full restoration.
-- Payload sectors are written, flushed, and compared before the APA pointer is enabled.
-- Legacy pointer-only restoration validates the saved range and creates a fresh safety backup first.
-- Raw writes remain confined to the reserved `__mbr` payload area; sectors 0 and 1 are never raw-written.
-- The proven two-sector raw transfer size is unchanged; Torii does not trade disk safety for an unmeasured micro-benchmark victory.
-
-## Validation status
-
-The release source is built with `-Wall -Wextra -Werror` using the pinned PS2DEV v2.0.0 toolchain. Portable SHA-256/capsule tests cover streaming, direct full-block hashing, split block boundaries, capsule serialization, and rejection cases. The underlying `0.2.0` write workflows are hardware-validated; Torii promotes the rescue and diagnostic paths to stable while retaining the same pointer-last safety rules. Additional real-console, adapter, and HDD combinations remain welcome validation coverage.
-
-Read `README.md`, `docs/ARCHITECTURE.md`, and `docs/RESCUE_FORMAT.md` before testing. Keep copies of generated backups on another machine.
+Thanks to **Berion** on PSX-Place for pointing out the `MBR.XIN` naming detail and the historical `MBR.XLF` convention. Tiny semantic details are exactly the sort of thing that become permanent folklore if nobody bothers to correct them.
 
 ## Release assets
 
-The stable GitHub release publishes:
+The GitHub release publishes:
 
 ```text
-PS2_HDD_BOOTSTRAP_MANAGER-0.3.0.ELF
+PS2_HDD_BOOTSTRAP_MANAGER-0.3.1.ELF
 SHA256SUMS.txt
 ```
 
-The checksum is generated from the final CI-built ELF at publication time rather than copied from an earlier candidate binary.
+Both are generated from the final CI/release build.
