@@ -24,14 +24,14 @@ static void write_le32_forensic(unsigned char *destination, uint32_t value)
 static int type_plausible(uint16_t type)
 {
     switch (type) {
-        case 0x0000: /* free */
-        case 0x0001: /* __mbr */
-        case 0x0082: /* ext2 swap */
-        case 0x0083: /* ext2 */
-        case 0x0088: /* reiser */
-        case 0x0100: /* PFS */
-        case 0x0101: /* CFS */
-        case 0x1337: /* HDL */
+        case 0x0000:
+        case 0x0001:
+        case 0x0082:
+        case 0x0083:
+        case 0x0088:
+        case 0x0100:
+        case 0x0101:
+        case 0x1337:
             return 1;
         default:
             return 0;
@@ -67,6 +67,10 @@ static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
                                    uint32_t source_evidence,
                                    uint32_t *evidence_out)
 {
+    const uint32_t semantic_anchor_mask =
+        APA_FORENSIC_EVIDENCE_MAGIC |
+        APA_FORENSIC_EVIDENCE_LENGTH |
+        APA_FORENSIC_EVIDENCE_ID;
     uint32_t evidence = source_evidence;
     uint32_t start = read_le32(header + APA_START_OFFSET);
     uint32_t length = read_le32(header + APA_LENGTH_OFFSET);
@@ -103,6 +107,12 @@ static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
         evidence |= APA_FORENSIC_EVIDENCE_ID;
         score += 10;
     }
+
+    /* Zero-filled/unallocated sectors trivially satisfy checksum/type/nsub and,
+     * at LBA 0, even self-start. Require actual APA-shaped semantic evidence
+     * before treating those generic zero values as a candidate header. */
+    if ((evidence & semantic_anchor_mask) == 0)
+        score = 0;
 
     *evidence_out = evidence;
     return clamp_confidence(score);
@@ -315,6 +325,18 @@ static void reverse_indices(unsigned short *values, unsigned int count)
     }
 }
 
+static int index_in_values(const unsigned short *values, unsigned int count,
+                           unsigned short value)
+{
+    unsigned int i;
+
+    for (i = 0; i < count; i++) {
+        if (values[i] == value)
+            return 1;
+    }
+    return 0;
+}
+
 static void build_reverse_map(const apa_forensic_result_t *result,
                               apa_forensic_map_t *map)
 {
@@ -337,15 +359,9 @@ static void build_reverse_map(const apa_forensic_result_t *result,
         uint32_t prev_lba;
         int prev;
         unsigned int i;
-        int duplicate = 0;
 
-        for (i = 0; i < reverse_count; i++) {
-            if (reverse_order[i] == (unsigned short)current) {
-                duplicate = 1;
-                break;
-            }
-        }
-        if (duplicate)
+        if (index_in_values(reverse_order, reverse_count,
+                            (unsigned short)current))
             break;
 
         reverse_order[reverse_count++] = (unsigned short)current;
@@ -467,19 +483,13 @@ static void evaluate_map(const apa_forensic_result_t *result,
         if (node->prev != desired_prev) {
             int target = node->prev != 0 ? find_node(result, node->prev) : -1;
             map->inferred_links++;
-            if (target >= 0 && !map_contains(map, (unsigned int)target))
-                map->conflicts++;
-            else if (target >= 0 &&
-                     node->prev != desired_prev && node->prev != 0)
+            if (target >= 0 && node->prev != desired_prev)
                 map->conflicts++;
         }
         if (node->next != desired_next) {
             int target = node->next != 0 ? find_node(result, node->next) : -1;
             map->inferred_links++;
-            if (target >= 0 && !map_contains(map, (unsigned int)target))
-                map->conflicts++;
-            else if (target >= 0 &&
-                     node->next != desired_next && node->next != 0)
+            if (target >= 0 && node->next != desired_next)
                 map->conflicts++;
         }
 
@@ -506,7 +516,9 @@ static void evaluate_map(const apa_forensic_result_t *result,
         score -= 10;
 
     map->confidence = clamp_confidence(score);
-    map->repairable = map->node_count >= 2 && map->confidence >= 85 &&
+    map->repairable = map->node_count >= 2 &&
+                      result->nodes[map->order[0]].lba == 0 &&
+                      map->confidence >= 85 &&
                       map->conflicts == 0 && map->overlaps == 0;
     if (map->repairable) {
         const uint32_t required = APA_FORENSIC_EVIDENCE_MAGIC |
