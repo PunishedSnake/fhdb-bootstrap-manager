@@ -27,7 +27,7 @@ Torii keeps the full-payload rescue and boot-chain inspection work stable while 
 
 ## Development branch
 
-The active `dev/0.4.0-michishirube` branch is refactoring internals behind regression-gated module boundaries without changing Torii's write semantics. Read-only transport and diagnostics live in `hdd_read`, `boot_payload`, `boot_chain`, and the report modules. Mandatory header-backup storage is isolated in `header_backup`; complete rescue-file validation is split between portable `rescue_image` and PS2-specific `rescue_storage`. Manual installation preparation now lives in `bootstrap_source`, while `bootstrap_signing` contains the PS2 MagicGate call plus post-sign KELF validation. Raw write/flush/read-back mechanics are isolated in `hdd_write`, and portable `bootstrap_transaction` with its PS2 adapter enforces the already-authorized payload-first/pointer-last commit order with host failure-injection coverage. Host CI also regenerates 21 deterministic sparse HDD images, including interrupted-write, corrupted-payload, GPT, hybrid APA/GPT, and torn-header states, and runs byte-level mutation tests for MBR-payload overwrite plus `osdStart`/`osdSize` disable/activation semantics. `main.c` is intentionally being reduced toward application state, confirmation/UI, error presentation, and composition of these narrow interfaces rather than owning filesystem formats, security mechanics, raw transport, or commit sequencing. This work remains development-only until the new boundaries complete their real-HDD validation gate.
+The active `dev/0.4.0-michishirube` branch is refactoring internals behind regression-gated module boundaries while preserving Torii's normal write semantics. Read-only transport and diagnostics live in `hdd_read`, `boot_payload`, `boot_chain`, and the report modules; backup/rescue, source preparation, MagicGate signing, raw payload mechanics, and payload-first/pointer-last transaction ordering are isolated behind narrow interfaces. Michishirube now also has a deliberately separate **guarded APA master-header recovery path** for narrowly reconstructable sector-zero corruption: it saves an exact `HDDRAW*.BIN` snapshot first, accepts only a single canonical-field repair corroborated by the stale APA checksum, rejects checksum collisions/ambiguous damage/GPT, raw-writes exactly sectors 0-1, flushes, performs exact read-back, and requires restart. Pointer corruption and invalid active payloads continue to use the safer normal backup + `HDIOC_SETOSDMBR(0,0)` workflow instead of raw header repair. Host CI regenerates **30 deterministic sparse HDD images** covering valid, interrupted, corrupted-payload, pointer-boundary, checksum-collision, physical-bitflip, GPT/hybrid, and torn-header states; every image is run through parser policy and the repair matrix, with successful repair postconditions verified. `main.c` is intentionally being reduced toward application state, confirmation/UI, error presentation, and composition of these narrow interfaces. This work remains development-only until the new recovery boundary completes its real-HDD validation gate.
 
 ## Features
 
@@ -63,7 +63,7 @@ The family detector is evidence-based, not clairvoyant. Signed KELFs are encrypt
 
 The manager refuses an HDD-changing operation unless the relevant safety checks pass.
 
-For every write path:
+For every normal Torii-style write path:
 
 1. `hdd0:` must report a valid APA disk.
 2. The master header must contain the `APA`, `__mbr`, and Sony MBR signatures.
@@ -83,7 +83,7 @@ Full rescue restoration adds these rules:
 
 Installation additionally requires a structurally valid KELF no larger than 4 MiB, sufficient reserved capacity, successful console-side MagicGate signing, a full post-flush payload comparison, and pointer-last activation.
 
-No raw write is issued to sectors 0 or 1. Raw writes are confined to the reserved bootstrap payload area; the APA header is updated by the standard `ps2hdd` driver so its checksum is recalculated normally.
+Normal install/restore/disable paths do not raw-write sectors 0 or 1: payload writes remain confined to the reserved bootstrap area and pointer updates use the standard `ps2hdd` driver. Michishirube's development recovery path is one explicit exception for a damaged master header that normal APA startup may reject. It can write exactly sectors 0-1 only after the portable planner proves a single canonical-field repair, the old checksum independently corroborates that exact correction, GPT/ambiguous states are rejected, an exact `HDDRAW*.BIN` snapshot is saved and verified, and a separate `L1 + R1 + START` confirmation is given. The write is flushed and read back byte-for-byte, then a restart is required.
 
 ## Preparing the files
 
@@ -212,6 +212,7 @@ After a successful installation the manager refreshes the boot-chain report and 
 | Restore confirmation | `L1 + R1 + SQUARE` | Restore payload/pointer according to the selected backup type |
 | Disabled bootstrap | `CIRCLE` | Load, sign, and prepare to install `MBR.XIN` or compatible `MBR.XLF` |
 | Install confirmation | `L1 + R1 + CIRCLE` | Write, verify, and enable the payload |
+| Startup recovery | `L1 + R1 + START` | Confirm a planner-approved raw APA master-header repair after snapshot creation |
 | Main menu | `TRIANGLE` | Open the power/restart menu |
 | Confirmation screens | `TRIANGLE` | Cancel without the pending write |
 
@@ -222,8 +223,8 @@ The ELF embeds its PS2SDK IOP dependencies, including fileXio, free memory-card 
 The primary device calls are:
 
 - `HDIOC_READSECTOR` (`0x6836`) for the APA header and payload reads;
-- `HDIOC_WRITESECTOR` (`0x6837`) only for the reserved payload area;
-- `HDIOC_SETOSDMBR` (`0x6833`) for `osdStart` and `osdSize`;
+- `HDIOC_WRITESECTOR` (`0x6837`) for the reserved payload area and, only in Michishirube's separately gated recovery path, an exact two-sector master-header repair;
+- `HDIOC_SETOSDMBR` (`0x6833`) for normal `osdStart` and `osdSize` changes;
 - `HDIOC_FLUSH` (`0x4804`) before verification;
 - `SecrDownloadFile()` through `secrman`/`secrsif` for KELF signing;
 - read-only `pfs0:` mounts of `__sysconf` and `__system` for diagnostics;
@@ -231,7 +232,7 @@ The primary device calls are:
 
 Version 0.3.1 adds `src/mbr_compat.c`, a narrow GNU ld `--wrap=fileXioOpen` compatibility layer. It only intercepts attempts to open a path ending in `/MBR.XLF`; when a sibling `MBR.XIN` exists, that file is opened instead. This keeps the established 0.3.0 installation state machine and all HDD write ordering unchanged.
 
-The source layout and write-order invariants are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The complete synthetic raw-HDD state and mutation-test contract is documented in [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md). In particular, the conservative two-sector raw HDD transfer size is intentional and must not be increased without measuring and testing the fileXio/IOP path on hardware.
+The source layout and write-order invariants are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The complete synthetic raw-HDD state, mutation, and repair-policy contract is documented in [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md). In particular, the conservative two-sector raw HDD transfer size is intentional and must not be increased without measuring and testing the fileXio/IOP path on hardware.
 
 ## Hardware validation
 
@@ -242,11 +243,11 @@ The original disable workflow eliminated a real post-uninstall FHDB boot loop on
 - cross-model Free McBoot memory card;
 - standard non-GPT APA HDD.
 
-The console subsequently cold-booted with the HDD connected. The final `0.2.0` workflow was also reported working on the same hardware, including selectable `mass:` storage and standalone byte-for-byte backup. The full rescue capsule and expanded boot-chain inspector are stable in the Torii 0.3.x line; additional console, adapter, and HDD combinations remain useful validation coverage.
+The console subsequently cold-booted with the HDD connected. The final `0.2.0` workflow was also reported working on the same hardware, including selectable `mass:` storage and standalone byte-for-byte backup. The full rescue capsule and expanded boot-chain inspector are stable in the Torii 0.3.x line; additional console, adapter, and HDD combinations remain useful validation coverage. The new Michishirube raw master-header recovery path has host and R5900 CI coverage but still requires its own physical-HDD validation before release.
 
 ## Building and testing
 
-Portable tests do not require PS2SDK. `make test-host` also regenerates and validates the synthetic HDD suite and runs the host-only disk mutation model:
+Portable tests do not require PS2SDK. `make test-host` regenerates all **30** synthetic HDD fixtures, validates their parser/bounds/KELF expectations, runs byte-level disk mutation tests, and executes the complete repair-policy matrix with successful repair postconditions:
 
 ```sh
 make test-host
@@ -266,7 +267,7 @@ The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Stable `0.3.x` releases a
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — safety invariants, EE/IOP boundaries, and optimization policy.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames and planned engineering work.
 - [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — stable on-disk rescue capsule format.
-- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — synthetic raw-HDD scenarios, interrupted states, and mutation-test contract.
+- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — 30 synthetic raw-HDD scenarios, interrupted states, mutation tests, repair matrix, and checksum-collision policy.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, test, and review rules for changes that can touch an HDD.
 
 ## License
