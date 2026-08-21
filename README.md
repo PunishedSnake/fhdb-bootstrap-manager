@@ -27,7 +27,7 @@ Torii keeps the full-payload rescue and boot-chain inspection work stable while 
 
 ## Development branch
 
-The active `dev/0.4.0-michishirube` branch is refactoring internals behind regression-gated module boundaries without changing Torii's write semantics. Read-only transport and diagnostics live in `hdd_read`, `boot_payload`, `boot_chain`, and the report modules. Mandatory header-backup storage is isolated in `header_backup`; complete rescue-file validation is split between portable `rescue_image` and PS2-specific `rescue_storage`. Manual installation preparation now lives in `bootstrap_source`, while `bootstrap_signing` contains the PS2 MagicGate call plus post-sign KELF validation. Raw write/flush/read-back mechanics are isolated in `hdd_write`, and portable `bootstrap_transaction` with its PS2 adapter enforces the already-authorized payload-first/pointer-last commit order with host failure-injection coverage. Pure payload-pointer geometry now lives in `hdd_bounds`, letting CI apply the same bounds policy to generated sparse raw-disk fixtures containing valid APA, malformed pointers, corrupt headers/payloads, GPT-only layouts, and hybrid APA/GPT layouts. `main.c` is intentionally being reduced toward application state, confirmation/UI, error presentation, and composition of these narrow interfaces rather than owning filesystem formats, security mechanics, raw transport, or commit sequencing. This work remains development-only until the new boundaries complete their real-HDD validation gate.
+The active `dev/0.4.0-michishirube` branch is refactoring internals behind regression-gated module boundaries without changing Torii's write semantics. Read-only transport and diagnostics live in `hdd_read`, `boot_payload`, `boot_chain`, and the report modules. Mandatory header-backup storage is isolated in `header_backup`; complete rescue-file validation is split between portable `rescue_image` and PS2-specific `rescue_storage`. Manual installation preparation now lives in `bootstrap_source`, while `bootstrap_signing` contains the PS2 MagicGate call plus post-sign KELF validation. Raw write/flush/read-back mechanics are isolated in `hdd_write`, and portable `bootstrap_transaction` with its PS2 adapter enforces the already-authorized payload-first/pointer-last commit order with host failure-injection coverage. Host CI also regenerates 21 deterministic sparse HDD images, including interrupted-write, corrupted-payload, GPT, hybrid APA/GPT, and torn-header states, and runs byte-level mutation tests for MBR-payload overwrite plus `osdStart`/`osdSize` disable/activation semantics. `main.c` is intentionally being reduced toward application state, confirmation/UI, error presentation, and composition of these narrow interfaces rather than owning filesystem formats, security mechanics, raw transport, or commit sequencing. This work remains development-only until the new boundaries complete their real-HDD validation gate.
 
 ## Features
 
@@ -231,7 +231,7 @@ The primary device calls are:
 
 Version 0.3.1 adds `src/mbr_compat.c`, a narrow GNU ld `--wrap=fileXioOpen` compatibility layer. It only intercepts attempts to open a path ending in `/MBR.XLF`; when a sibling `MBR.XIN` exists, that file is opened instead. This keeps the established 0.3.0 installation state machine and all HDD write ordering unchanged.
 
-The source layout and write-order invariants are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). In particular, the conservative two-sector raw HDD transfer size is intentional and must not be increased without measuring and testing the fileXio/IOP path on hardware.
+The source layout and write-order invariants are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The complete synthetic raw-HDD state and mutation-test contract is documented in [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md). In particular, the conservative two-sector raw HDD transfer size is intentional and must not be increased without measuring and testing the fileXio/IOP path on hardware.
 
 ## Hardware validation
 
@@ -246,13 +246,11 @@ The console subsequently cold-booted with the HDD connected. The final `0.2.0` w
 
 ## Building and testing
 
-The complete portable suite does not require PS2SDK:
+Portable tests do not require PS2SDK. `make test-host` also regenerates and validates the synthetic HDD suite and runs the host-only disk mutation model:
 
 ```sh
 make test-host
 ```
-
-That command also regenerates 16 deterministic sparse raw-HDD fixtures under `tests/generated_hdds/` and verifies APA signatures/checksums, pointer geometry, valid/invalid KELF payloads, protective-MBR detection, GPT-only input, and a deliberately hybrid APA/GPT image. The generated images are ignored by Git; the fixture contract is documented in [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md).
 
 For the PS2 ELF, use PS2DEV/PS2SDK or the same pinned container as CI:
 
@@ -268,7 +266,7 @@ The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Stable `0.3.x` releases a
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — safety invariants, EE/IOP boundaries, and optimization policy.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames and planned engineering work.
 - [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — stable on-disk rescue capsule format.
-- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — deterministic synthetic HDD cases used by the host regression suite.
+- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — synthetic raw-HDD scenarios, interrupted states, and mutation-test contract.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, test, and review rules for changes that can touch an HDD.
 
 ## License
