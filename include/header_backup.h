@@ -1,7 +1,7 @@
 #ifndef PS2_HDD_BOOTSTRAP_MANAGER_HEADER_BACKUP_H
 #define PS2_HDD_BOOTSTRAP_MANAGER_HEADER_BACKUP_H
 
-#include <stdint.h>
+#include <tamtypes.h>
 
 #include "apa.h"
 
@@ -36,6 +36,6 @@ int header_backup_find_enabled(
     unsigned int storage,
     const unsigned char current_header[APA_HEADER_SIZE],
     char *found_path, unsigned int path_capacity,
-    uint32_t *start_out, uint32_t *size_out);
+    u32 *start_out, u32 *size_out);
 
 #endif
