@@ -1,7 +1,6 @@
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
 #include <hdd-ioctl.h>
-#include <graph.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -105,12 +104,10 @@ static void render(disk_status_kind_t kind, unsigned int lba,
                       kind == DISK_STATUS_FLUSH ||
                       kind == DISK_STATUS_POINTER;
 
-    /* The GS frontend draws directly into the hardware-proven visible FIELD
-     * framebuffer. Starting the full status-frame GIF DMA immediately after
-     * VBlank prevents the raster from scanning through a half-updated frame.
-     * High-rate READ coalescing happens before this function, so this wait does
-     * not turn raw disk throughput into a 50/60-Hz I/O throttle. */
-    graph_wait_vsync();
+    /* The GS frontend renders this complete status view into its back buffer
+     * and owns the VBlank framebuffer swap. High-rate READ coalescing happens
+     * before this function, so presentation cannot turn raw disk throughput
+     * into a 50/60-Hz I/O throttle. */
     gs_ui_render_disk_status(operation,
                              phase != NULL && phase[0] != '\0'
                                  ? phase : kind_name(kind),
