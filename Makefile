@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o platform.o storage.o header_backup.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o hdd_bounds.o hdd_read.o hdd_write.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o platform.o storage.o header_backup.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o hdd_bounds.o hdd_read.o hdd_write.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
 EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
@@ -14,6 +14,7 @@ EE_OBJS += $(IRX_FILES:.irx=_irx.o)
 
 HOST_CC ?= cc
 HOST_FORMAT_TEST = tests/test_formats
+HOST_APA_REPAIR_TEST = tests/test_apa_repair
 HOST_BOOT_CHAIN_TEST = tests/test_boot_chain
 HOST_BOOT_PAYLOAD_TEST = tests/test_boot_payload
 HOST_BOOT_REPORT_TEST = tests/test_boot_report
@@ -23,7 +24,7 @@ HOST_RESCUE_IMAGE_TEST = tests/test_rescue_image
 HOST_HDD_FIXTURE_TEST = tests/test_hdd_fixtures
 HOST_HDD_MUTATION_TEST = tests/test_hdd_mutations
 HOST_HDD_FIXTURE_DIR = tests/generated_hdds
-HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST)
+HOST_TESTS = $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST)
 
 all: $(EE_BIN)
 
@@ -36,6 +37,10 @@ test-host:
 		tests/test_formats.c src/apa.c src/sha256.c src/capsule_format.c \
 		-o $(HOST_FORMAT_TEST)
 	./$(HOST_FORMAT_TEST)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_apa_repair.c src/apa_repair.c src/apa.c \
+		-o $(HOST_APA_REPAIR_TEST)
+	./$(HOST_APA_REPAIR_TEST)
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
 		tests/test_boot_chain.c src/boot_chain.c -o $(HOST_BOOT_CHAIN_TEST)
 	./$(HOST_BOOT_CHAIN_TEST)
@@ -100,6 +105,9 @@ bootstrap_signing.o: src/bootstrap_signing.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 apa.o: src/apa.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+apa_repair.o: src/apa_repair.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 hdd_bounds.o: src/hdd_bounds.c
