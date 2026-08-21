@@ -141,7 +141,6 @@ static int test_corroborated_broken_link(void)
     make_master(header, 0x80000, 0x40000);
     add_slot(&disk, 0, header);
     make_header(header, 0x40000, 0x40000, 0, 0x80000, "A", 0x0100);
-    /* Physical-style link corruption: retain the old checksum. */
     write_le32_test(header + APA_NEXT_OFFSET, 0x90000);
     add_slot(&disk, 0x40000, header);
     make_header(header, 0x80000, 0x40000, 0x40000, 0, "B", 0x0100);
@@ -161,6 +160,38 @@ static int test_corroborated_broken_link(void)
         return 0;
     if (read_le32(repaired + APA_NEXT_OFFSET) != 0x80000 ||
         read_le32(repaired) != apa_checksum(repaired))
+        return 0;
+    return 1;
+}
+
+static int test_two_bit_corroborated_link(void)
+{
+    mock_disk_t disk;
+    apa_forensic_result_t result;
+    apa_forensic_repair_plan_t plan;
+    unsigned char header[APA_HEADER_SIZE];
+    int map;
+
+    memset(&disk, 0, sizeof(disk));
+    make_master(header, 0x80000, 0x40000);
+    add_slot(&disk, 0, header);
+    make_header(header, 0x40000, 0x40000, 0, 0x80000, "A", 0x0100);
+    /* Flip exactly two bits in next and deliberately retain the old checksum.
+       B's reciprocal prev plus geometry reconstruct the intended 0x80000. */
+    write_le32_test(header + APA_NEXT_OFFSET, 0x80000u ^ 0x30000u);
+    add_slot(&disk, 0x40000, header);
+    make_header(header, 0x80000, 0x40000, 0x40000, 0, "B", 0x0100);
+    add_slot(&disk, 0x80000, header);
+
+    if (apa_forensic_scan(mock_read, &disk, 0x100000, NULL, NULL, &result) != 0)
+        return 0;
+    map = find_map(&result, APA_FORENSIC_MAP_FORWARD);
+    if (map < 0 || !result.maps[map].repairable)
+        return 0;
+    if (apa_forensic_build_repair_plan(&result, (unsigned int)map, &plan) != 0 ||
+        plan.patch_count != 1 || !plan.patches[0].checksum_corroborated ||
+        apa_forensic_patch_bit_distance(&plan.patches[0]) != 2 ||
+        !plan.automatic_safe)
         return 0;
     return 1;
 }
@@ -259,6 +290,10 @@ int main(void)
     }
     if (!test_corroborated_broken_link()) {
         fprintf(stderr, "corroborated broken-link test failed\n");
+        return 1;
+    }
+    if (!test_two_bit_corroborated_link()) {
+        fprintf(stderr, "two-bit corroborated link test failed\n");
         return 1;
     }
     if (!test_checksummed_wrong_link_is_manual_only()) {
