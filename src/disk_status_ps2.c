@@ -95,7 +95,8 @@ static void render(disk_status_kind_t kind, unsigned int lba,
     if (progress_total != 0) {
         print_bar(percent);
         scr_printf("Position : 0x%08x / 0x%08x sectors\n",
-                   progress_current, progress_total);
+                   (unsigned int)progress_current,
+                   (unsigned int)progress_total);
     } else {
         scr_printf("[disk position: total size unavailable]\n");
     }
