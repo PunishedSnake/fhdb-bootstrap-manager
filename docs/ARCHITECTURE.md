@@ -14,8 +14,9 @@ The `0.4.0-dev` **Michishirube** line is progressively converting the former mon
 - `src/rescue_storage.c` — PS2-only rescue lifecycle: protected `HDDRESCUE*.BIN` slots, USB retry/file I/O, active-payload acquisition through `hdd_read`, save/read-back verification, same-disk lookup, and preservation of the damaged/wrong-disk no-silent-fallback rule.
 - `src/bootstrap_source.c` — PS2-only pre-sign installation-source preparation: writable `MBR.XLF` path for the `MBR.XIN` compatibility shim, bounded/USB-retried load, pre-sign KELF validation, sector count, and live `__mbr` reserved-capacity check. It cannot sign or write the HDD.
 - `src/bootstrap_signing.c` — PS2-only security adapter: one-time `SecrInit`, `SecrDownloadFile` through the selected memory-card port, and post-sign structural KELF validation. It owns no card-selection UI, storage, or HDD transaction.
-- `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT detection, and same-disk identity comparison.
-- `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` capacity checks, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.
+- `src/apa.c` — portable, read-only APA master-header core: little-endian parsing, checksum, normal `__mbr` validation, hybrid-GPT guard, and same-disk identity comparison.
+- `src/hdd_bounds.c` — PS2SDK-free payload-pointer shape and explicit `__mbr` geometry policy. It preserves the stable `-170..-173` result domain and is shared by live PS2 reads and generated raw-HDD host fixtures.
+- `src/hdd_read.c` — PS2-only read-only raw HDD transport: bounded `HDIOC_READSECTOR` access, live `hdd0:__mbr` geometry acquisition, and sector-aligned active-payload acquisition. It exposes no write or pointer-update operation.
 - `src/hdd_write.c` — PS2-only write-capable transport: raw `HDIOC_WRITESECTOR` packets, write-side DMA/read-back buffers, flushes, byte comparison, `HDIOC_SETOSDMBR`, and final APA/pointer read-back verification. It owns mechanics only, not backup/confirmation/signing or transaction ordering.
 - `src/bootstrap_transaction.c` — PS2SDK-free post-confirmation transaction sequencer. It preserves raw transport errors, records the failed stage, releases the caller-owned payload immediately after write/verify, and guarantees that pointer update/verification cannot occur after payload failure.
 - `src/bootstrap_transaction_ps2.c` — thin PS2 binding from the portable sequencer to `hdd_write`; it adds no policy of its own.
@@ -32,9 +33,10 @@ The `0.4.0-dev` **Michishirube** line is progressively converting the former mon
 - `src/mbr_compat.c` — narrow `MBR.XIN` / `MBR.XLF` filename compatibility interposition used by `bootstrap_source`.
 - `src/sha256.c` — portable SHA-256 used for rescue integrity and payload fingerprints.
 - `src/capsule_format.c` — endian-stable rescue capsule serialization.
+- `tools/generate_hdd_fixtures.py` — deterministic sparse raw-HDD generator for valid APA, corrupt APA/pointer/payload, GPT-only, and hybrid APA/GPT host cases.
 - `include/` — module interfaces shared by the EE build and, where practical, host tests.
-- `tests/` — portable code that can run without PS2SDK, including synthetic APA, boot-chain, boot-payload, boot-report, rescue-image validation, bootstrap-transaction ordering/failure injection, and malformed KELF regression cases.
-- `docs/` — format, architecture, and roadmap documentation.
+- `tests/` — portable code that can run without PS2SDK, including synthetic raw-HDD images, APA/bounds, boot-chain, boot-payload, boot-report, rescue-image validation, bootstrap-transaction ordering/failure injection, and malformed KELF regression cases.
+- `docs/` — format, architecture, fixture, and roadmap documentation.
 
 ### Modularization rule
 
@@ -64,9 +66,13 @@ An optimization or refactor that changes any of these semantics is a behavior ch
 
 ## APA and write-transaction boundary
 
-`apa.c` is deliberately portable and has no fileXio or PS2SDK dependency. Synthetic host tests construct a valid 1024-byte `__mbr` header, verify the checksum and pointer decoding, exercise hybrid-GPT detection, reject corrupted identity data, and confirm that same-disk matching ignores only the checksum and mutable `osdStart`/`osdSize` fields.
+`apa.c` is deliberately portable and has no fileXio or PS2SDK dependency. Host tests validate both isolated 1024-byte APA headers and complete generated raw-HDD fixtures. The raw suite covers valid disabled/enabled images, checksum/signature corruption, inconsistent and out-of-range pointers, valid/invalid KELF sectors, deterministic garbage, GPT-only input, and a checksummed hybrid APA/GPT image.
 
-Read-only `HDIOC_READSECTOR` transport and active-payload bounds checks live in `hdd_read.c`. The module uses its own aligned two-sector read buffer and can only return bytes or validation errors; it cannot flush, write sectors, or update `osdStart`/`osdSize`.
+Pure pointer policy now lives in `hdd_bounds.c`. `hdd_validate_payload_shape()` preserves the historical empty/too-large/before-reserved precedence without device access, while `hdd_validate_payload_bounds_geometry()` applies an explicit `__mbr` start/size. `hdd_read.c` calls the shape check before `fileXioGetStat()` exactly as Torii did, then delegates the final live geometry decision to the portable function. This lets host fixtures exercise the same `-170..-173` policy without a fake fileXio layer.
+
+The current `is_hybrid_gpt()` guard remains intentionally conservative: it checks the conventional `0x55AA` PC MBR signature. The fixture suite separately records the real `EFI PART` signature at LBA 1. A PC-signature-only APA case protects existing behavior, while GPT-only and APA+GPT cases make a future stricter GPT parser testable instead of silently changing the current guard.
+
+Read-only `HDIOC_READSECTOR` transport and active-payload acquisition live in `hdd_read.c`. The module uses its own aligned two-sector read buffer and can only return bytes or validation errors; it cannot flush, write sectors, or update `osdStart`/`osdSize`.
 
 Write-capable transport is isolated in `hdd_write.c`: it owns the raw write packet, aligned verification buffers, `HDIOC_WRITESECTOR`, `HDIOC_SETOSDMBR`, flushes, payload byte comparison, and final APA/pointer read-back. Its interface intentionally exposes those operations as separate steps rather than a single "install" call.
 
