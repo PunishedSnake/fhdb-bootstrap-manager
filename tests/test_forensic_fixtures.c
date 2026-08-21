@@ -225,15 +225,24 @@ static int multi_header_case(const char *directory)
 static int conflict_case(const char *directory)
 {
     apa_forensic_result_t result;
-    int map;
+    unsigned int i;
+    int saw_conflict = 0;
 
     if (scan_case(directory, "conflicting_live_target", &result) != 0)
         return 0;
-    map = find_map(&result, APA_FORENSIC_MAP_GEOMETRY);
-    if (map < 0 || result.maps[map].conflicts == 0 ||
-        result.maps[map].repairable)
-        return 0;
-    return 1;
+
+    /* Reverse reconstruction can yield the same complete node order as the
+     * geometry candidate. Since production deduplicates equal orders, the map
+     * label is not part of the safety contract. The surviving hypothesis must
+     * expose the live-target conflict and must remain non-writeable. */
+    for (i = 0; i < result.map_count; i++) {
+        if (result.maps[i].conflicts != 0) {
+            saw_conflict = 1;
+            if (result.maps[i].repairable)
+                return 0;
+        }
+    }
+    return saw_conflict;
 }
 
 int main(int argc, char **argv)
