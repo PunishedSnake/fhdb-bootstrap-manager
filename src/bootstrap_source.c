@@ -95,6 +95,7 @@ static int load_payload_file(unsigned int storage, bootstrap_source_t *source,
     source->payload_size = (unsigned int)size;
     source->sectors = (source->payload_size + HDD_SECTOR_SIZE - 1) /
                       HDD_SECTOR_SIZE;
+    result->payload_sectors = source->sectors;
     return 0;
 }
 
