@@ -39,6 +39,7 @@
 #include "boot_chain.h"
 #include "boot_chain_ps2.h"
 #include "capsule_format.h"
+#include "kelf.h"
 #include "platform.h"
 #include "sha256.h"
 #include "storage.h"
@@ -155,72 +156,6 @@ static void log_line(const char *format, ...)
     line[sizeof(line) - 1] = '\0';
     append_text(session_log, sizeof(session_log), &session_log_length,
                 "[%04u] %s\n", ++session_log_sequence, line);
-}
-
-/* ------------------------------------------------------------------------- */
-/* KELF payload structure helpers                                          */
-/* ------------------------------------------------------------------------- */
-
-/* Validate enough KELF structure to reject plain ELFs, truncation, and nonsense. */
-static int validate_kelf_layout(const unsigned char *data, unsigned int size)
-{
-    const SecrKELFHeader_t *header;
-    unsigned int offset;
-
-    if (size < sizeof(SecrKELFHeader_t))
-        return -1;
-    if (size >= 4 && data[0] == 0x7f && data[1] == 'E' &&
-        data[2] == 'L' && data[3] == 'F')
-        return -2;
-
-    header = (const SecrKELFHeader_t *)data;
-    if (header->KELF_header_size < sizeof(SecrKELFHeader_t) ||
-        header->KELF_header_size > size)
-        return -3;
-    if (header->BIT_count > 63)
-        return -4;
-    if (header->ELF_size == 0 ||
-        header->ELF_size > size - header->KELF_header_size ||
-        (unsigned int)header->KELF_header_size + header->ELF_size != size)
-        return -5;
-
-    offset = sizeof(SecrKELFHeader_t) +
-             (header->BIT_count * sizeof(SecrBitBlockData_t));
-    if (offset > header->KELF_header_size)
-        return -6;
-    if ((header->flags & 1) != 0) {
-        if (offset >= header->KELF_header_size)
-            return -7;
-        offset += data[offset] + 1;
-    }
-    if ((header->flags & 0xf000) == 0)
-        offset += 8;
-    if (offset + 32 > header->KELF_header_size)
-        return -8;
-    return 0;
-}
-
-/* Recover the unpadded KELF file length from a sector-aligned disk image. */
-static int kelf_size_from_disk_image(const unsigned char *data,
-                                     unsigned int disk_bytes,
-                                     unsigned int *file_bytes)
-{
-    const SecrKELFHeader_t *header;
-    unsigned int calculated;
-
-    if (disk_bytes < sizeof(SecrKELFHeader_t))
-        return -1;
-    header = (const SecrKELFHeader_t *)data;
-    if (header->ELF_size > disk_bytes ||
-        header->KELF_header_size > disk_bytes - header->ELF_size)
-        return -2;
-    calculated = header->KELF_header_size + header->ELF_size;
-    if (calculated == 0 || calculated > disk_bytes)
-        return -3;
-    if (validate_kelf_layout(data, calculated) < 0)
-        return -4;
-    *file_bytes = calculated;
-    return 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1604,7 +1539,7 @@ static void install_bootstrap(void)
         wait_to_return();
         return;
     }
-    result = validate_kelf_layout(payload, payload_size);
+    result = kelf_validate_layout(payload, payload_size);
     if (result < 0) {
         free(payload);
         log_line("MBR.XLF structural validation failed: %d", result);
@@ -1663,7 +1598,7 @@ static void install_bootstrap(void)
         wait_to_return();
         return;
     }
-    result = validate_kelf_layout(payload, payload_size);
+    result = kelf_validate_layout(payload, payload_size);
     if (result < 0) {
         free(payload);
         fatal_screen("Signed KELF failed structural validation.", result);
