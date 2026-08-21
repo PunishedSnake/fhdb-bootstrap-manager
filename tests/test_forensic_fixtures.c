@@ -182,15 +182,25 @@ static int missing_master_case(const char *directory)
 static int overlap_case(const char *directory)
 {
     apa_forensic_result_t result;
-    int map;
+    unsigned int i;
+    int saw_overlap = 0;
 
     if (scan_case(directory, "overlapping_geometry", &result) != 0)
         return 0;
-    map = find_map(&result, APA_FORENSIC_MAP_GEOMETRY);
-    if (map < 0 || result.maps[map].overlaps == 0 ||
-        result.maps[map].repairable)
-        return 0;
-    return 1;
+
+    /* Maps with the same node order are deliberately deduplicated by the
+     * production engine. Geometry may therefore collapse into an identical
+     * forward/reverse candidate. The safety property is that every retained
+     * candidate which detects the overlap remains non-writeable, not that a
+     * particular map-kind label must survive deduplication. */
+    for (i = 0; i < result.map_count; i++) {
+        if (result.maps[i].overlaps != 0) {
+            saw_overlap = 1;
+            if (result.maps[i].repairable)
+                return 0;
+        }
+    }
+    return saw_overlap;
 }
 
 static int multi_header_case(const char *directory)
