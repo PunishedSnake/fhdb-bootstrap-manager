@@ -1,8 +1,8 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o sha256.o capsule_format.o
+EE_OBJS = main.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 EE_CFLAGS = -O2 -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
-EE_LDFLAGS = -Wl,--gc-sections
+EE_LDFLAGS = -Wl,--gc-sections -Wl,--wrap=fileXioOpen
 
 # Filesystem, MagicGate, USB mass-storage, power, and APA HDD services are
 # embedded so the manager does not depend on whichever IOP modules launched it.
@@ -39,6 +39,9 @@ sha256.o: src/sha256.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 capsule_format.o: src/capsule_format.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+mbr_compat.o: src/mbr_compat.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 %_irx.c:
