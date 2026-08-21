@@ -22,7 +22,8 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 - [x] `platform` — IOP reset, embedded IRX startup, pad DMA lifetime, button-edge input, and confirmation chords.
 - [x] `storage` first pass — storage targets, launch-device selection, ROMVER/file helpers, exact/bounded reads, and generic writes.
 - [ ] Encapsulate storage selection state after the mechanical split has hardware coverage.
-- [ ] `apa` — header parsing/validation, raw transfer boundary, pointer validation, and driver-mediated pointer updates.
+- [x] `apa` portable core — endian parsing, checksum validation, normal `__mbr` recognition, hybrid-GPT detection, and same-disk header matching; covered by synthetic host tests.
+- [ ] `apa` transport/write half — raw sector transfer boundary, payload bounds, driver-mediated `osdStart`/`osdSize` updates, flush/read-back verification, and DMA buffers. This remains in `main.c` until the read-only core has a wider regression baseline.
 - [ ] `boot_chain` — configuration parsing, read-only evidence collection, classification, and report model.
 - [ ] `rescue` — capsule creation/lookup/validation plus restore orchestration while preserving payload-first/pointer-last semantics.
 - [ ] `ui` — menus, fatal/info screens, logging presentation, and confirmation text after core policy has explicit interfaces.
@@ -30,7 +31,7 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 ### Remaining engineering work
 
 - replace project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly;
-- expand host tests for configuration parsing, same-disk header matching, KELF length validation, and boot-chain classification using synthetic fixtures;
+- expand host tests for configuration parsing, KELF length validation, and boot-chain classification using synthetic fixtures; APA checksum/header/same-disk tests are now in place;
 - add build-size/performance reporting so optimization work is measurable rather than flag-driven;
 - establish a hardware validation matrix across FAT console revisions, storage adapters/HDDs, memory-card layouts, and launch devices;
 - make classification evidence more data-driven so supporting another known environment does not require threading another special case through the UI.
