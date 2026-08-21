@@ -65,7 +65,10 @@ static int write_one(const apa_forensic_result_t *scan,
     int result;
 
     /* Refuse to apply an old plan to bytes that changed after the scan. */
-    disk_status_phase("Source-stability check before metadata write");
+    disk_status_phase_at("Source-stability check before metadata write",
+                         patch->lba == 0
+                             ? "APA master header / sectors 0-1"
+                             : "Interior APA partition header at target LBA");
     disk_status_io(DISK_STATUS_VERIFY, patch->lba, 2, current, total);
     result = hdd_read_raw_sectors(patch->lba, 2, source_verify);
     if (result < 0)
@@ -80,9 +83,13 @@ static int write_one(const apa_forensic_result_t *scan,
         return fail_forensic(HDD_FORENSIC_REPAIR_PATCH_INVALID,
                              "build/final-validate patched APA header");
 
-    disk_status_phase(patch->lba == 0
-                          ? "Writing APA master LAST (transaction commit point)"
-                          : "Writing interior APA topology header");
+    disk_status_phase_at(
+        patch->lba == 0
+            ? "Writing APA master LAST (transaction commit point)"
+            : "Writing interior APA topology header",
+        patch->lba == 0
+            ? "APA master header / sectors 0-1"
+            : "Interior APA partition header at target LBA");
     disk_status_io(DISK_STATUS_WRITE, patch->lba, 2, current, total);
     write_packet.lba = patch->lba;
     write_packet.size = 2;
@@ -93,7 +100,8 @@ static int write_one(const apa_forensic_result_t *scan,
         return fail_forensic(HDD_FORENSIC_REPAIR_WRITE_FAILED,
                              "HDIOC_WRITESECTOR APA header");
 
-    disk_status_phase("Flushing committed APA header");
+    disk_status_phase_at("Flushing committed APA header",
+                         "ATA cache for currently patched APA header");
     disk_status_io(DISK_STATUS_FLUSH, patch->lba, 2, current, total);
     result = fileXioDevctl("hdd0:", HDIOC_FLUSH_LOCAL,
                            NULL, 0, NULL, 0);
@@ -101,7 +109,10 @@ static int write_one(const apa_forensic_result_t *scan,
         return fail_forensic(HDD_FORENSIC_REPAIR_FLUSH_FAILED,
                              "HDIOC_FLUSH APA header");
 
-    disk_status_phase("Immediate header read-back verification");
+    disk_status_phase_at("Immediate header read-back verification",
+                         patch->lba == 0
+                             ? "APA master header / sectors 0-1"
+                             : "Interior APA partition header at target LBA");
     disk_status_io(DISK_STATUS_VERIFY, patch->lba, 2, current, total);
     result = hdd_read_raw_sectors(patch->lba, 2, write_verify);
     if (result < 0)
@@ -122,7 +133,10 @@ static int verify_one_final(const apa_forensic_result_t *scan,
     if (apa_forensic_build_patched_header(scan, patch, repaired_header) < 0)
         return fail_forensic(HDD_FORENSIC_REPAIR_PATCH_INVALID,
                              "rebuild expected header for final verification");
-    disk_status_phase("Final full touched-set verification");
+    disk_status_phase_at("Final full touched-set verification",
+                         patch->lba == 0
+                             ? "APA master header / sectors 0-1"
+                             : "Re-reading each committed APA header");
     disk_status_io(DISK_STATUS_VERIFY, patch->lba, 2, current, total);
     result = hdd_read_raw_sectors(patch->lba, 2, write_verify);
     if (result < 0)
@@ -156,8 +170,9 @@ int hdd_forensic_repair_apply_verified(
         return HDD_FORENSIC_REPAIR_PLAN_BLOCKED;
     }
 
-    disk_status_begin("APA multi-header topology repair",
-                      "Preparing interior-header-first transaction");
+    disk_status_begin_at("APA multi-header topology repair",
+                         "Preparing interior-header-first transaction",
+                         "APA metadata headers selected by forensic repair plan");
 
     /* Interior headers first. LBA 0 is the final commit point so an interrupted
      * operation does not advertise a new master topology before its members
