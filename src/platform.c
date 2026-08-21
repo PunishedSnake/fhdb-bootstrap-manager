@@ -22,8 +22,15 @@ static unsigned char pad_buffer[256] __attribute__((aligned(64)));
 
 /* The ANALOG lamp is physically tied to the controller's main mode command.
  * We therefore use steady OFF/ON transitions at operation boundaries rather
- * than blinking it, which would repeatedly reconfigure the pad protocol. */
+ * than blinking it, which would repeatedly reconfigure the pad protocol.
+ *
+ * activity_supported controls future activity transitions. The separate
+ * activity_mode_control_engaged flag remembers that we successfully changed
+ * and locked the pad mode at least once; this remains true even if a later
+ * transition fails, so shutdown/restart still gets one best-effort chance to
+ * restore the user's initial mode and release our mode lock. */
 static int activity_supported;
+static int activity_mode_control_engaged;
 static unsigned int activity_depth;
 static int initial_pad_mode = PAD_MMODE_DIGITAL;
 
@@ -138,6 +145,7 @@ int init_pad(void)
     int current_id;
 
     activity_supported = 0;
+    activity_mode_control_engaged = 0;
     activity_depth = 0;
     padInit(0);
     if (!padPortOpen(0, 0, pad_buffer))
@@ -151,11 +159,14 @@ int init_pad(void)
     else
         initial_pad_mode = PAD_MMODE_DIGITAL;
 
-    /* Probe the standard 0x44 main-mode command once. A real DualShock/DS2
-     * accepts it; simpler or third-party controllers may not. Failure is not a
-     * controller error because all normal button input continues to work. */
-    if (set_pad_main_mode(PAD_MMODE_DIGITAL, PAD_MMODE_LOCK) == 0)
+    /* Probe the standard main-mode command once and establish the manager's
+     * idle state (digital/lamp off). A real DualShock/DS2 normally accepts it;
+     * simpler or third-party controllers may not. Failure is not a controller
+     * error because ordinary button input continues to work. */
+    if (set_pad_main_mode(PAD_MMODE_DIGITAL, PAD_MMODE_LOCK) == 0) {
         activity_supported = 1;
+        activity_mode_control_engaged = 1;
+    }
     return 0;
 }
 
@@ -185,9 +196,15 @@ void pad_activity_end(void)
 void pad_activity_restore(void)
 {
     activity_depth = 0;
-    if (!activity_supported)
+
+    /* Do not key restoration off activity_supported. A pad may have accepted
+     * an earlier transition and then rejected a later one, leaving its mode
+     * different from the startup state. If we ever successfully took control,
+     * always make one final best-effort restore/unlock attempt. */
+    if (!activity_mode_control_engaged)
         return;
     (void)set_pad_main_mode(initial_pad_mode, PAD_MMODE_UNLOCK);
+    activity_mode_control_engaged = 0;
 }
 
 int pad_activity_is_supported(void)
