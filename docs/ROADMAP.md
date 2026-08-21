@@ -27,7 +27,8 @@ Michishirube is developed as a sequence of regression-gated extractions. A check
 - [x] `boot_chain` portable core — shared evidence model, CNF parsing, `Skip_HDD`, ROMVER region mapping, OSDMenu/FHDB target parsing, and deterministic family classification.
 - [x] `boot_chain` PS2 read-only scanner — memory-card HDD modules, FMCB settings, `__sysconf`, `__system`, OSDMenu, PSBBN, HOSDMenu, and HDD-OSD evidence collection.
 - [x] `kelf` portable core — endian-safe KELF structural validation and recovery of the unpadded file size from a sector-aligned HDD image, with named stable result codes.
-- [ ] `boot_chain` orchestration/report split — active payload fingerprinting currently crosses the raw-HDD transport boundary, while report rendering/logging still belongs to `main.c`.
+- [x] `boot_report` portable renderer — bounded `BOOTCHAIN.TXT` formatting, assessment text, hashes, and evidence presentation with no device or persistence dependency.
+- [ ] `boot_chain` orchestration/raw acquisition — active payload acquisition/fingerprinting still crosses the raw-HDD transport boundary, while saving `BOOTCHAIN.TXT`, logging results, and the short diagnostics screen still belong to `main.c`.
 - [ ] `rescue` — capsule creation/lookup/validation plus restore orchestration while preserving payload-first/pointer-last semantics.
 - [ ] `ui` — menus, fatal/info screens, logging presentation, and confirmation text after core policy has explicit interfaces.
 
@@ -48,12 +49,16 @@ Portable CI now exercises:
 - FHDB, HOSDMenu, PSBBN, HDD-OSD, and unknown-KELF fallback classifications;
 - valid low/high KELF header layouts, the optional length-prefixed section, and the 63-entry BIT-table boundary;
 - plain ELF, truncated/impossible header, BIT overflow, missing variable/key area, and malformed sector-image rejection;
-- recovery of the exact unpadded KELF size from a sector-aligned payload image.
+- recovery of the exact unpadded KELF size from a sector-aligned payload image;
+- a complete byte-for-byte golden `BOOTCHAIN.TXT` fixture for a disabled bootstrap;
+- active payload report formatting including sector-image/KELF SHA-256 fingerprints, OSDMenu evidence, and memory-card HDD modules;
+- report assessment precedence for inconsistent pointers, unreadable payloads, invalid KELFs, and unknown downstream environments;
+- bounded report truncation with guaranteed NUL termination and the external-HDD-module/`Skip_HDD` advisory note.
 
 ### Remaining engineering work
 
 - continue replacing project-specific magic negative result numbers with documented enums/domains where PS2SDK errors are not being forwarded directly; KELF format results are now named without changing their historical numeric values;
-- split boot-chain report rendering/orchestration from raw payload acquisition so diagnostics no longer depend on the main application state machine;
+- separate raw active-payload acquisition from boot-chain orchestration, then move report persistence/logging behind a narrow PS2-specific interface without pulling fileXio into the portable renderer;
 - add build-size/performance reporting so optimization work is measurable rather than flag-driven;
 - establish a hardware validation matrix across FAT console revisions, storage adapters/HDDs, memory-card layouts, and launch devices;
 - make classification evidence more data-driven so supporting another known environment does not require threading another special case through the UI.
