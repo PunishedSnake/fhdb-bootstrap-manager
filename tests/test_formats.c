@@ -1,10 +1,78 @@
-/* Host-side test vectors for code that is also linked into the PS2 ELF. */
+/* Host-side test vectors for portable code also linked into the PS2 ELF. */
 
+#include "apa.h"
 #include "capsule_format.h"
 #include "sha256.h"
 
 #include <stdio.h>
 #include <string.h>
+
+static void write_le32_test(unsigned char *destination, uint32_t value)
+{
+    destination[0] = (unsigned char)value;
+    destination[1] = (unsigned char)(value >> 8);
+    destination[2] = (unsigned char)(value >> 16);
+    destination[3] = (unsigned char)(value >> 24);
+}
+
+static void make_standard_apa_header(unsigned char header[APA_HEADER_SIZE])
+{
+    static const unsigned char magic[4] = {'A', 'P', 'A', 0};
+    static const char sce_magic[] = "Sony Computer Entertainment Inc.";
+
+    memset(header, 0, APA_HEADER_SIZE);
+    memcpy(header + APA_MAGIC_OFFSET, magic, sizeof(magic));
+    memcpy(header + APA_ID_OFFSET, "__mbr", 5);
+    memcpy(header + APA_MBR_MAGIC_OFFSET, sce_magic, sizeof(sce_magic) - 1);
+    write_le32_test(header + APA_OSD_START_OFFSET, 0x2000u);
+    write_le32_test(header + APA_OSD_SIZE_OFFSET, 0x40u);
+    write_le32_test(header, apa_checksum(header));
+}
+
+static int test_apa_header_validation(void)
+{
+    unsigned char header[APA_HEADER_SIZE];
+
+    make_standard_apa_header(header);
+    if (!is_standard_apa_header(header))
+        return 0;
+    if (read_le32(header + APA_OSD_START_OFFSET) != 0x2000u ||
+        read_le32(header + APA_OSD_SIZE_OFFSET) != 0x40u)
+        return 0;
+    if (read_le32(header) != apa_checksum(header))
+        return 0;
+    if (is_hybrid_gpt(header))
+        return 0;
+
+    header[PC_MBR_SIGNATURE_OFFSET] = 0x55;
+    header[PC_MBR_SIGNATURE_OFFSET + 1] = 0xaa;
+    if (!is_hybrid_gpt(header))
+        return 0;
+
+    make_standard_apa_header(header);
+    header[APA_MBR_MAGIC_OFFSET] ^= 1u;
+    return !is_standard_apa_header(header);
+}
+
+static int test_apa_same_disk_matching(void)
+{
+    unsigned char current[APA_HEADER_SIZE];
+    unsigned char saved[APA_HEADER_SIZE];
+
+    make_standard_apa_header(current);
+    memcpy(saved, current, sizeof(saved));
+
+    /* Checksum and OSD pointer fields are intentionally mutable identity data. */
+    saved[0] ^= 0xffu;
+    write_le32_test(saved + APA_OSD_START_OFFSET, 0x4000u);
+    write_le32_test(saved + APA_OSD_SIZE_OFFSET, 0x80u);
+    if (!headers_match_same_disk(current, saved))
+        return 0;
+
+    /* Any other byte still belongs to the disk identity comparison. */
+    saved[0x200] ^= 1u;
+    return !headers_match_same_disk(current, saved);
+}
 
 static int test_sha256(void)
 {
@@ -145,22 +213,30 @@ static int test_capsule_rejects_impossible_flags(void)
 
 int main(void)
 {
+    if (!test_apa_header_validation()) {
+        fprintf(stderr, "APA header validation failed.\n");
+        return 1;
+    }
+    if (!test_apa_same_disk_matching()) {
+        fprintf(stderr, "APA same-disk matching failed.\n");
+        return 2;
+    }
     if (!test_sha256()) {
         fprintf(stderr, "SHA-256 test vector failed.\n");
-        return 1;
+        return 3;
     }
     if (!test_capsule_round_trip()) {
         fprintf(stderr, "Capsule round-trip failed.\n");
-        return 2;
+        return 4;
     }
     if (!test_capsule_rejects_wrong_size()) {
         fprintf(stderr, "Capsule size validation failed.\n");
-        return 3;
+        return 5;
     }
     if (!test_capsule_rejects_impossible_flags()) {
         fprintf(stderr, "Capsule flag validation failed.\n");
-        return 4;
+        return 6;
     }
-    puts("All host-side format tests passed.");
+    puts("All host-side format and APA tests passed.");
     return 0;
 }

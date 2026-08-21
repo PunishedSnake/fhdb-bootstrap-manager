@@ -58,6 +58,7 @@ jobs:
           set -euo pipefail
           mv PS2_HDD_BOOTSTRAP_MANAGER.ELF "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF"
           sha256sum "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" > SHA256SUMS.txt
+          test -f HDDMAN.CFG
 
       - name: Publish stable GitHub release
         if: steps.existing.outputs.exists != 'true'
@@ -68,7 +69,7 @@ jobs:
           CODENAME: ${{ steps.version.outputs.codename }}
         run: |
           gh release create "$TAG" \
-            "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" SHA256SUMS.txt \
+            "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" SHA256SUMS.txt HDDMAN.CFG \
             --target "$GITHUB_SHA" \
             --title "PS2 HDD Bootstrap Manager ${VERSION} — ${CODENAME}" \
             --notes-file RELEASE_NOTES.md

@@ -1,91 +1,292 @@
 # PS2 HDD Bootstrap Manager
 
-PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, backing up, disabling, restoring, and installing the HDD OSD bootstrap stored in the APA `__mbr` partition.
+PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, backing up, disabling, restoring, installing, diagnosing, and recovering the HDD OSD bootstrap and APA metadata without formatting the disk.
 
 It began after a real console got trapped in a post-uninstall FHDB boot loop: FHDB was gone, but the bootstrap pointer was still enabled, so the machine faithfully rebooted into software that no longer existed. Apparently uninstalling a program and persuading the console to stop launching it were separate premium features.
 
-Version `0.3.1` **Torii** is a small compatibility update to the stable 0.3.x line. It prefers the Sony-style `MBR.XIN` filename for manual bootstrap installation while retaining `MBR.XLF` as a compatibility fallback for existing community installer layouts. Version 0.3.0 added the larger Torii features: a complete, verifiable backup of the active MBR payload and a read-only boot-chain inspector, plus persistent diagnostics on `mass:`, `mc0:`, or `mc1:`—because diagnosing a twenty-year-old encrypted boot path exclusively from photographs of a CRT was becoming a little too authentic.
+## Current release
 
-## Why this exists
+**0.4.0 — Michishirube (道標)** is the current stable release.
+
+Michishirube expands the project into a modular PS2-side recovery toolkit while preserving the established normal bootstrap write contract from Torii. The release includes:
+
+- full-screen Graphics Synthesizer UI;
+- hierarchical navigation and explicit `LOCKED` states;
+- live HDD operation/LBA telemetry with VBlank-synchronized presentation;
+- domain/stage-aware error explanations instead of bare negative integers;
+- portable APA forensic graph reconstruction;
+- read-only degraded shadow-map inspection;
+- guarded deterministic master recovery;
+- guarded multi-header topology repair;
+- `HDDRAW`, `HDDMETA`, rescue, log and forensic evidence artifacts;
+- a large host regression laboratory and guarded physical-HDD fault injector.
+
+## Important recovery disclaimer
+
+**Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.0.**
+
+Experimental paths include:
+
+- direct sectors 0-1 APA master repair;
+- forensic `prev` / `next` topology writes;
+- multi-header metadata repair;
+- real power-loss/interruption behavior;
+- adapter, bridge, HDD/SSD and controller combinations not yet covered by multiple independent testers.
+
+The implementation is intentionally conservative: it snapshots original bytes, fails closed on ambiguous evidence, checks source stability immediately before writes, writes non-master headers before master LBA 0, flushes and reads back every mutation, and requires a restart after exceptional recovery. Those controls reduce risk; they do not replace broad hardware testing.
+
+If you test recovery, use **sacrificial or fully imaged media** whenever possible and report the console model/ROMVER, disk and adapter, exact corruption scenario, proposed diff, `HDDMAN.LOG`, `FORENSIC.TXT`, relevant `HDDRAW`/`HDDMETA` artifacts, and raw before/after header bytes if available.
+
+Do not make an experimental metadata repair your first move on irreplaceable data.
+
+## What the manager understands
 
 The PS2 ROM decides whether to launch an HDD update from two fields in the APA master header:
 
-- `osdStart`: the starting sector of the signed HDD bootstrap program;
-- `osdSize`: the program size in sectors.
+- `osdStart` — starting sector of the signed HDD bootstrap program;
+- `osdSize` — program size in sectors.
 
-If removal software deletes FHDB but leaves those fields populated, the ROM still sees an enabled update, attempts to execute a missing or unusable payload, resets, and repeats. The traditional recovery method is to disconnect the HDD, change a setting, or reach for increasingly archaeological utilities. The difficult part, naturally, was clearing two 32-bit values without treating the rest of the disk as acceptable collateral damage.
+If uninstall software removes FHDB but leaves those fields populated, the ROM can repeatedly launch a missing or unusable payload. The manager can back up the current state, clear only that pointer, restore a verified payload, or sign/install a replacement MBR program without touching unrelated partition contents.
 
-A 1024-byte header backup preserves the pointer, but it does not preserve the program to which that pointer refers. Version `0.3.0` therefore added a rescue capsule containing the APA master header, the exact sector-aligned active payload, metadata, and SHA-256 digests. Restoration writes and verifies the payload first and exposes it to the ROM only after that verification succeeds.
+A 1024-byte header backup preserves metadata but not the program referenced by the OSD pointer. Full rescue capsules therefore contain the APA master header, the exact sector-aligned active payload, metadata, and SHA-256 digests. Restoration writes and verifies the payload first and exposes it through `osdStart`/`osdSize` only afterward.
 
-Manual installation has the opposite problem. Copying an MBR program to a disk is not enough: the KELF must be signed through the PS2 security hardware, written into the reserved `__mbr` payload area, verified, and only then exposed through the APA pointer. This manager turns those jobs into explicit guarded operations in one ELF.
+## Main features
 
-## Release status
+- Validates the complete 1024-byte APA `__mbr` master header and checksum.
+- Rejects hybrid/protective APA/GPT layouts on write-capable paths.
+- Creates non-overwriting verified header backups and full rescue capsules.
+- Restores full payloads before exposing their OSD pointer.
+- Disables only the HDD bootstrap pointer through `HDIOC_SETOSDMBR(0,0)`.
+- Restores compatible `HDDMBR*.BIN` and legacy `FHDBMBR*.BIN` pointer backups.
+- Structurally validates and MagicGate-signs stock MBR KELFs.
+- Prefers `MBR.XIN` and accepts historical `MBR.XLF` as a compatibility fallback.
+- Writes normal bootstrap payloads only inside the reserved `__mbr` program area beginning at sector `0x2000`.
+- Produces `HDDMAN.LOG` and `BOOTCHAIN.TXT` diagnostics.
+- Fingerprints sector images and unpadded KELFs with SHA-256.
+- Inspects FMCB HDD-skip settings/modules and characteristic FHDB, OSDMenu, PSBBN, HOSDMenu, HDD-OSD, and custom downstream evidence.
+- Provides deterministic mounted-disk structure-health policy through portable `repair_health`.
+- Provides narrowly gated exceptional APA master recovery with exact `HDDRAW*.BIN` snapshots.
+- Provides raw read-only APA forensic reconstruction independent of normal `ps2hdd` admission.
+- Builds forward-link, reverse-link and geometry candidate maps with explicit evidence/confidence.
+- Allows read-only browsing of a reconstructed shadow APA map without pretending the physical disk is healthy.
+- Exports `FORENSIC.TXT` with discovered headers, active maps, checksums, conflicts, overlaps, dormant free-space evidence, and repair-plan state.
+- Builds guarded topology repair plans limited to reconstructable `prev`, `next`, and checksum fields.
+- Saves every touched original header in SHA-256-protected `HDDMETA*.BIN` before topology repair.
+- Commits non-master headers first and master LBA 0 last, with flush/read-back and final verification.
+- Tracks one/two-bit link changes explicitly; stale checksum plus independent graph evidence can corroborate an exact correction.
+- Includes `tools/hardware_fault_injector.py` for guarded, reproducible corruption tests on images or sacrificial physical HDDs.
 
-`0.3.1` **Torii** is the current stable release. The complete `0.2.0` manager—including selectable USB storage, standalone header backup, disable, restore, restart, shutdown, MagicGate signing, and guarded installation—was exercised successfully on real PlayStation 2 hardware.
+## Graphics Synthesizer UI
 
-Torii keeps the full-payload rescue and boot-chain inspection work stable while preserving the write-safety model. Portable SHA-256/capsule logic is covered by host-side tests and release builds are cross-compiled with the pinned PS2DEV v2.0.0 toolchain. Broader real-console coverage is still welcome; stable means the release gates are satisfied, not that twenty-year-old disks have suddenly become immortal. Keep irreplaceable data copied elsewhere.
+0.4.0 uses one application-wide GS frontend rather than mixing a debug terminal with a separate overlay.
 
-## Features
+The physically validated display contract is intentionally conservative:
 
-- Validates the complete 1024-byte APA `__mbr` header and checksum.
-- Rejects hybrid APA/GPT layouts.
-- Shows the current `osdStart` and `osdSize` values.
-- Selects `mc0:`, `mc1:`, or `mass:` for backups, payloads, logs, and reports.
-- Automatically selects the launch device when `argv[0]` begins with `mc0:`, `mc1:`, or `mass:`.
-- Creates and verifies a legacy-compatible 1024-byte header backup without modifying the HDD.
-- Creates a versioned full rescue capsule containing the header and exact active payload sectors.
-- Protects both capsule parts with SHA-256 and verifies the saved file by reading it back.
-- Restores a full capsule payload first, verifies every sector, and enables its pointer last.
-- Disables only the bootstrap pointer through `HDIOC_SETOSDMBR`.
-- Restores compatible `HDDMBR*.BIN` and old `FHDBMBR*.BIN` pointer backups.
-- Structurally validates and MagicGate-signs a stock MBR KELF.
-- Prefers `MBR.XIN` and falls back to `MBR.XLF` for compatibility with existing installer layouts.
-- Writes signed payloads only inside the reserved `__mbr` payload area.
-- Produces `HDDMAN.LOG` and a separate `BOOTCHAIN.TXT` report.
-- Fingerprints both the sector image and unpadded KELF with SHA-256.
-- Inspects FMCB `OSDSYS_Skip_HDD` (and the legacy `Skip_HDD` spelling), regional memory-card HDD modules, `__sysconf`, `__system`, OSDMenu configuration, and characteristic PSBBN partitions.
-- Distinguishes probable FHDB, PSBBN/OSDMenu, HDD-OSD/HOSDMenu, custom OSDMenu, invalid, and unknown boot chains where the observable evidence permits it.
-- Offers controlled power-off and restart to the PS2 Browser.
+- `init_scr()` is retained only as the known-good CRT/read-circuit bootstrap;
+- the visible framebuffer remains at VRAM address 0 in the proven 640x224 FIELD drawing space;
+- `gs_ui_ps2` renders normal application pixels through libdraw/GIF DMA;
+- the PS2SDK MSX font is uploaded once as a texture atlas and rendered native 8x8 -> 8x8;
+- menu cards, outlines, locked rows, progress bars and status panels are GS primitives;
+- remaining source-level `scr_clear()` / `scr_printf()` compatibility screens are intercepted and rendered through the same GS frontend;
+- real libdebug drawing is retained only as a renderer-initialization emergency fallback.
 
-## What it deliberately does not do
+Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
 
-The manager does not format a disk, create APA partitions, install the FHDB, PSBBN, or HDD-OSD file tree, copy applications, repair PFS filesystems, or decide which third-party distribution you should trust this week.
+### Themes and configuration
 
-The `MBR.XIN`/`MBR.XLF` installation option installs only the signed MBR bootstrap program. The partitions and files expected by that program must already exist. Installing the bootstrap without its corresponding environment merely gives the ROM a beautifully verified way to launch something incomplete.
+Available themes:
 
-The family detector is evidence-based, not clairvoyant. Signed KELFs are encrypted; the manager validates their structure and correlates them with downstream files and configuration. `BOOTCHAIN.TXT` labels the result as probable and records the evidence used instead of inventing certainty from encrypted bytes.
+- `aqua` — default cyan/blue;
+- `amber` — warm service-console palette;
+- `sakura` — pink/violet accent palette;
+- `mono` — neutral grayscale palette.
 
-## Safety model
+Themes can be changed live through **System -> UI theme**.
 
-The manager refuses an HDD-changing operation unless the relevant safety checks pass.
+The stable config filename is:
 
-For every write path:
+```text
+HDDMAN.CFG
+```
 
-1. `hdd0:` must report a valid APA disk.
-2. The master header must contain the `APA`, `__mbr`, and Sony MBR signatures.
-3. The APA checksum must be valid.
-4. Hybrid APA/GPT layouts are rejected.
-5. A complete 1024-byte current header backup must be saved and read back before the write.
-6. The operation requires a distinct `L1 + R1 + action` confirmation chord.
-7. The final APA pointer is read back and verified.
+Typical contents:
 
-Full rescue restoration adds these rules:
+```text
+theme=aqua
+```
 
-1. The capsule metadata, size, flags, header digest, and payload digest must validate.
-2. Its APA header must match the currently connected disk, excluding checksum and mutable pointer fields.
-3. The payload range must fit the current `__mbr` partition.
-4. The complete payload is written and compared before `osdStart`/`osdSize` are enabled.
-5. A damaged or wrong-disk capsule blocks silent fallback to a pointer-only restore.
+When the launcher provides a usable `argv[0]`, the manager reads/writes the file beside the ELF. Otherwise it falls back to the selected report/backup storage root. Missing or unwritable config never blocks the manager. 0.4.x retains read-only compatibility with the development-only legacy name `MICHISHIRUBE.CFG`, but official assets and saves use only `HDDMAN.CFG`.
 
-Installation additionally requires a structurally valid KELF no larger than 4 MiB, sufficient reserved capacity, successful console-side MagicGate signing, a full post-flush payload comparison, and pointer-last activation.
+### Live operation monitor
 
-No raw write is issued to sectors 0 or 1. Raw writes are confined to the reserved bootstrap payload area; the APA header is updated by the standard `ps2hdd` driver so its checksum is recalculated normally.
+Long-running operations publish:
 
-## Preparing the files
+```text
+OPERATION   high-level workflow
+ACTION      current phase
+LOCATION    semantic disk/device region
+I/O         READ / WRITE / VERIFY / FLUSH / POINTER UPDATE / SCAN
+PROGRESS    operation or disk-relative progress
+SECTOR      exact physical LBA/range when a raw HDD command exists
+```
 
-Copy `PS2_HDD_BOOTSTRAP_MANAGER.ELF` somewhere your existing launcher can run it. Launching it from USB automatically selects `mass:`; launching it from a memory card automatically selects that card. You can change the destination later with `SELECT`.
+Instrumentation covers startup admission, diagnostics, backup, disable, legacy/full restore, MBR source validation, MagicGate signing, install, payload reads/writes, pointer changes, deterministic health assessment, `HDDRAW`, exceptional master repair, `HDDMETA`, and forensic multi-header repair.
 
-For bootstrap installation, put the stock unsigned MBR payload at the root of the selected device. `MBR.XIN` is preferred; `MBR.XLF` remains accepted for compatibility with existing community installer layouts:
+Presentation is synchronized to VBlank. High-rate raw `READ` telemetry is coalesced so the UI shows the newest state without turning every disk access into a mandatory 50/60 Hz wait. WRITE/VERIFY/FLUSH/pointer and phase changes remain immediate and VBlank-synchronized. This removed visible forensic-scan tearing on the release test console.
+
+## Contextual errors
+
+The manager preserves raw numeric return codes for diagnostics and tests, but user-facing failures also include:
+
+- symbolic error ID;
+- failing stage;
+- summary;
+- likely reason in the current operation context;
+- recommended next action;
+- raw code.
+
+Small IOP error numbers are not blindly translated without context because different drivers may reuse the same values.
+
+## Forensic APA reconstruction
+
+The forensic scanner treats disk structure as evidence rather than immediately trusting every readable sector.
+
+It combines:
+
+- `next` / `prev` links;
+- `main` and `subs[]` references;
+- start/length geometry;
+- APA magic/type/flags;
+- checksums;
+- reciprocal links;
+- overlap/conflict detection;
+- direct-grid and reference-followed evidence.
+
+A candidate map is a hypothesis in RAM. It is **not** silently injected into normal writable `ps2hdd`/PFS state.
+
+### Large HDL disks and truncated scans
+
+Real hardware testing on a healthy large HDL-heavy disk exposed a safety-critical edge case in the old 512-node scanner: the visible partial tail was mistaken for the physical tail and produced two artificial speculative endpoint patches.
+
+0.4.0 therefore enforces:
+
+```text
+truncated scan => read-only only
+```
+
+This is checked independently by map policy, repair-plan construction, UI authorization and the PS2 raw writer. The current node budget is 2048, but raising the limit is only a usability improvement; the fail-closed rule remains valid at any capacity.
+
+### Dormant free-space remnants
+
+The same disk exposed checksum-valid historical `__empty` headers left behind inside a later coalesced active `__empty` extent. These are retained in forensic evidence as `DORMANT_FREE`, but they do not compete with the canonical active chain when the stale extent is wholly contained by the active free region.
+
+The final healthy release-validation report showed:
+
+```text
+Nodes        : 1621 / 2048
+Dormant free : 8
+Truncated    : no
+
+MAP 1: forward links
+ confidence=100
+ nodes=1613
+ reciprocal=1612
+ inferred=0
+ conflicts=0
+ overlaps=0
+ patches=0
+ automatic=no
+ manual=no
+```
+
+That is the intended healthy-disk result: a complete, perfectly reciprocal active chain, historical free-space evidence retained for inspection, and no repair proposal.
+
+## Recovery trust levels
+
+### Normal bootstrap writes
+
+Every normal HDD-changing path requires:
+
+1. normal `ps2hdd` APA admission;
+2. valid current master/checksum/non-hybrid layout;
+3. fresh verified backup;
+4. explicit user confirmation;
+5. payload bounds inside reserved `__mbr` space;
+6. payload write + flush + exact read-back before pointer exposure;
+7. `HDIOC_SETOSDMBR` for normal pointer changes;
+8. pointer read-back verification.
+
+Normal install/restore/disable workflows do **not** raw-write sectors 0-1.
+
+### Exceptional single-master recovery — experimental
+
+A damaged master may prevent normal admission. The exceptional path requires:
+
+1. raw sectors 0-1 remain readable;
+2. portable `apa_repair` proves one narrowly reconstructable canonical field;
+3. stale checksum corroborates that exact correction;
+4. checksum-valid ambiguity, multiple unexplained changes, low identity and GPT/protective layouts are blocked;
+5. exact original 1024 bytes are saved/read back as `HDDRAW.BIN` / `HDDRAW2.BIN`;
+6. completed candidate master is revalidated;
+7. exactly sectors 0-1 are written, flushed, read back and compared;
+8. restart is mandatory.
+
+APA's checksum is additive, not collision-resistant. It is supporting evidence, not proof of health.
+
+### Forensic multi-header recovery — experimental
+
+Broader topology recovery requires:
+
+1. complete raw scan;
+2. coherent candidate map with no blocking conflict/overlap state;
+3. exact preview of every proposed `prev` / `next` change;
+4. verified `HDDMETA.BIN` / `HDDMETA2.BIN` containing every touched original header;
+5. source bytes unchanged since the scan;
+6. non-master headers written before master LBA 0;
+7. flush/read-back after each write;
+8. full final touched-set reread;
+9. mandatory restart after success or partial failure.
+
+Checksum-corroborated exact topology corrections can meet the automatic-safe gate. High-confidence heuristic-only plans remain a stronger explicit expert path. A healthy map with zero patches does not authorize or perform any write.
+
+## Recovery artifacts
+
+Normal backup/rescue:
+
+```text
+<device>:/HDDMBR.BIN
+<device>:/HDDMBR2.BIN
+<device>:/HDDRESCUE.BIN
+<device>:/HDDRESCUE2.BIN
+```
+
+Exceptional master recovery:
+
+```text
+<device>:/HDDRAW.BIN
+<device>:/HDDRAW2.BIN
+```
+
+Forensic analysis/recovery:
+
+```text
+<device>:/FORENSIC.TXT
+<device>:/HDDMETA.BIN
+<device>:/HDDMETA2.BIN
+```
+
+Diagnostics:
+
+```text
+<device>:/HDDMAN.LOG
+<device>:/BOOTCHAIN.TXT
+```
+
+Keep important copies off the PS2 as well. Metadata recovery is useful; negotiating with a physically dying drive that has embraced entropy is not a supported protocol.
+
+## Preparing an MBR source
+
+Put the stock unsigned MBR payload at the root of the selected device:
 
 ```text
 mc0:/MBR.XIN      preferred
@@ -96,182 +297,117 @@ mass:/MBR.XIN
 mass:/MBR.XLF
 ```
 
-If both names are present, `MBR.XIN` is selected. If the preferred file exists but cannot be opened or does not pass the existing KELF validation, the manager fails the operation rather than silently hiding that problem behind `MBR.XLF`. Do not rename an ordinary ELF to either filename; the manager checks the KELF container and rejects plain ELF files.
-
-A genuine PS2 memory card is required for MagicGate signing. If `mass:` is selected, the manager asks whether `mc0` or `mc1` should perform the signing.
+If both names are present, `MBR.XIN` wins. USB has no MagicGate hardware, so an authentic PS2 memory card in `mc0` or `mc1` is required for signing.
 
 ## Recovering from an FHDB boot loop
 
-First enable this option in Free McBoot Configurator:
+For the classic stale-pointer boot loop, first make the console capable of reaching homebrew with the HDD connected. In Free McBoot Configurator enable:
 
 ```text
-Configure OSDSYS Options -> Skip HDD Update Check = ON
+Configure OSDSYS Options
+  -> Skip HDD Update Check = ON
 ```
 
-On some Free McBoot configurations, that option alone does not stop HDD loading. If the console still attempts to boot from the disk, the active FMCB card may load HDD support modules from its regional system folder before or independently of the OSDSYS setting.
-
-With the HDD disconnected if necessary, use wLaunchELF to back up and then remove these files from the active FMCB folder:
+If necessary, inspect the expected FMCB system folder for stale HDD launcher modules such as:
 
 ```text
-mc0:/BIEXEC-SYSTEM/hddload.irx
-mc0:/BIEXEC-SYSTEM/dev9.irx
-mc0:/BIEXEC-SYSTEM/atad.irx
+hddload.irx
+dev9.irx
+atad.irx
 ```
 
-Use `mc1:` for a card in slot 2. Cross-model cards may instead use `BAEXEC-SYSTEM`, `BEEXEC-SYSTEM`, or `BCEXEC-SYSTEM`; `BOOTCHAIN.TXT` checks every known regional folder and lists each module it finds. These are memory-card files, not HDD files. Keep copies so they can be restored later.
+Run the manager, create a verified backup, then disable the active pointer. Do not delete or reformat partitions merely to stop the ROM bootstrap.
 
-Then cold-boot with the HDD attached, launch the manager, confirm that the APA header is valid, select a backup destination, press `X`, review the paths, and confirm with `L1 + R1 + X`. Do not reset or remove power while a write or verification is in progress.
+## Guarded physical-HDD fault injection
 
-## Inspecting the boot chain
+`tools/hardware_fault_injector.py` is a validation helper for a **sacrificial or fully backed-up disk**. It is intentionally not a general raw-sector editor.
 
-Press `R1` from the main menu. The scan is read-only and saves two files to the selected device:
+Current scenarios include:
 
 ```text
-<device>:/HDDMAN.LOG
-<device>:/BOOTCHAIN.TXT
+master-magic-1bit
+next-1bit
+next-2bit
 ```
 
-`BOOTCHAIN.TXT` is replaced with the latest complete scan. It records:
+Physical-drive mutation requires a fresh master SHA-256 from `probe`, explicit `--apply`, and `--confirm-physical-write`. The tool saves the exact original header and manifest, flushes/read-backs the mutation, and refuses a restore if current bytes no longer match the expected mutated state.
 
-- ROMVER and the expected regional FMCB folder;
-- APA pointer state and bounds-check results;
-- sector-image and unpadded-KELF SHA-256 fingerprints;
-- KELF structural validation;
-- the probable bootstrap family, confidence, and next stage;
-- `OSDSYS_Skip_HDD`/`Skip_HDD` values found on `mc0:`, `mc1:`, and `mass:`;
-- exact `hddload.irx`, `dev9.irx`, and `atad.irx` locations;
-- FHDB, OSDMenu, PSBBN, HOSDMenu, HDD-OSD, and legacy downstream evidence.
+See [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md).
 
-`HDDMAN.LOG` is an ordered session log for initialization, scans, backups, validation failures, and write results. New entries are appended; a log at or above 128 KiB is replaced on the next flush. USB writes receive a short retry window while `mass:` finishes mounting.
+## Regression gates
 
-## Backups and rescue capsules
+`make test-host` executes the portable format, rescue, KELF, boot-chain, report, transaction, APA-repair, contextual-error and forensic suites.
 
-Press `START` at any time. No HDD data is modified.
+The raw-HDD laboratories include:
 
-The manager first saves the current APA master header under the first available name:
+- **30** deterministic sparse mounted-HDD fixtures with current postcondition matrix `4 no-repair / 6 guarded header-repair / 8 pointer-clear / 12 blocked`;
+- **9** sparse 512 MiB forensic E2E HDD images;
+- one-bit and exact two-bit stale-checksum topology cases;
+- overlap/conflict/missing-master write gates;
+- healthy chains beyond the old 512-node limit;
+- hard read-only truncation beyond the current capacity;
+- canonical empty-ID HDL subpartitions;
+- direct-grid garbage rejection;
+- dormant historical `__empty` coalescing regression;
+- normal payload-first/pointer-last mutation tests;
+- guarded fault-injector self-test.
 
-```text
-<device>:/HDDMBR.BIN
-<device>:/HDDMBR2.BIN
+Release builds use the pinned `ps2dev/ps2dev:v2.0.0` toolchain with `-Wall -Wextra -Werror`.
+
+## Hardware-validation status
+
+The 0.4 release line has been exercised on real PS2 hardware for startup, normal APA admission, hierarchical UI, action gating, themes/config, VBlank status rendering, diagnostics, backup/rescue evidence, healthy large-HDD forensic scanning and negative fail-closed paths.
+
+The final healthy forensic scan used for release validation produced a single 100%-confidence active map with zero proposed patches and correctly retained eight dormant free-space remnants as non-active evidence.
+
+The **experimental disclaimer remains specifically for destructive exceptional recovery**. More independent reports are wanted before those paths are considered broadly hardware-proven.
+
+See [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md).
+
+## Build
+
+With a normal PS2DEV/PS2SDK environment:
+
+```sh
+make
 ```
 
-It then saves a versioned rescue capsule under the first available name:
-
-```text
-<device>:/HDDRESCUE.BIN
-<device>:/HDDRESCUE2.BIN
-```
-
-When the pointer is enabled, the capsule includes the exact sector-aligned active payload. When it is disabled, the capsule is header-only and documents that state. Existing differing files are preserved rather than overwritten. Keep another copy on a PC; the manager can preserve bytes, but it cannot negotiate with a dying disk or a USB stick that has embraced entropy.
-
-The on-disk capsule format is documented in [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md).
-
-## Restoring a bootstrap
-
-Restoration is available while the current pointer is disabled.
-
-Press `SQUARE`. The manager searches `HDDRESCUE.BIN` and `HDDRESCUE2.BIN` first. A valid same-disk full capsule restores and verifies the payload before enabling its saved pointer. If no usable full capsule exists, the manager can fall back to a compatible pointer-only header backup:
-
-```text
-HDDMBR.BIN
-HDDMBR2.BIN
-FHDBMBR.BIN
-FHDBMBR2.BIN
-```
-
-The legacy fallback cannot prove that the referenced payload sectors still contain the original program, so it checks the saved range, creates a fresh safety backup, and states clearly that only the pointer is being restored. A corrupted or wrong-disk rescue capsule is reported instead of being quietly ignored.
-
-## Installing a bootstrap payload
-
-This is intended for a manual FHDB or HDD-OSD setup whose required partitions and files already exist.
-
-1. Ensure the current pointer is disabled.
-2. Put the correct stock `MBR.XIN` at the root of the selected device, or use `MBR.XLF` for compatibility with an existing installer layout.
-3. Press `CIRCLE`.
-4. Select a signing memory card if the source is `mass:`.
-5. Review the source, backup, target sector, byte size, and sector count.
-6. Hold `L1 + R1` and press `CIRCLE`.
-7. Wait until the payload and pointer both report successful verification.
-
-After a successful installation the manager refreshes the boot-chain report and attempts to create a full rescue capsule of the newly installed state.
-
-## Controls
-
-| Context | Input | Action |
-|---|---|---|
-| Main menu | `START` | Save and verify the current header and rescue capsule without changing the HDD |
-| Main menu | `R1` | Run the read-only boot-chain scan and save both report files |
-| Main menu | `SELECT` | Choose `mc0`, `mc1`, or `mass` |
-| Enabled bootstrap | `X` | Back up and prepare to disable |
-| Disable confirmation | `L1 + R1 + X` | Clear the active pointer |
-| Disabled bootstrap | `SQUARE` | Load a full rescue capsule or legacy pointer backup |
-| Restore confirmation | `L1 + R1 + SQUARE` | Restore payload/pointer according to the selected backup type |
-| Disabled bootstrap | `CIRCLE` | Load, sign, and prepare to install `MBR.XIN` or compatible `MBR.XLF` |
-| Install confirmation | `L1 + R1 + CIRCLE` | Write, verify, and enable the payload |
-| Main menu | `TRIANGLE` | Open the power/restart menu |
-| Confirmation screens | `TRIANGLE` | Cancel without the pending write |
-
-## Technical details
-
-The ELF embeds its PS2SDK IOP dependencies, including fileXio, free memory-card drivers, `secrman`/`secrsif`, BDM/FatFs USB storage, poweroff, DEV9, ATA, APA HDD, and read-only PFS support.
-
-The primary device calls are:
-
-- `HDIOC_READSECTOR` (`0x6836`) for the APA header and payload reads;
-- `HDIOC_WRITESECTOR` (`0x6837`) only for the reserved payload area;
-- `HDIOC_SETOSDMBR` (`0x6833`) for `osdStart` and `osdSize`;
-- `HDIOC_FLUSH` (`0x4804`) before verification;
-- `SecrDownloadFile()` through `secrman`/`secrsif` for KELF signing;
-- read-only `pfs0:` mounts of `__sysconf` and `__system` for diagnostics;
-- `ExecOSD("BootBrowser")` for restart.
-
-Version 0.3.1 adds `src/mbr_compat.c`, a narrow GNU ld `--wrap=fileXioOpen` compatibility layer. It only intercepts attempts to open a path ending in `/MBR.XLF`; when a sibling `MBR.XIN` exists, that file is opened instead. This keeps the established 0.3.0 installation state machine and all HDD write ordering unchanged.
-
-The source layout and write-order invariants are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). In particular, the conservative two-sector raw HDD transfer size is intentional and must not be increased without measuring and testing the fileXio/IOP path on hardware.
-
-## Hardware validation
-
-The original disable workflow eliminated a real post-uninstall FHDB boot loop on:
-
-- PlayStation 2 FAT `SCPH-50000` (Japanese model);
-- MechaPWN-enabled console;
-- cross-model Free McBoot memory card;
-- standard non-GPT APA HDD.
-
-The console subsequently cold-booted with the HDD connected. The final `0.2.0` workflow was also reported working on the same hardware, including selectable `mass:` storage and standalone byte-for-byte backup. The full rescue capsule and expanded boot-chain inspector are stable in the Torii 0.3.x line; additional console, adapter, and HDD combinations remain useful validation coverage.
-
-## Building and testing
-
-Portable format and SHA-256 tests do not require PS2SDK:
+Host-only tests:
 
 ```sh
 make test-host
 ```
 
-For the PS2 ELF, use PS2DEV/PS2SDK or the same pinned container as CI:
+GitHub Actions builds the stripped release ELF using `ps2dev/ps2dev:v2.0.0`, produces SHA-256, and publishes:
 
-```sh
-docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0 \
-  sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+```text
+PS2_HDD_BOOTSTRAP_MANAGER-0.4.0.ELF
+SHA256SUMS.txt
+HDDMAN.CFG
 ```
 
-The resulting file is `PS2_HDD_BOOTSTRAP_MANAGER.ELF`. Stable `0.3.x` releases are built with the pinned PS2DEV v2.0.0 container. GitHub release assets include the ELF and `SHA256SUMS.txt`; generated binaries are deliberately not tracked in the source tree.
+## Roadmap
 
-## Project documentation
+0.4.x Michishirube is feature-frozen except for defects and narrowly scoped validation hardening.
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — safety invariants, EE/IOP boundaries, and optimization policy.
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release codenames and planned engineering work.
-- [`docs/RESCUE_FORMAT.md`](docs/RESCUE_FORMAT.md) — stable on-disk rescue capsule format.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, test, and review rules for changes that can touch an HDD.
+The next feature train is **0.5.x Kakehashi**, focused on versioned recovery evidence and interoperability with host-side tooling such as PS2 DriveForge. Host tools may analyze and propose; the PS2 manager remains final write authority after re-reading and revalidating the physical disk.
 
-## License
+See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-The application source is released under the MIT License. Embedded PS2SDK modules retain the Academic Free License 2.0 terms included in `PS2SDK_LICENSE.txt`.
+## Project documents
 
-## Acknowledgements
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module ownership and write invariants.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — release train and product boundary with DriveForge.
+- [`docs/HDD_FIXTURES.md`](docs/HDD_FIXTURES.md) — raw-HDD regression laboratories.
+- [`docs/FORENSIC_RECOVERY.md`](docs/FORENSIC_RECOVERY.md) — forensic trust and repair model.
+- [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md) — physical validation record.
+- [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded corruption/restore procedure.
+- [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — GS frontend and display-validation history.
+- [`docs/STATUS_AND_ERRORS.md`](docs/STATUS_AND_ERRORS.md) — live telemetry and contextual error presentation.
 
-- PS2DEV and PS2SDK contributors for the APA, PFS, USB, security, and console services.
-- Free McBoot/FHDB contributors for the original signing and MBR installation workflow.
-- OSDMenu, HDD-OSD, and PSBBN preservation contributors whose documented layouts make evidence-based identification possible.
-- **Berion (PSX-Place)** for pointing out the original Sony-style `MBR.XIN` naming and the historical `MBR.XLF` installer convention.
-- Hifu Himejima for reproducing the failure, preserving the disk header, testing on real hardware, and being that one gloriously unhinged developer who decided to correct this great injustice.
+## Credits
+
+- **Hifu Himejima** — project author / hardware validation
+- **OpenAI Codex / ChatGPT** — implementation assistance
+- **PS2DEV / PS2SDK contributors** — EE/IOP toolchain and libraries
+- reverse-engineering references and historical PS2 HDD tooling are credited in the source and project history where applicable

@@ -1,0 +1,6 @@
+#ifndef PS2_HDD_BOOTSTRAP_MANAGER_APP_IDENTITY_H
+#define PS2_HDD_BOOTSTRAP_MANAGER_APP_IDENTITY_H
+
+#define APP_NAME "PS2 HDD Bootstrap Manager"
+
+#endif
