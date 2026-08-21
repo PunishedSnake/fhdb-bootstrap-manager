@@ -90,17 +90,17 @@ int main(int argc, char **argv)
 {
     const char *directory = argc > 1 ? argv[1] : "tests/generated_hdds";
     static const char *const repairable[] = {
-        "bad_checksum",
         "bad_apa_magic",
         "bad_mbr_id",
-        "bad_sony_magic",
-        "torn_disable_stale_checksum"
+        "bad_sony_magic"
     };
     static const char *const pointer_only[] = {
         "pointer_start_only",
         "pointer_size_only"
     };
     static const char *const refused[] = {
+        "bad_checksum",
+        "torn_disable_stale_checksum",
         "apa_pc_signature_only",
         "hybrid_apa_gpt",
         "gpt_only",
