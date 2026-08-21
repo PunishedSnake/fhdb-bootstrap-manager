@@ -159,6 +159,34 @@ def main():
         add(name, header, standard=False, hybrid=False, gpt=False,
             start=0, sectors=0, bounds=-170, mbr_size=DEFAULT_MBR_SECTORS)
 
+    # A physical bit flip in a known canonical field invalidates the checksum.
+    # The repair planner may fix it only when the proposed canonical value makes
+    # the stored pre-flip checksum valid again.
+    header = make_apa_header()
+    header[APA_MAGIC_OFFSET] ^= 1
+    add("bitflip_apa_magic", header, standard=False, hybrid=False, gpt=False,
+        start=0, sectors=0, bounds=-170, mbr_size=DEFAULT_MBR_SECTORS)
+
+    # Checksummed-but-noncanonical master anchors are distinct from raw checksum
+    # corruption: their correct values are fixed by the APA MBR format.
+    header = make_apa_header()
+    write_le32(header, APA_START_OFFSET, 0x1234)
+    write_le32(header, 0, apa_checksum(header))
+    add("bad_master_start", header, standard=True, hybrid=False, gpt=False,
+        start=0, sectors=0, bounds=-170, mbr_size=DEFAULT_MBR_SECTORS)
+
+    header = make_apa_header()
+    write_le16(header, APA_TYPE_OFFSET, 0x1337)
+    write_le32(header, 0, apa_checksum(header))
+    add("bad_master_type", header, standard=True, hybrid=False, gpt=False,
+        start=0, sectors=0, bounds=-170, mbr_size=DEFAULT_MBR_SECTORS)
+
+    header = make_apa_header()
+    write_le32(header, APA_MBR_VERSION_OFFSET, 99)
+    write_le32(header, 0, apa_checksum(header))
+    add("bad_mbr_version", header, standard=True, hybrid=False, gpt=False,
+        start=0, sectors=0, bounds=-170, mbr_size=DEFAULT_MBR_SECTORS)
+
     add("pointer_start_only", make_apa_header(PAYLOAD_LBA, 0),
         standard=True, hybrid=False, gpt=False, start=PAYLOAD_LBA, sectors=0,
         bounds=-170, mbr_size=DEFAULT_MBR_SECTORS)
