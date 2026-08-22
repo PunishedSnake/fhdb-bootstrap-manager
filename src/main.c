@@ -100,6 +100,7 @@ int main(int argc, char **argv)
     int result;
     int hdd_status;
     int app_config_result;
+    int font_result;
     char config_path[STORAGE_LAUNCH_PATH_SIZE];
 
     memset(&timing, 0, sizeof(timing));
@@ -146,6 +147,7 @@ int main(int argc, char **argv)
     poweroffInit();
     bootstrap_signing_init();
     app_config_result = app_config_load();
+    font_result = gs_ui_font_apply(app_config_font());
     stage_end = GetTimerSystemTime();
     timing.services_ms = elapsed_ms(stage_start, stage_end);
 
@@ -220,6 +222,8 @@ int main(int argc, char **argv)
                          config_path, app_config_result);
         session_log_line("Preferred video mode: %s",
                          video_mode_name(app_config_video_mode()));
+        session_log_line("UI font: %s; apply=%d",
+                         ui_font_name(app_config_font()), font_result);
     }
     session_log_line(
         "Startup timing ms: iop=%u modules=%u services=%u pad=%u hdd_status=%u header=%u total=%u",

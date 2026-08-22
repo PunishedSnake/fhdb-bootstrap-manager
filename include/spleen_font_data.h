@@ -1,0 +1,11 @@
+#ifndef PS2_HDD_BOOTSTRAP_MANAGER_SPLEEN_FONT_DATA_H
+#define PS2_HDD_BOOTSTRAP_MANAGER_SPLEEN_FONT_DATA_H
+
+#define SPLEEN_ASCII_FIRST 32u
+#define SPLEEN_ASCII_LAST 126u
+#define SPLEEN_ASCII_COUNT (SPLEEN_ASCII_LAST - SPLEEN_ASCII_FIRST + 1u)
+
+extern const unsigned char spleen_5x8_ascii[SPLEEN_ASCII_COUNT * 8u];
+extern const unsigned char spleen_8x16_ascii[SPLEEN_ASCII_COUNT * 16u];
+
+#endif

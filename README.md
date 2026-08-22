@@ -29,6 +29,11 @@ optimization. This lets the R5900 compiler optimize across module boundaries
 while the existing section garbage collection continues to remove unused code
 from the stripped release ELF.
 
+The current feature branch identifies itself as **0.5.0-dev — Kakehashi**. It
+is based on the 0.4.2 display-safety hotfix and introduces a resolution-aware
+GS viewport plus selectable bitmap fonts. It remains a hardware-test build,
+not a stable release.
+
 ## Important recovery disclaimer
 
 **Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.1.**
@@ -93,7 +98,7 @@ The physically validated display contract is intentionally conservative:
 - `init_scr()` is retained only as the known-good CRT/read-circuit bootstrap;
 - the visible framebuffer remains at VRAM address 0 in the proven 640x224 FIELD drawing space;
 - `gs_ui_ps2` renders normal application pixels through libdraw/GIF DMA;
-- the PS2SDK MSX font is uploaded once as a texture atlas and rendered native 8x8 -> 8x8;
+- the active bitmap font is generated into a reusable RGBA texture atlas;
 - menu cards, outlines, locked rows, progress bars and status panels are GS primitives;
 - complete frames are drawn off-screen and swapped on VBlank through two
   framebuffers;
@@ -114,6 +119,15 @@ native output. Confirmed choices can be stored in `HDDMAN.CFG`, but are guarded
 again at startup. A startup timeout restores native and rewrites the preference
 to `native`, preventing a persistent black-screen loop.
 
+The development renderer treats the signal, complete framebuffer, active
+output and logical UI viewport as separate geometry. The existing 640x224 UI
+is transformed into the selected viewport with independently snapped edges,
+so fractional horizontal scales do not accumulate text or panel drift. Every
+frame clears the complete active output before drawing the viewport, providing
+deterministic letterboxing for future modes. VBlank waits are bounded; loss of
+the expected signal state restores the native display instead of blocking the
+confirmation timer forever.
+
 ### Themes and configuration
 
 Available themes:
@@ -124,6 +138,15 @@ Available themes:
 - `mono` — neutral grayscale palette.
 
 Themes can be changed live through **System -> UI theme**.
+
+Available fonts can be changed live through **System -> UI font**:
+
+- `msx` — the original PS2SDK 8x8 raster;
+- `spleen` — Spleen 5x8 in native output and 8x16 in 480p.
+
+Spleen is rendered at its native bitmap sizes with nearest-neighbour sampling.
+The logical 8-pixel text advance remains stable, so changing fonts does not
+reflow menus or diagnostics.
 
 The stable config filename is:
 
@@ -136,12 +159,16 @@ Typical contents:
 ```text
 theme=aqua
 video_mode=native
+font=spleen
 ```
 
 Supported `video_mode` values are `native` and `480p`, both using 32-bit true
 double buffering. A config created by 0.4.1 with `ntsc-480i`, `pal-576i`,
 `576p`, `720p`, or `1080i` is sanitized to `native` before any GS mode switch
 and rewritten when its storage is writable.
+
+An unknown `font` value falls back to `msx` and is rewritten when possible.
+Font selection is cosmetic and can never block application startup.
 
 When the launcher provides a usable `argv[0]`, the manager reads/writes the file beside the ELF. Otherwise it falls back to the selected report/backup storage root. Missing or unwritable config never blocks the manager. 0.4.x retains read-only compatibility with the development-only legacy name `MICHISHIRUBE.CFG`, but official assets and saves use only `HDDMAN.CFG`.
 
@@ -417,8 +444,9 @@ HDDMAN.CFG
 
 The ZIP is the recommended download and contains the ELF, `HDDMAN.CFG`,
 `SHA256SUMS.txt`, the MIT project license, PS2SDK's AFL-2.0 license and the
-third-party notices together. Individual runtime assets remain available for
-targeted downloads.
+third-party notices together. Builds containing Spleen also include its
+BSD-2-Clause license. Individual runtime assets remain available for targeted
+downloads.
 
 ## Roadmap
 
@@ -438,24 +466,25 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded corruption/restore procedure.
 - [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — GS frontend and display-validation history.
 - [`docs/VIDEO_MODES_AND_FONTS.md`](docs/VIDEO_MODES_AND_FONTS.md) — GS timing, viewport, scaling, font and licensing design.
+- [`docs/GS_RENDERER_0.5.md`](docs/GS_RENDERER_0.5.md) — implemented scalable renderer and font pipeline.
 - [`docs/PERFORMANCE_0.4X.md`](docs/PERFORMANCE_0.4X.md) — measured EE/GS optimization record and validation boundary.
 - [`docs/STATUS_AND_ERRORS.md`](docs/STATUS_AND_ERRORS.md) — live telemetry and contextual error presentation.
 
 ## Credits
 
 - **Hifu Himejima** — project author / hardware validation
-- **OpenAI Codex / ChatGPT** — implementation assistance
+- **PS2DEV / PS2SDK contributors** — EE/IOP toolchain and libraries
+- **Frederic Cambus and Spleen contributors** — optional bitmap font
+- reverse-engineering references and historical PS2 HDD tooling are credited in the source and project history where applicable
 
 ## License and third-party components
 
 Original project source is licensed under the [MIT License](LICENSE), copyright
 2026 Hifu Himejima (PunishedSnake).
 
-PS2SDK libraries, embedded modules and the current `msx` bitmap font retain the
-PS2SDK Academic Free License 2.0 and their original notices. See
+PS2SDK libraries, embedded modules and the `msx` bitmap font retain the PS2SDK
+Academic Free License 2.0. Spleen glyph data retains BSD-2-Clause. See
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and
-[`PS2SDK_LICENSE.txt`](PS2SDK_LICENSE.txt). Future font assets must carry their
-own redistribution/embedding license; a convenient download link and good
-intentions are not substitutes for permission.
-- **PS2DEV / PS2SDK contributors** — EE/IOP toolchain and libraries
-- reverse-engineering references and historical PS2 HDD tooling are credited in the source and project history where applicable
+[`PS2SDK_LICENSE.txt`](PS2SDK_LICENSE.txt). Third-party font assets must carry
+their own redistribution and embedding license; a convenient download link
+and good intentions are not substitutes for permission.

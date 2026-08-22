@@ -227,6 +227,62 @@ static void ui_theme_menu(void)
     app_ui_wait_to_return();
 }
 
+static void ui_font_menu(void)
+{
+    static const char *const hints[UI_FONT_COUNT] = {
+        "Original PS2SDK 8x8 bitmap raster",
+        "BSD-licensed Spleen 5x8 native / 8x16 progressive raster"
+    };
+    app_ui_menu_item_t items[UI_FONT_COUNT];
+    ui_font_id_t previous_preference = app_config_font();
+    unsigned int selected = (unsigned int)gs_ui_font_current();
+    unsigned int i;
+    int choice;
+    int apply_result;
+    int save_result = 0;
+    char config_path[STORAGE_LAUNCH_PATH_SIZE];
+
+    for (i = 0; i < UI_FONT_COUNT; i++) {
+        items[i].label = ui_font_name((ui_font_id_t)i);
+        items[i].hint = hints[i];
+        items[i].enabled = 1;
+    }
+    choice = app_ui_menu_select("UI font", "Pixel-perfect bitmap fonts",
+                                items, UI_FONT_COUNT, &selected);
+    if (choice < 0)
+        return;
+    if ((ui_font_id_t)choice == gs_ui_font_current() &&
+        (ui_font_id_t)choice == app_config_font())
+        return;
+
+    apply_result = gs_ui_font_apply((ui_font_id_t)choice);
+    if (apply_result == 0) {
+        (void)app_config_set_font((ui_font_id_t)choice);
+        save_result = app_config_save();
+        if (save_result < 0)
+            (void)app_config_set_font(previous_preference);
+    }
+    app_config_path(config_path, sizeof(config_path));
+    session_log_line("UI font request: %s; apply=%d; config=%s; save=%d",
+                     ui_font_name((ui_font_id_t)choice), apply_result,
+                     config_path, save_result);
+
+    scr_clear();
+    if (apply_result < 0) {
+        scr_printf("Font change failed (code %d).\n", apply_result);
+    } else {
+        scr_printf("UI font: %s\n\n", ui_font_name((ui_font_id_t)choice));
+        scr_printf("Config: %s\n", config_path);
+        if (save_result == 0)
+            scr_printf("Preference saved beside the ELF.\n");
+        else
+            scr_printf("Font is active for this session; save code: %d\n",
+                       save_result);
+        scr_printf("\nNo restart is required.\n");
+    }
+    app_ui_wait_to_return();
+}
+
 static const char *const video_mode_hints[VIDEO_MODE_COUNT] = {
     "Hardware-proven automatic 640x224 FIELD output",
     "Hardware-proven 720x448 progressive output in 32-bit color"
@@ -253,6 +309,8 @@ static int confirm_video_mode(video_mode_id_t mode, int startup)
         gs_ui_render_message(title, body,
                              "No confirmation means no permanent black screen.",
                              GS_UI_TONE_WARNING);
+        if (gs_ui_video_mode_current() != mode)
+            return 0;
         if (wait_for_press_timeout(1000u, &pressed)) {
             if (pressed & PAD_CROSS)
                 return 1;
@@ -385,13 +443,14 @@ static void system_menu(void)
     static const app_ui_menu_item_t items[] = {
         {"Controller / activity indicator", "Inspect ANALOG-lamp capability and behavior", 1},
         {"UI theme", "Choose Aqua, Amber, Sakura or Monochrome", 1},
+        {"UI font", "Choose the original MSX or adaptive Spleen bitmap", 1},
         {"Video mode", "Hardware-tested native or guarded 480p output", 1},
         {"Power / restart", "Restart to Browser or shut down", 1}
     };
     unsigned int selected = 0;
 
     for (;;) {
-        int choice = app_ui_menu_select("System", NULL, items, 4, &selected);
+        int choice = app_ui_menu_select("System", NULL, items, 5, &selected);
         if (choice < 0)
             return;
         if (choice == 0)
@@ -399,8 +458,10 @@ static void system_menu(void)
         if (choice == 1)
             ui_theme_menu();
         if (choice == 2)
-            video_mode_menu();
+            ui_font_menu();
         if (choice == 3)
+            video_mode_menu();
+        if (choice == 4)
             app_ui_power_menu();
     }
 }
@@ -413,7 +474,7 @@ void manager_menu_run(unsigned char header[APA_HEADER_SIZE],
         {"Diagnostics", "Boot-chain evidence and reports", 1},
         {"Recovery", "Deterministic repair and forensic APA workspace", 1},
         {"Backup & Storage", "Rescue backup destination and storage selection", 1},
-        {"System", "Controller, UI theme, video mode, restart and power", 1}
+        {"System", "Controller, theme, font, video mode, restart and power", 1}
     };
     unsigned int selected = 0;
     char status[192];
