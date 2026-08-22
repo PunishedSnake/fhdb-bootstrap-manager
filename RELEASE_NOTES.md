@@ -31,6 +31,14 @@ video_mode=native
 
 Valid `video_mode` values are now `native` and `480p`.
 
+## Licensing and release archive
+
+The project remains MIT-licensed. The release ZIP now also carries the project
+license, the PS2SDK AFL-2.0 license and explicit third-party notices covering
+the statically linked SDK components, embedded IOP modules and current PS2SDK
+`msx` font. Apparently licenses also work better when they are included in the
+package rather than communicated telepathically.
+
 ---
 
 ## Historical 0.4.1 release notes

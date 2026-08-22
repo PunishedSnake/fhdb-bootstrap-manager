@@ -1,6 +1,9 @@
 # PS2 HDD Bootstrap Manager
 
-PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, backing up, disabling, restoring, installing, diagnosing, and recovering the HDD OSD bootstrap and APA metadata without formatting the disk.
+PS2 HDD Bootstrap Manager is a standalone PlayStation 2 HDD bootstrap,
+diagnostic, forensic-backup and guarded-recovery toolkit. It manages the HDD
+OSD boot chain and APA metadata without formatting the disk or treating
+"delete everything" as a particularly inspired recovery algorithm.
 
 It began after a real console got trapped in a post-uninstall FHDB boot loop: FHDB was gone, but the bootstrap pointer was still enabled, so the machine faithfully rebooted into software that no longer existed. Apparently uninstalling a program and persuading the console to stop launching it were separate premium features.
 
@@ -412,7 +415,10 @@ SHA256SUMS.txt
 HDDMAN.CFG
 ```
 
-The ZIP is the recommended download and contains the ELF, `HDDMAN.CFG`, and `SHA256SUMS.txt` together. Individual assets remain available for targeted downloads.
+The ZIP is the recommended download and contains the ELF, `HDDMAN.CFG`,
+`SHA256SUMS.txt`, the MIT project license, PS2SDK's AFL-2.0 license and the
+third-party notices together. Individual runtime assets remain available for
+targeted downloads.
 
 ## Roadmap
 
@@ -431,6 +437,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md) — physical validation record.
 - [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded corruption/restore procedure.
 - [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — GS frontend and display-validation history.
+- [`docs/VIDEO_MODES_AND_FONTS.md`](docs/VIDEO_MODES_AND_FONTS.md) — GS timing, viewport, scaling, font and licensing design.
 - [`docs/PERFORMANCE_0.4X.md`](docs/PERFORMANCE_0.4X.md) — measured EE/GS optimization record and validation boundary.
 - [`docs/STATUS_AND_ERRORS.md`](docs/STATUS_AND_ERRORS.md) — live telemetry and contextual error presentation.
 
@@ -438,5 +445,17 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 - **Hifu Himejima** — project author / hardware validation
 - **OpenAI Codex / ChatGPT** — implementation assistance
+
+## License and third-party components
+
+Original project source is licensed under the [MIT License](LICENSE), copyright
+2026 Hifu Himejima (PunishedSnake).
+
+PS2SDK libraries, embedded modules and the current `msx` bitmap font retain the
+PS2SDK Academic Free License 2.0 and their original notices. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and
+[`PS2SDK_LICENSE.txt`](PS2SDK_LICENSE.txt). Future font assets must carry their
+own redistribution/embedding license; a convenient download link and good
+intentions are not substitutes for permission.
 - **PS2DEV / PS2SDK contributors** — EE/IOP toolchain and libraries
 - reverse-engineering references and historical PS2 HDD tooling are credited in the source and project history where applicable
