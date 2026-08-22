@@ -2,8 +2,8 @@
 
 This document describes the 0.5 development renderer built on top of the 0.4.2
 display-safety hotfix. Native and 480p are physically proven. Development build
-5 keeps guarded 576p, 720p and 1080i available while replacing the incomplete
-native rollback used by dev3 and dev4.
+6 keeps guarded 576p, 720p and 1080i available while fixing the cumulative GIF
+packet overflow exposed by repeated native/480p transactions.
 
 ## Geometry contract
 
@@ -158,11 +158,18 @@ before packet construction, checked again before submission, and covered by a
 portable regression that fixes the 480p budget at 100 qwords. No mode switch
 now allocates or frees EE heap memory.
 
+The corrected build completed twenty uninterrupted native/480p/native cycles
+on both the target SCPH-50000 and PCSX2. PCSX2 also reproduces the black output
+of 576p, 720p and 1080i while logging the requested timing and successful
+return to native. Emulator validation is therefore the primary iteration gate
+for those candidates; physical hardware remains their final release gate.
+
 ## Validation boundary
 
 Portable tests prove layout geometry, font identifiers, ASCII source coverage
 and deterministic generation. The R5900 build proves PS2SDK API and linker
-compatibility. Neither replaces physical validation.
+compatibility. PCSX2 then tests complete EE/GS transactions quickly, while a
+physical PS2 remains mandatory for final signal and release validation.
 
 Before release, both fonts must be checked in every exposed mode for:
 
@@ -172,10 +179,14 @@ Before release, both fonts must be checked in every exposed mode for:
 - mode switch, confirmation, timeout and native restoration;
 - repeated font changes before and after a video-mode change.
 
-The dev6 transition stress test additionally requires at least twenty complete
-`native -> candidate -> native` cycles in one uninterrupted menu session.
+The dev6 transition stress test completed twenty `native -> 480p -> native`
+cycles in one uninterrupted menu session on both PCSX2 and the target console.
+Future GS changes must preserve that result.
 
 576p, 720p and 1080i are exposed only by the development build until their full
 signal, framebuffer, viewport, field/read-circuit and fallback contracts pass
 the hardware matrix. The stable release must not inherit them merely because
 the compiler accepts the register writes.
+
+The detailed emulator-first procedure and evidence categories are maintained
+in [`PCSX2_VIDEO_VALIDATION.md`](PCSX2_VIDEO_VALIDATION.md).

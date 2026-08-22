@@ -109,6 +109,13 @@ The physically validated display contract is intentionally conservative:
 
 Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
 
+The 0.5.0-dev6 transaction completed twenty uninterrupted native/480p/native
+cycles on both the target SCPH-50000 and PCSX2. PCSX2 is now the primary fast
+gate for video work because it reproduces both the former repeated-switch
+failure and the still-black 576p/720p/1080i candidates while independently
+logging their timing changes. New modes still require a final physical-console
+pass before release.
+
 The 0.4.2 hotfix exposes **System -> Video mode** with the two modes that passed
 physical testing: native and 480p. The 0.5 development renderer retains those
 unchanged backends and adds guarded 576p, 720p and 1080i test modes with full
@@ -476,6 +483,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — GS frontend and display-validation history.
 - [`docs/VIDEO_MODES_AND_FONTS.md`](docs/VIDEO_MODES_AND_FONTS.md) — GS timing, viewport, scaling, font and licensing design.
 - [`docs/GS_RENDERER_0.5.md`](docs/GS_RENDERER_0.5.md) — implemented scalable renderer and font pipeline.
+- [`docs/PCSX2_VIDEO_VALIDATION.md`](docs/PCSX2_VIDEO_VALIDATION.md) — emulator-first GS test matrix and physical promotion gate.
 - [`docs/PERFORMANCE_0.4X.md`](docs/PERFORMANCE_0.4X.md) — measured EE/GS optimization record and validation boundary.
 - [`docs/STATUS_AND_ERRORS.md`](docs/STATUS_AND_ERRORS.md) — live telemetry and contextual error presentation.
 

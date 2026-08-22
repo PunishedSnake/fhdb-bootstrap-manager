@@ -2,17 +2,17 @@
 
 ## Current development contract
 
-Native and 480p are the hardware-validated baseline. Development build 3 keeps
-three guarded candidates available while correcting the dev2 framebuffer
-format, 1080i FRAME geometry and repeated-switch rollback path:
+Native and 480p are the hardware-validated baseline. Development build 6 keeps
+three guarded candidates available behind a PCSX2-first validation gate while
+preserving the corrected repeated-switch transaction:
 
 | Config value | Backing surface | UI viewport | Color | Status |
 |---|---:|---:|---:|---|
-| `native` | 640x224 | 640x224 | 32-bit | hardware-proven default and fallback |
-| `480p` | 768x448 stride | 720x448 | 32-bit | hardware-tested |
-| `576p` | 768x576 stride | 640x448 at (40,64) | 32-bit, single buffer | guarded hardware candidate |
-| `720p` | 640x720 | 640x448 at (0,136) | 32-bit, single buffer | guarded hardware candidate |
-| `1080i` | 640x540 FRAME | 640x448 at (0,46) | 32-bit, double buffer | guarded hardware candidate |
+| `native` | 640x224 | 640x224 | 32-bit | proven default and fallback |
+| `480p` | 768x448 stride | 720x448 | 32-bit | 20-cycle PS2 + PCSX2 pass |
+| `576p` | 768x576 stride | 640x448 at (40,64) | 32-bit, single buffer | timing recognized, pixels black |
+| `720p` | 640x720 | 640x448 at (0,136) | 32-bit, single buffer | timing recognized, pixels black |
+| `1080i` | 640x540 FRAME | 640x448 at (0,46) | 32-bit, double buffer | timing recognized, pixels black |
 
 The signal timing, framebuffer, visible viewport and logical UI are different
 things. A PS2SDK constant proving that the GS can request a timing does not
@@ -21,7 +21,8 @@ that a television, cable and console combination can display it.
 
 The development menu may persist a candidate only after ten-second
 confirmation, and it requires confirmation again at every startup. Stable
-releases must contain only modes which completed physical validation.
+releases must contain only modes which passed PCSX2 validation and then
+completed physical validation.
 
 ## What PS2SDK exposes
 
