@@ -26,6 +26,9 @@ int main(void)
         const video_mode_geometry_t *mode;
         const unsigned int alternate_reserved_bytes =
             2u * 640u * 1080u * 2u;
+        const unsigned int native_bytes = 2u * 640u * 224u * 4u;
+        const unsigned int font_bytes = 2u * 128u * 128u * 4u;
+        const unsigned int gs_vram_bytes = 4u * 1024u * 1024u;
 
         for (i = 0; i < VIDEO_MODE_COUNT; i++) {
             unsigned int frame_bytes;
@@ -76,6 +79,11 @@ int main(void)
         if (mode->bits_per_pixel != 32u || mode->frame_count != 2u ||
             mode->frame_width != 640u || mode->frame_height != 540u) {
             fprintf(stderr, "1080i FRAME storage is not 640x540x32x2.\n");
+            return 1;
+        }
+        if (native_bytes + alternate_reserved_bytes + font_bytes >
+            gs_vram_bytes) {
+            fprintf(stderr, "Frame and dual-font reservations exceed VRAM.\n");
             return 1;
         }
     }

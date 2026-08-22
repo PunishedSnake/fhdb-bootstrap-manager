@@ -29,7 +29,7 @@ optimization. This lets the R5900 compiler optimize across module boundaries
 while the existing section garbage collection continues to remove unused code
 from the stripped release ELF.
 
-The current feature branch identifies itself as **0.5.0-dev3 — Kakehashi**. It
+The current feature branch identifies itself as **0.5.0-dev4 — Kakehashi**. It
 is based on the 0.4.2 display-safety hotfix and introduces a resolution-aware
 GS viewport plus selectable bitmap fonts. It remains a hardware-test build,
 not a stable release.
@@ -98,7 +98,9 @@ The physically validated display contract is intentionally conservative:
 - `init_scr()` is retained only as the known-good CRT/read-circuit bootstrap;
 - the visible framebuffer remains at VRAM address 0 in the proven 640x224 FIELD drawing space;
 - `gs_ui_ps2` renders normal application pixels through libdraw/GIF DMA;
-- the active bitmap font is generated into a reusable RGBA texture atlas;
+- native and scaled bitmap-font variants occupy separate reusable RGBA
+  atlases, uploaded once when the font changes rather than during video-mode
+  transitions;
 - menu cards, outlines, locked rows, progress bars and status panels are GS primitives;
 - double-buffered modes swap complete frames on VBlank; full 32-bit 576p and
   720p use one VBlank-paced surface to stay inside the GS's 4 MiB VRAM;

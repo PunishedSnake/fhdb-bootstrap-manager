@@ -24,9 +24,10 @@ typedef enum {
 int gs_ui_initialize(void);
 int gs_ui_is_ready(void);
 
-/* Video-mode changes affect this application only. Native mode reuses the
- * hardware-proven init_scr() bootstrap. Every alternate output is guarded by
- * bounded synchronization and timed confirmation in the manager. */
+/* Video-mode changes affect this application only. Native mode restores the
+ * complete hardware-proven init_scr() read-circuit contract without repeating
+ * its global DMA reset. Every alternate output is guarded by bounded
+ * synchronization and timed confirmation in the manager. */
 video_mode_id_t gs_ui_video_mode_current(void);
 int gs_ui_video_mode_supported(video_mode_id_t mode);
 int gs_ui_video_mode_apply(video_mode_id_t mode);
