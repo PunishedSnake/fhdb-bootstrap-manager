@@ -51,12 +51,14 @@ speedup. Raw HDD RPC latency will still dominate much of a physical scan.
 | same 640x448 source with LTO (`84b829b`) | 612,276 B | 276,136 B | 335,076 B | 2,977,432 B |
 | preliminary 720x448 build (`dd84a83`) | 613,556 B | 277,392 B | 335,076 B | 2,977,432 B |
 | final 720-visible / 768-stride build (`f0bf71c`) | 613,556 B | 277,456 B | 335,076 B | 2,977,432 B |
+| persistent seven-mode build (`a9a2fa2`) | 618,164 B | 282,104 B | 335,076 B | 2,977,496 B |
 
 Link-time optimization removes 7,936 bytes from the directly comparable source.
-The final hardware-correct build uses a 768-pixel GS stride for its 720-pixel
-visible progressive image because `FBW` is encoded in 64-pixel units. It remains
-2,432 bytes smaller than stable 0.4.0 despite the mode switcher, timed fallback
-and double-buffered presentation.
+The hardware-tested 480p path uses a 768-pixel GS stride for its 720-pixel
+visible image because `FBW` is encoded in 64-pixel units. Persistent config,
+six alternate signal definitions, ROM gating and startup recovery add 4,608
+bytes to that checkpoint. The resulting ELF is 2,176 bytes (about 0.35%) larger
+than stable 0.4.0 while retaining LTO and the algorithmic EE improvements.
 
 ## GS/EE presentation work
 
