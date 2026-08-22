@@ -52,17 +52,17 @@ static void test_720p_magnified_surface(void)
     assert(ui_layout_snap_y(&layout, 224.0f) == 584.0f);
 }
 
-static void test_1080i_full_height_frame(void)
+static void test_1080i_frame_field_surface(void)
 {
     ui_layout_t layout;
     unsigned int x, y, width, height;
 
-    assert(ui_layout_configure(&layout, 640, 1080, 640, 1080,
-                               0, 92, 640, 896) == 0);
-    assert(ui_layout_snap_y(&layout, 0.0f) == 92.0f);
-    assert(ui_layout_snap_y(&layout, 224.0f) == 988.0f);
+    assert(ui_layout_configure(&layout, 640, 540, 640, 540,
+                               0, 46, 640, 448) == 0);
+    assert(ui_layout_snap_y(&layout, 0.0f) == 46.0f);
+    assert(ui_layout_snap_y(&layout, 224.0f) == 494.0f);
     ui_layout_text_cell(&layout, 8.0f, 8.0f, &x, &y, &width, &height);
-    assert(x == 8u && y == 124u && width == 8u && height == 32u);
+    assert(x == 8u && y == 62u && width == 8u && height == 16u);
 }
 
 static void test_invalid_geometry(void)
@@ -83,7 +83,7 @@ int main(void)
     test_480p_fractional_horizontal_scale();
     test_576p_letterbox();
     test_720p_magnified_surface();
-    test_1080i_full_height_frame();
+    test_1080i_frame_field_surface();
     test_invalid_geometry();
     puts("All resolution-independent UI layout tests passed.");
     return 0;

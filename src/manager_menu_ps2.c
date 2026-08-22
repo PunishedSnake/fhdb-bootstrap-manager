@@ -286,9 +286,9 @@ static void ui_font_menu(void)
 static const char *const video_mode_hints[VIDEO_MODE_COUNT] = {
     "Hardware-proven automatic 640x224 FIELD output",
     "Hardware-proven 720x448 progressive output in 32-bit color",
-    "Guarded 720x576 progressive output; legacy-ROM DVE path",
-    "Guarded 1280x720 signal from a full 640x720 16-bit surface",
-    "Guarded 1920x1080 FRAME output from a full-height 16-bit surface"
+    "Guarded 720x576 progressive output; single 32-bit surface",
+    "Guarded 1280x720 signal from a single 640x720x32 surface",
+    "Guarded 1920x1080 FRAME output from two 640x540x32 buffers"
 };
 
 static int confirm_video_mode(video_mode_id_t mode, int startup)
