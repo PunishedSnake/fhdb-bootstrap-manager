@@ -29,6 +29,23 @@ runtime and system-library components supplied by that image retain their own
 licenses; consult the corresponding PS2DEV distribution for their source and
 notices.
 
+## Open PS2 Loader GSM timing reference
+
+The guarded legacy-ROM 576p backend adapts GS timing values from Open PS2
+Loader's GSM implementation. The manager uses the kernel's 480p DVE setup and
+does not access the DVE through the active DEV9/HDD bus. The upstream
+attribution and Academic Free License terms remain applicable.
+
+- Project: Open PS2 Loader
+- Source: <https://github.com/ps2homebrew/Open-PS2-Loader>
+- Pinned reference revision: `3e3f34e9f94b058f7fd5b13727cb86e94fd3b35d`
+- Referenced file: `ee_core/src/gsm_engine_adv.S`
+- License declared by the GSM files: Academic Free License 2.0 (`AFL-2.0`)
+- Attribution notice: [`third_party/open-ps2-loader/NOTICE`](third_party/open-ps2-loader/NOTICE)
+- Full AFL-2.0 text: [`PS2SDK_LICENSE.txt`](PS2SDK_LICENSE.txt)
+
+The referenced work is not relicensed as MIT.
+
 ## Spleen bitmap font
 
 The optional Spleen renderer embeds printable-ASCII glyphs generated from the

@@ -29,7 +29,7 @@ optimization. This lets the R5900 compiler optimize across module boundaries
 while the existing section garbage collection continues to remove unused code
 from the stripped release ELF.
 
-The current feature branch identifies itself as **0.5.0-dev — Kakehashi**. It
+The current feature branch identifies itself as **0.5.0-dev7 — Kakehashi**. It
 is based on the 0.4.2 display-safety hotfix and introduces a resolution-aware
 GS viewport plus selectable bitmap fonts. It remains a hardware-test build,
 not a stable release.
@@ -98,19 +98,33 @@ The physically validated display contract is intentionally conservative:
 - `init_scr()` is retained only as the known-good CRT/read-circuit bootstrap;
 - the visible framebuffer remains at VRAM address 0 in the proven 640x224 FIELD drawing space;
 - `gs_ui_ps2` renders normal application pixels through libdraw/GIF DMA;
-- the active bitmap font is generated into a reusable RGBA texture atlas;
+- native and scaled bitmap-font variants occupy separate reusable RGBA
+  atlases, uploaded once when the font changes rather than during video-mode
+  transitions;
 - menu cards, outlines, locked rows, progress bars and status panels are GS primitives;
-- complete frames are drawn off-screen and swapped on VBlank through two
-  framebuffers;
+- double-buffered modes swap complete frames on VBlank; full 32-bit 576p and
+  720p use one VBlank-paced surface to stay inside the GS's 4 MiB VRAM;
 - remaining source-level `scr_clear()` / `scr_printf()` compatibility screens are intercepted and rendered through the same GS frontend;
 - real libdebug drawing is retained only as a renderer-initialization emergency fallback.
 
 Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
 
-The current 0.4.x branch exposes **System -> Video mode** with the two modes
-that passed physical testing: native and 480p. The experimental NTSC 480i, PAL
-576i, 576p, 720p and 1080i choices from 0.4.1 were removed in 0.4.2 after real
-hardware exposed incorrect geometry and a PAL 576i VBlank/fallback failure.
+The 0.5.0-dev6 transaction completed twenty uninterrupted native/480p/native
+cycles on both the target SCPH-50000 and PCSX2. PCSX2 is now the primary fast
+gate for video work because it reproduces both the former repeated-switch
+failure and the formerly black 576p/720p/1080i candidates while independently
+logging their timing changes. GS dumps from those candidates showed that their
+timings and framebuffers were valid, but `DISPLAY2` contained undefined
+read-back data instead of the intended display window. Dev7 writes the locally
+assembled display value independently to both read circuits. New modes still
+require emulator retesting and a final physical-console pass before release.
+
+The 0.4.2 hotfix exposes **System -> Video mode** with the two modes that passed
+physical testing: native and 480p. The 0.5 development renderer retains those
+unchanged backends and adds guarded 576p, 720p and 1080i test modes with full
+surfaces, explicit DISPLAY contracts and independent UI viewports. Explicit
+NTSC/PAL choices remain removed; `native` already provides the proven
+region-correct interlaced fallback without reviving the PAL VBlank failure.
 
 Because the PS2 remains admirably uninterested in negotiating modern display
 capabilities, every non-native choice must be confirmed with X within ten
@@ -119,8 +133,8 @@ native output. Confirmed choices can be stored in `HDDMAN.CFG`, but are guarded
 again at startup. A startup timeout restores native and rewrites the preference
 to `native`, preventing a persistent black-screen loop.
 
-The development renderer treats the signal, complete framebuffer, active
-output and logical UI viewport as separate geometry. The existing 640x224 UI
+The development renderer treats the signal, complete framebuffer, render
+surface and logical UI viewport as separate geometry. The existing 640x224 UI
 is transformed into the selected viewport with independently snapped edges,
 so fractional horizontal scales do not accumulate text or panel drift. Every
 frame clears the complete active output before drawing the viewport, providing
@@ -142,11 +156,12 @@ Themes can be changed live through **System -> UI theme**.
 Available fonts can be changed live through **System -> UI font**:
 
 - `msx` — the original PS2SDK 8x8 raster;
-- `spleen` — Spleen 5x8 in native output and 8x16 in 480p.
+- `spleen` — Spleen 5x8 in native output and 8x16 in scaled modes.
 
-Spleen is rendered at its native bitmap sizes with nearest-neighbour sampling.
-The logical 8-pixel text advance remains stable, so changing fonts does not
-reflow menus or diagnostics.
+Spleen uses its native bitmap size where the viewport permits it. The 1080i
+viewport applies an integer 2x vertical enlargement to the 8x16 raster rather
+than inventing fractional glyph pixels. The logical 8-pixel text advance
+remains stable, so changing fonts does not reflow menus or diagnostics.
 
 The stable config filename is:
 
@@ -162,10 +177,14 @@ video_mode=native
 font=spleen
 ```
 
-Supported `video_mode` values are `native` and `480p`, both using 32-bit true
-double buffering. A config created by 0.4.1 with `ntsc-480i`, `pal-576i`,
-`576p`, `720p`, or `1080i` is sanitized to `native` before any GS mode switch
-and rewritten when its storage is writable.
+The 0.5 development build accepts `native`, `480p`, `576p`, `720p` and `1080i`.
+Native and 480p retain their hardware-tested 32-bit double buffers. Following
+physical dev2 testing, 576p and 720p now use complete single-buffered 32-bit
+surfaces, while 1080i FRAME uses two 640x540x32 buffers. This avoids the failed
+16-bit scanout path without exceeding the same fixed VRAM reservation. Every
+alternate mode remains guarded by confirmation on every startup. Old explicit
+`ntsc-480i` and `pal-576i` values are still sanitized to `native` and rewritten
+when storage is writable.
 
 An unknown `font` value falls back to `msx` and is rewritten when possible.
 Font selection is cosmetic and can never block application startup.
@@ -467,6 +486,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — GS frontend and display-validation history.
 - [`docs/VIDEO_MODES_AND_FONTS.md`](docs/VIDEO_MODES_AND_FONTS.md) — GS timing, viewport, scaling, font and licensing design.
 - [`docs/GS_RENDERER_0.5.md`](docs/GS_RENDERER_0.5.md) — implemented scalable renderer and font pipeline.
+- [`docs/PCSX2_VIDEO_VALIDATION.md`](docs/PCSX2_VIDEO_VALIDATION.md) — emulator-first GS test matrix and physical promotion gate.
 - [`docs/PERFORMANCE_0.4X.md`](docs/PERFORMANCE_0.4X.md) — measured EE/GS optimization record and validation boundary.
 - [`docs/STATUS_AND_ERRORS.md`](docs/STATUS_AND_ERRORS.md) — live telemetry and contextual error presentation.
 

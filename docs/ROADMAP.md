@@ -100,6 +100,8 @@ The line is now **feature-frozen** except for defects and narrowly scoped valida
 - [x] `aqua`, `amber`, `sakura`, `mono` themes;
 - [x] hardware-tested native/480p switching; removed the failed experimental
       0.4.1 modes and added safe config migration in 0.4.2;
+- [x] PCSX2-first GS regression gate correlated against 20-cycle physical
+      native/480p validation;
 - [x] VBlank-synchronized status rendering;
 - [x] coalesced high-rate raw READ presentation without throttling disk I/O to one operation per frame;
 - [x] symbolic/stage-aware error explanations;

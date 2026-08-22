@@ -1,0 +1,21 @@
+Open PS2 Loader GSM/DVE reference notice
+
+The guarded legacy-ROM 576p setup in src/gs_ui_ps2.c adapts GS timing values
+from Open PS2 Loader's GSM implementation at revision:
+
+3e3f34e9f94b058f7fd5b13727cb86e94fd3b35d
+
+Referenced upstream files:
+
+- ee_core/src/gsm_engine_adv.S
+
+Upstream source:
+https://github.com/ps2homebrew/Open-PS2-Loader
+
+The GSM source files credit doctorxyz, dlanor, SP193, reprep, Bat Rastard and
+other contributors.
+
+The referenced GSM files are distributed under the Academic Free License 2.0.
+The complete AFL-2.0 text is included in this distribution as
+PS2SDK_LICENSE.txt. This notice does not relicense that third-party work under
+the manager's MIT license.
