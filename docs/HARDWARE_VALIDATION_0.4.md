@@ -188,12 +188,39 @@ both directions and correct operation after the change. This validates the
 native <-> 480p transition on the tested console/display path, including the
 full GS-state restoration that follows each mode reset.
 
-The same backend now exposes guarded NTSC 480i, PAL 576i, 576p, 720p and 1080i
-choices. Those additional signals are not covered by this physical result and
-remain experimental. Every alternate mode has a ten-second confirmation and
-automatic native fallback. A confirmed mode may be saved in `HDDMAN.CFG`, but
-is guarded again at startup; failure or timeout persists `native` to avoid a
-black-screen boot loop. 576p is disabled on ROM versions older than 2.20.
+Follow-up physical testing of 0.4.1 rejected every additional signal: NTSC
+480i, 576p, 720p and 1080i displayed incorrect geometry, while PAL 576i also
+failed to return through the confirmation timeout because presentation could
+stall waiting for VBlank. 0.4.2 therefore retains only native and 480p. Legacy
+0.4.1 configuration identifiers are mapped to native before the GS is touched,
+so the failing 576i path cannot be entered during startup.
+
+### 0.5 dev6 repeated-switch result
+
+The maintainer completed twenty uninterrupted native/480p/native cycles with
+0.5.0-dev6 on the target SCPH-50000. Every 480p confirmation screen remained
+visible, every native rollback restored a visible UI, and the following
+transaction remained responsive.
+
+The same ELF completed twenty cycles in PCSX2. The emulator had already
+reproduced the delayed black-screen failure of dev5 and continues to recognize
+576p, 720p and 1080i timing changes while showing the same black candidate
+output class. PCSX2 is consequently accepted as the primary development gate
+for GS transaction and framebuffer work, with physical hardware retained for
+final promotion. See
+[`PCSX2_VIDEO_VALIDATION.md`](PCSX2_VIDEO_VALIDATION.md).
+
+### 0.4.3 extended-output promotion
+
+GS dumps isolated the remaining black-output fault to `DISPLAY2`: the code had
+used a privileged write-only DISPLAY register as temporary storage. Writing the
+locally assembled value directly to both read circuits made 576p, 720p and
+1080i visible on both PCSX2 and the console. Subsequent captures calibrated the
+three logical viewports against native output; the maintainer accepted the
+final 576p and 720p dev10 geometry as ideal. 0.4.3 therefore promotes all three
+behind the same ten-second confirmation and native-recovery contract. Explicit
+NTSC/PAL modes remain excluded because native already supplies the region-correct
+interlaced path and PAL 576i previously blocked rollback.
 
 ## Large-HDD forensic finding #1 — old node-cap truncation
 

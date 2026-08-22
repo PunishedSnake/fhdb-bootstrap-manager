@@ -1,12 +1,15 @@
 # PS2 HDD Bootstrap Manager
 
-PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, backing up, disabling, restoring, installing, diagnosing, and recovering the HDD OSD bootstrap and APA metadata without formatting the disk.
+PS2 HDD Bootstrap Manager is a standalone PlayStation 2 HDD bootstrap,
+diagnostic, forensic-backup and guarded-recovery toolkit. It manages the HDD
+OSD boot chain and APA metadata without formatting the disk or treating
+"delete everything" as a particularly inspired recovery algorithm.
 
 It began after a real console got trapped in a post-uninstall FHDB boot loop: FHDB was gone, but the bootstrap pointer was still enabled, so the machine faithfully rebooted into software that no longer existed. Apparently uninstalling a program and persuading the console to stop launching it were separate premium features.
 
 ## Current release
 
-**0.4.1 — Michishirube (道標)** is the current stable release.
+**0.4.3 — Michishirube (道標)** is the current stable release.
 
 Michishirube expands the project into a modular PS2-side recovery toolkit while preserving the established normal bootstrap write contract from Torii. The release includes:
 
@@ -19,16 +22,24 @@ Michishirube expands the project into a modular PS2-side recovery toolkit while 
 - guarded deterministic master recovery;
 - guarded multi-header topology repair;
 - `HDDRAW`, `HDDMETA`, rescue, log and forensic evidence artifacts;
+- guarded native, 480p, 576p, 720p and 1080i output with automatic native
+  recovery;
+- resolution-independent GS layout and selectable MSX/Spleen bitmap fonts;
 - a large host regression laboratory and guarded physical-HDD fault injector.
 
-0.4.1 builds EE code with `-O2` plus link-time
+0.4.x maintenance builds EE code with `-O2` plus link-time
 optimization. This lets the R5900 compiler optimize across module boundaries
 while the existing section garbage collection continues to remove unused code
 from the stripped release ELF.
 
+The renderer was temporarily developed under `0.5.0-dev` identifiers while its
+scope was still uncertain. The completed work is released as 0.4.3 because it
+repairs and hardens the 0.4.x display subsystem rather than introducing the
+interchange features assigned to the real 0.5.x roadmap.
+
 ## Important recovery disclaimer
 
-**Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.1.**
+**Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.3.**
 
 Experimental paths include:
 
@@ -90,20 +101,39 @@ The physically validated display contract is intentionally conservative:
 - `init_scr()` is retained only as the known-good CRT/read-circuit bootstrap;
 - the visible framebuffer remains at VRAM address 0 in the proven 640x224 FIELD drawing space;
 - `gs_ui_ps2` renders normal application pixels through libdraw/GIF DMA;
-- the PS2SDK MSX font is uploaded once as a texture atlas and rendered native 8x8 -> 8x8;
+- native and scaled bitmap-font variants occupy separate reusable RGBA
+  atlases, uploaded once when the font changes rather than during video-mode
+  transitions;
 - menu cards, outlines, locked rows, progress bars and status panels are GS primitives;
-- complete frames are drawn off-screen and swapped on VBlank through two
-  framebuffers;
+- double-buffered modes swap complete frames on VBlank; full 32-bit 576p and
+  720p use one VBlank-paced surface to stay inside the GS's 4 MiB VRAM;
 - remaining source-level `scr_clear()` / `scr_printf()` compatibility screens are intercepted and rendered through the same GS frontend;
 - real libdebug drawing is retained only as a renderer-initialization emergency fallback.
 
 Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
 
-The current 0.4.x branch also exposes **System -> Video mode** with native,
-NTSC 480i, PAL 576i, 480p, 576p, 720p and 1080i output. Native and 480p switching
-have been exercised on physical hardware; the remaining alternate modes are
-experimental. The 576p item is disabled on ROM versions older than 2.20 rather
-than accepting PS2SDK's silent PAL fallback.
+The development transaction completed twenty uninterrupted native/480p/native
+cycles on both the target SCPH-50000 and PCSX2. PCSX2 is now the primary fast
+gate for video work because it reproduces both the former repeated-switch
+failure and the formerly black 576p/720p/1080i candidates while independently
+logging their timing changes. GS dumps from those candidates showed that their
+timings and framebuffers were valid, but `DISPLAY2` contained undefined
+read-back data instead of the intended display window. Dev7 writes the locally
+assembled display value independently to both read circuits. Dev7 subsequently
+produced visible output in every mode with matching emulator and console
+results. Dev8 calibrated the three new viewports against captured native
+output. Dev9 applies the final per-mode alignment pass: 576p no longer clips
+its footer, 720p is nudged down by a few output pixels, and 1080i uses the last
+safe timing lines to extend its lower UI without moving the top edge. Dev10
+uses the final screenshot set to remove the small remaining vertical
+compression in 576p and 720p. The maintainer accepted the final dev10 576p and
+720p captures, completing the 0.4.3 visual release gate.
+
+0.4.3 exposes **System -> Video mode** with native, 480p, 576p, 720p and 1080i.
+The renderer uses complete surfaces, explicit DISPLAY contracts and independent
+UI viewports. Explicit NTSC/PAL choices remain removed; `native` already
+provides the proven region-correct interlaced fallback without reviving the PAL
+VBlank failure.
 
 Because the PS2 remains admirably uninterested in negotiating modern display
 capabilities, every non-native choice must be confirmed with X within ten
@@ -111,6 +141,15 @@ seconds. TRIANGLE, no input, or an internal setup failure restores the proven
 native output. Confirmed choices can be stored in `HDDMAN.CFG`, but are guarded
 again at startup. A startup timeout restores native and rewrites the preference
 to `native`, preventing a persistent black-screen loop.
+
+The 0.4.3 renderer treats the signal, complete framebuffer, render
+surface and logical UI viewport as separate geometry. The existing 640x224 UI
+is transformed into the selected viewport with independently snapped edges,
+so fractional horizontal scales do not accumulate text or panel drift. Every
+frame clears the complete active output before drawing the viewport, providing
+deterministic letterboxing for future modes. VBlank waits are bounded; loss of
+the expected signal state restores the native display instead of blocking the
+confirmation timer forever.
 
 ### Themes and configuration
 
@@ -123,6 +162,16 @@ Available themes:
 
 Themes can be changed live through **System -> UI theme**.
 
+Available fonts can be changed live through **System -> UI font**:
+
+- `msx` — the original PS2SDK 8x8 raster;
+- `spleen` — Spleen 5x8 in native output and 8x16 in scaled modes.
+
+Spleen uses its native bitmap size where the viewport permits it. The 1080i
+viewport applies an integer 2x vertical enlargement to the 8x16 raster rather
+than inventing fractional glyph pixels. The logical 8-pixel text advance
+remains stable, so changing fonts does not reflow menus or diagnostics.
+
 The stable config filename is:
 
 ```text
@@ -134,12 +183,20 @@ Typical contents:
 ```text
 theme=aqua
 video_mode=native
+font=spleen
 ```
 
-Supported `video_mode` values are `native`, `ntsc-480i`, `pal-576i`, `480p`,
-`576p`, `720p`, and `1080i`. The two widest modes use 16-bit framebuffers so
-the 4 MiB GS can retain true double buffering; native through 576p use 32-bit
-framebuffers.
+The 0.4.3 release accepts `native`, `480p`, `576p`, `720p` and `1080i`.
+Native and 480p retain their hardware-tested 32-bit double buffers. Following
+physical dev2 testing, 576p and 720p now use complete single-buffered 32-bit
+surfaces, while 1080i FRAME uses two 640x540x32 buffers. This avoids the failed
+16-bit scanout path without exceeding the same fixed VRAM reservation. Every
+alternate mode remains guarded by confirmation on every startup. Old explicit
+`ntsc-480i` and `pal-576i` values are still sanitized to `native` and rewritten
+when storage is writable.
+
+An unknown `font` value falls back to `msx` and is rewritten when possible.
+Font selection is cosmetic and can never block application startup.
 
 When the launcher provides a usable `argv[0]`, the manager reads/writes the file beside the ELF. Otherwise it falls back to the selected report/backup storage root. Missing or unwritable config never blocks the manager. 0.4.x retains read-only compatibility with the development-only legacy name `MICHISHIRUBE.CFG`, but official assets and saves use only `HDDMAN.CFG`.
 
@@ -407,19 +464,27 @@ make test-host
 GitHub Actions builds the stripped release ELF using `ps2dev/ps2dev:v2.0.0`, produces SHA-256, and publishes:
 
 ```text
-PS2_HDD_BOOTSTRAP_MANAGER-0.4.1.zip
-PS2_HDD_BOOTSTRAP_MANAGER-0.4.1.ELF
+PS2_HDD_BOOTSTRAP_MANAGER-0.4.3.zip
+PS2_HDD_BOOTSTRAP_MANAGER-0.4.3.ELF
 SHA256SUMS.txt
 HDDMAN.CFG
 ```
 
-The ZIP is the recommended download and contains the ELF, `HDDMAN.CFG`, and `SHA256SUMS.txt` together. Individual assets remain available for targeted downloads.
+The ZIP is the recommended download and contains the ELF, `HDDMAN.CFG`,
+`SHA256SUMS.txt`, the MIT project license, PS2SDK's AFL-2.0 license and the
+third-party notices together. Builds containing Spleen also include its
+BSD-2-Clause license. Individual runtime assets remain available for targeted
+downloads.
 
 ## Roadmap
 
 0.4.x Michishirube is feature-frozen except for defects and narrowly scoped validation hardening.
 
-The next feature train is **0.5.x Kakehashi**, focused on versioned recovery evidence and interoperability with host-side tooling such as PS2 DriveForge. Host tools may analyze and propose; the PS2 manager remains final write authority after re-reading and revalidating the physical disk.
+The next feature train is **0.5.x Kakehashi**, focused on versioned recovery
+evidence/interoperability and a guarded console-side ISO-to-HDL installer for
+games read from `mass:`. Host tools may analyze and propose; the PS2 manager
+remains final write authority after re-reading and revalidating the physical
+disk.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
@@ -432,6 +497,9 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md) — physical validation record.
 - [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded corruption/restore procedure.
 - [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — GS frontend and display-validation history.
+- [`docs/VIDEO_MODES_AND_FONTS.md`](docs/VIDEO_MODES_AND_FONTS.md) — GS timing, viewport, scaling, font and licensing design.
+- [`docs/GS_RENDERER_0.4.3.md`](docs/GS_RENDERER_0.4.3.md) — implemented scalable renderer and font pipeline.
+- [`docs/PCSX2_VIDEO_VALIDATION.md`](docs/PCSX2_VIDEO_VALIDATION.md) — emulator-first GS test matrix and physical promotion gate.
 - [`docs/PERFORMANCE_0.4X.md`](docs/PERFORMANCE_0.4X.md) — measured EE/GS optimization record and validation boundary.
 - [`docs/STATUS_AND_ERRORS.md`](docs/STATUS_AND_ERRORS.md) — live telemetry and contextual error presentation.
 
@@ -439,4 +507,17 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 - **Hifu Himejima** — project author / hardware validation
 - **PS2DEV / PS2SDK contributors** — EE/IOP toolchain and libraries
+- **Frederic Cambus and Spleen contributors** — optional bitmap font
 - reverse-engineering references and historical PS2 HDD tooling are credited in the source and project history where applicable
+
+## License and third-party components
+
+Original project source is licensed under the [MIT License](LICENSE), copyright
+2026 Hifu Himejima (PunishedSnake).
+
+PS2SDK libraries, embedded modules and the `msx` bitmap font retain the PS2SDK
+Academic Free License 2.0. Spleen glyph data retains BSD-2-Clause. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and
+[`PS2SDK_LICENSE.txt`](PS2SDK_LICENSE.txt). Third-party font assets must carry
+their own redistribution and embedding license; a convenient download link
+and good intentions are not substitutes for permission.

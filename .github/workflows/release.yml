@@ -66,10 +66,20 @@ jobs:
         run: |
           set -euo pipefail
           mv PS2_HDD_BOOTSTRAP_MANAGER.ELF "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF"
-          sha256sum "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" > SHA256SUMS.txt
           test -f HDDMAN.CFG
+          test -f LICENSE
+          test -f THIRD_PARTY_NOTICES.md
+          test -f PS2SDK_LICENSE.txt
+          test -f third_party/spleen/LICENSE
+          test -f third_party/open-ps2-loader/NOTICE
+          sha256sum "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" \
+            HDDMAN.CFG LICENSE THIRD_PARTY_NOTICES.md PS2SDK_LICENSE.txt \
+            third_party/spleen/LICENSE third_party/open-ps2-loader/NOTICE \
+            > SHA256SUMS.txt
           zip -9 "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.zip" \
-            "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" HDDMAN.CFG SHA256SUMS.txt
+            "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" HDDMAN.CFG \
+            SHA256SUMS.txt LICENSE THIRD_PARTY_NOTICES.md PS2SDK_LICENSE.txt \
+            third_party/spleen/LICENSE third_party/open-ps2-loader/NOTICE
 
       - name: Publish stable GitHub release
         if: steps.existing.outputs.exists != 'true'

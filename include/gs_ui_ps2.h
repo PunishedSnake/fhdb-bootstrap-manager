@@ -4,6 +4,7 @@
 #include <stdarg.h>
 
 #include "video_mode.h"
+#include "ui_font.h"
 
 typedef enum {
     GS_UI_TONE_INFO = 0,
@@ -15,21 +16,24 @@ typedef enum {
 /*
  * Michishirube's application-wide GS frontend.
  *
- * Physical hardware uses the proven libdebug CRT bootstrap: 640x224 field
- * coordinates, framebuffer at VRAM 0. All application pixels are nevertheless
- * rendered by this module through libdraw/GIF DMA. Coordinates exposed to
- * callers are native 640x224 coordinates; no fractional Y scaling is used.
+ * Physical hardware uses the proven libdebug CRT bootstrap for native output.
+ * Callers always author the UI in logical 640x224 coordinates; the renderer
+ * maps them into an explicit output viewport without confusing that viewport
+ * with the complete signal or framebuffer geometry.
  */
 int gs_ui_initialize(void);
 int gs_ui_is_ready(void);
 
-/* Video-mode changes affect this application only. Native mode reuses the
- * hardware-proven init_scr() bootstrap. Every alternate output is guarded by
- * a timed confirmation in the manager; unsupported 576p is rejected before
- * PS2SDK can silently substitute PAL on pre-2.20 ROMs. */
+/* Video-mode changes affect this application only. Native mode replays the
+ * complete hardware-proven init_scr() GS bootstrap without repeating its
+ * global DMA reset. Every alternate output is guarded by bounded
+ * synchronization and timed confirmation in the manager. */
 video_mode_id_t gs_ui_video_mode_current(void);
 int gs_ui_video_mode_supported(video_mode_id_t mode);
 int gs_ui_video_mode_apply(video_mode_id_t mode);
+
+ui_font_id_t gs_ui_font_current(void);
+int gs_ui_font_apply(ui_font_id_t font);
 
 void gs_ui_render_menu(const char *title,
                        const char *status,

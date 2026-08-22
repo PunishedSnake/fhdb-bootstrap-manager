@@ -35,3 +35,8 @@ jobs:
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
             HDDMAN.CFG
+            LICENSE
+            THIRD_PARTY_NOTICES.md
+            PS2SDK_LICENSE.txt
+            third_party/spleen/LICENSE
+            third_party/open-ps2-loader/NOTICE

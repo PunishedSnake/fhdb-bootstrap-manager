@@ -12,15 +12,20 @@
  */
 
 #include <kernel.h>
+#include <rom0_info.h>
+#include <syscallnr.h>
 #include <tamtypes.h>
+#include <timer.h>
 
 #include <debug.h>
 #include <dma.h>
+#include <dma_registers.h>
 #include <draw.h>
+#include <gif_registers.h>
 #include <graph.h>
+#include <gs_privileged.h>
 #include <gs_psm.h>
 #include <packet.h>
-#include <rom0_info.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -28,71 +33,100 @@
 #include <string.h>
 
 #include "app_identity.h"
+#include "gs_packet_budget.h"
 #include "gs_ui_ps2.h"
+#include "spleen_font_data.h"
+#include "ui_font.h"
+#include "ui_layout.h"
 #include "ui_theme_ps2.h"
 #include "version.h"
 
 #define GS_UI_WIDTH 640
 #define GS_UI_HEIGHT 224
-#define GS_UI_ALT_STORAGE_WIDTH 704
-#define GS_UI_ALT_STORAGE_HEIGHT 512
+#define GS_UI_ALT_STORAGE_WIDTH 640
+#define GS_UI_ALT_STORAGE_HEIGHT 1080
+#define GS_UI_ALT_STORAGE_PSM GS_PSM_16
 #define GS_UI_FRAME_COUNT 2
-#define GS_UI_FONT_SRC_W 8
-#define GS_UI_FONT_SRC_H 8
-#define GS_UI_GLYPH_W 8
-#define GS_UI_GLYPH_H 8
+#define GS_UI_FONT_SLOT_W 8
+#define GS_UI_FONT_SLOT_H 16
+#define GS_UI_GLYPH_W UI_LOGICAL_CELL_WIDTH
+#define GS_UI_GLYPH_H UI_LOGICAL_CELL_HEIGHT
 #define GS_UI_LINE_STEP 10
 #define GS_UI_ATLAS_W 128
-#define GS_UI_ATLAS_H 64
+#define GS_UI_ATLAS_H 128
+#define GS_UI_FONT_VARIANT_COUNT 2u
+#define GS_UI_FONT_NATIVE 0u
+#define GS_UI_FONT_SCALED 1u
+#define GS_UI_FONT_UPLOAD_QWORDS 32
 #define GS_UI_PACKET_QWORDS 16384
 #define GS_UI_CONTEXT 0
 #define GS_UI_CONSOLE_BYTES 8192u
 #define GS_UI_MAX_MENU_ITEMS 12u
+#define GS_UI_VSYNC_TIMEOUT_MS 250u
+#define GS_UI_GIF_TIMEOUT_MS 250u
+#define GS_UI_GIF_CHCR (*(volatile u32 *)0x1000A000)
+#define GS_UI_NATIVE_PMODE 0x000000000000FF62ULL
+#define GS_UI_NATIVE_DISPFB2 0x0000000000001400ULL
+#define GS_UI_NATIVE_DISPLAY2 0x001BF9FF0983227CULL
 
 extern const u8 msx[];
 
 typedef struct {
+    video_mode_id_t id;
     int interlace;
     int graph_mode;
     int frame_mode;
     int flicker_filter;
     int screen_x;
     int screen_y;
-    unsigned int visible_width;
-    unsigned int visible_height;
-    unsigned int frame_width;
-    unsigned int frame_height;
     unsigned int psm;
-    float scale_x;
-    float scale_y;
-    float offset_x;
-    float offset_y;
     int filtered_presentation;
+    int explicit_display;
+    int crt_mode;
+    int display_x;
+    int display_y;
+    unsigned int magh;
+    unsigned int magv;
+    unsigned int display_width;
+    unsigned int display_height;
 } video_mode_spec_t;
 
 static const video_mode_spec_t video_specs[VIDEO_MODE_COUNT] = {
-    {GRAPH_MODE_INTERLACED, GRAPH_MODE_AUTO, GRAPH_MODE_FIELD, GRAPH_ENABLE,
-     0, 0, 640, 224, 640, 224, GS_PSM_32,
-     1.0f, 1.0f, 0.0f, 0.0f, 1},
-    {GRAPH_MODE_INTERLACED, GRAPH_MODE_NTSC, GRAPH_MODE_FRAME, GRAPH_ENABLE,
-     0, 0, 640, 448, 640, 448, GS_PSM_32,
-     1.0f, 2.0f, 0.0f, 0.0f, 1},
-    {GRAPH_MODE_INTERLACED, GRAPH_MODE_PAL, GRAPH_MODE_FRAME, GRAPH_ENABLE,
-     0, 0, 640, 512, 640, 512, GS_PSM_32,
-     1.0f, 2.0f, 0.0f, 32.0f, 1},
-    {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P, GRAPH_MODE_FRAME,
-     GRAPH_DISABLE, 0, 0, 720, 448, 768, 448, GS_PSM_32,
-     1.125f, 2.0f, 0.0f, 0.0f, 0},
-    {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_576P, GRAPH_MODE_FRAME,
-     GRAPH_DISABLE, 0, 32, 656, 512, 704, 512, GS_PSM_32,
-     1.0f, 2.0f, 8.0f, 32.0f, 0},
-    {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_720P, GRAPH_MODE_FRAME,
-     GRAPH_DISABLE, 0, 136, 1280, 448, 1280, 448, GS_PSM_16,
-     2.0f, 2.0f, 0.0f, 0.0f, 0},
-    {GRAPH_MODE_INTERLACED, GRAPH_MODE_HDTV_1080I, GRAPH_MODE_FRAME,
-     GRAPH_ENABLE, 0, 46, 960, 448, 960, 448, GS_PSM_16,
-     1.5f, 2.0f, 0.0f, 0.0f, 1}
+    {VIDEO_MODE_NATIVE,
+     GRAPH_MODE_INTERLACED, GRAPH_MODE_AUTO, GRAPH_MODE_FIELD, GRAPH_ENABLE,
+     0, 0, GS_PSM_32, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {VIDEO_MODE_480P,
+     GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 0, GS_PSM_32, 0, 0,
+     0x50, 232, 35, 1, 0, 1440, 448},
+    {VIDEO_MODE_576P,
+     GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_576P, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 0, GS_PSM_32, 0, 1,
+     0x53, 255, 44, 1, 0, 1440, 576},
+    {VIDEO_MODE_720P,
+     GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_720P, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 0, GS_PSM_32, 0, 1,
+     0x52, 306, 24, 1, 0, 1280, 720},
+    {VIDEO_MODE_1080I,
+     GRAPH_MODE_INTERLACED, GRAPH_MODE_HDTV_1080I, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 0, GS_PSM_32, 0, 1,
+     0x51, 236, 47, 2, 0, 1920, 1080}
 };
+
+typedef enum {
+    VIDEO_TRANSITION_STABLE = 0,
+    VIDEO_TRANSITION_SWITCHING,
+    VIDEO_TRANSITION_RESTORING
+} video_transition_state_t;
+
+typedef struct {
+    unsigned int width;
+    unsigned int height;
+    unsigned int first;
+    unsigned int count;
+    unsigned int bytes_per_glyph;
+    const u8 *data;
+} ui_font_raster_t;
 
 static framebuffer_t native_frames[GS_UI_FRAME_COUNT];
 static framebuffer_t alternate_frames[GS_UI_FRAME_COUNT];
@@ -103,15 +137,17 @@ static clutbuffer_t no_clut;
 static lod_t font_lod;
 static blend_t alpha_blend;
 static packet_t *render_packet;
+static packet_t *font_upload_packet;
+static packet_t *native_bootstrap_packet;
+static packet_t *frame_clear_packet;
+static unsigned int font_texture_addresses[GS_UI_FONT_VARIANT_COUNT];
 static unsigned int draw_frame_index;
-static float render_scale_x = 1.0f;
-static float render_scale_y = 1.0f;
-static float render_offset_x;
-static float render_offset_y;
-static unsigned int render_visible_width = GS_UI_WIDTH;
-static unsigned int render_visible_height = GS_UI_HEIGHT;
+static unsigned int active_frame_count = GS_UI_FRAME_COUNT;
+static ui_layout_t render_layout;
 static int render_filtered = 1;
 static video_mode_id_t video_mode = VIDEO_MODE_NATIVE;
+static ui_font_id_t active_font = UI_FONT_MSX;
+static ui_font_raster_t font_raster;
 static int draw_state_dirty;
 static u32 font_atlas[GS_UI_ATLAS_W * GS_UI_ATLAS_H]
     __attribute__((aligned(64)));
@@ -120,37 +156,80 @@ static unsigned int console_used;
 static int console_dirty;
 static int renderer_ready;
 static int blending_enabled = -1;
+static int frame_fault_pending;
+static video_transition_state_t video_transition_state =
+    VIDEO_TRANSITION_STABLE;
 
 static float scaled_x(float value)
 {
-    if (render_scale_x == 1.0f)
-        return value + render_offset_x;
-    return value * render_scale_x + render_offset_x;
+    return ui_layout_snap_x(&render_layout, value);
 }
 
 static float scaled_y(float value)
 {
-    if (render_scale_y == 1.0f)
-        return value + render_offset_y;
-    if (render_scale_y == 2.0f)
-        return value + value + render_offset_y;
-    return value * render_scale_y + render_offset_y;
+    return ui_layout_snap_y(&render_layout, value);
 }
 
 static unsigned int active_visible_width(void)
 {
-    return render_visible_width;
+    return render_layout.active_width;
 }
 
-static void apply_render_spec(const video_mode_spec_t *spec)
+static unsigned int font_variant_for_layout(void)
 {
-    render_scale_x = spec->scale_x;
-    render_scale_y = spec->scale_y;
-    render_offset_x = spec->offset_x;
-    render_offset_y = spec->offset_y;
-    render_visible_width = spec->visible_width;
-    render_visible_height = spec->visible_height;
+    return render_layout.scale_y >= 1.5f ? GS_UI_FONT_SCALED
+                                         : GS_UI_FONT_NATIVE;
+}
+
+static void describe_font_raster(ui_font_id_t font, unsigned int variant,
+                                 ui_font_raster_t *raster)
+{
+    if (font == UI_FONT_SPLEEN) {
+        if (variant == GS_UI_FONT_SCALED) {
+            raster->width = 8u;
+            raster->height = 16u;
+            raster->bytes_per_glyph = 16u;
+            raster->data = spleen_8x16_ascii;
+        } else {
+            raster->width = 5u;
+            raster->height = 8u;
+            raster->bytes_per_glyph = 8u;
+            raster->data = spleen_5x8_ascii;
+        }
+        raster->first = SPLEEN_ASCII_FIRST;
+        raster->count = SPLEEN_ASCII_COUNT;
+    } else {
+        raster->width = 8u;
+        raster->height = 8u;
+        raster->first = 0u;
+        raster->count = 128u;
+        raster->bytes_per_glyph = 8u;
+        raster->data = msx;
+    }
+}
+
+static void select_font_variant(void)
+{
+    unsigned int variant = font_variant_for_layout();
+
+    describe_font_raster(active_font, variant, &font_raster);
+    font_texture.address = font_texture_addresses[variant];
+}
+
+static int apply_render_spec(const video_mode_spec_t *spec)
+{
+    const video_mode_geometry_t *geometry = video_mode_geometry(spec->id);
+    int result = ui_layout_configure(
+        &render_layout, geometry->surface_width, geometry->surface_height,
+        geometry->frame_width, geometry->frame_height,
+        geometry->viewport_x, geometry->viewport_y,
+        geometry->viewport_width, geometry->viewport_height);
+
+    if (result < 0)
+        return result;
     render_filtered = spec->filtered_presentation;
+    select_font_variant();
+    return 0;
 }
 
 static void present_framebuffer(const framebuffer_t *frame)
@@ -225,22 +304,47 @@ static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
     texrect_t glyph;
     unsigned int glyph_x;
     unsigned int glyph_y;
+    unsigned int cell_x;
+    unsigned int cell_y;
+    unsigned int cell_width;
+    unsigned int cell_height;
+    unsigned int output_width;
+    unsigned int output_height;
+    unsigned int output_x;
+    unsigned int output_y;
 
     if (ch >= 128u)
         ch = '?';
-    glyph_x = ((unsigned int)ch & 15u) * GS_UI_FONT_SRC_W;
-    glyph_y = ((unsigned int)ch >> 4) * GS_UI_FONT_SRC_H;
+    glyph_x = ((unsigned int)ch & 15u) * GS_UI_FONT_SLOT_W;
+    glyph_y = ((unsigned int)ch >> 4) * GS_UI_FONT_SLOT_H;
 
-    glyph.v0.x = scaled_x(x);
-    glyph.v0.y = scaled_y(y);
+    ui_layout_text_cell(&render_layout, x, y, &cell_x, &cell_y,
+                        &cell_width, &cell_height);
+    output_width = font_raster.width;
+    output_height = font_raster.height;
+    /* The viewport is snapped cell by cell, so its scaled height need not be
+       an exact multiple of the source bitmap. Following the snapped cell
+       keeps text and panels at the same apparent scale in calibrated HDTV
+       modes; nearest GS sampling remains deterministic for 16 -> 19/25 rows. */
+    if (cell_height >= output_height)
+        output_height = cell_height;
+    if (output_width > cell_width)
+        output_width = cell_width;
+    if (output_height > cell_height)
+        output_height = cell_height;
+    output_x = cell_x + (cell_width - output_width) / 2u;
+    output_y = cell_y + (cell_height - output_height) / 2u;
+
+    glyph.v0.x = (float)output_x;
+    glyph.v0.y = (float)output_y;
     glyph.v0.z = 2;
-    glyph.v1.x = scaled_x(x + GS_UI_GLYPH_W);
-    glyph.v1.y = scaled_y(y + GS_UI_GLYPH_H);
+    glyph.v1.x = (float)(output_x + output_width);
+    glyph.v1.y = (float)(output_y + output_height);
     glyph.v1.z = 2;
     glyph.t0.u = (float)glyph_x;
     glyph.t0.v = (float)glyph_y;
-    glyph.t1.u = (float)(glyph_x + GS_UI_FONT_SRC_W);
-    glyph.t1.v = (float)(glyph_y + GS_UI_FONT_SRC_H);
+    glyph.t1.u = (float)(glyph_x + font_raster.width);
+    glyph.t1.v = (float)(glyph_y + font_raster.height);
     glyph.color = *color;
 
     select_blending(1);
@@ -287,21 +391,29 @@ static qword_t *text_string(qword_t *q, float x, float y,
                            GS_UI_HEIGHT - 4.0f, text, rgb);
 }
 
-static void build_font_atlas(void)
+static void build_font_atlas(const ui_font_raster_t *raster)
 {
     unsigned int ch;
 
     memset(font_atlas, 0, sizeof(font_atlas));
     for (ch = 0; ch < 128u; ch++) {
-        unsigned int gx = (ch & 15u) * GS_UI_FONT_SRC_W;
-        unsigned int gy = (ch >> 4) * GS_UI_FONT_SRC_H;
+        unsigned int source_ch = ch;
+        unsigned int gx = (ch & 15u) * GS_UI_FONT_SLOT_W;
+        unsigned int gy = (ch >> 4) * GS_UI_FONT_SLOT_H;
+        const u8 *source;
         unsigned int row;
 
-        for (row = 0; row < GS_UI_FONT_SRC_H; row++) {
-            unsigned char bits = msx[ch * GS_UI_FONT_SRC_H + row];
+        if (source_ch < raster->first ||
+            source_ch >= raster->first + raster->count)
+            source_ch = '?';
+        source = raster->data +
+                 (source_ch - raster->first) * raster->bytes_per_glyph;
+
+        for (row = 0; row < raster->height; row++) {
+            unsigned char bits = source[row];
             unsigned int col;
 
-            for (col = 0; col < GS_UI_FONT_SRC_W; col++) {
+            for (col = 0; col < raster->width; col++) {
                 if ((bits & (0x80u >> col)) != 0u)
                     font_atlas[(gy + row) * GS_UI_ATLAS_W + gx + col] =
                         0x80ffffffu;
@@ -336,26 +448,45 @@ static int allocate_frame_pair(framebuffer_t pair[GS_UI_FRAME_COUNT],
 
 static int video_specs_fit_reserved_vram(void)
 {
+    /* The two page-aligned 640x1080x16 allocations form one contiguous
+       32-bit reservation. Modes may use it as two smaller buffers or as one
+       complete 32-bit HDTV surface. */
     const unsigned int reserved_words =
         GS_UI_ALT_STORAGE_WIDTH * GS_UI_ALT_STORAGE_HEIGHT;
     unsigned int i;
 
-    for (i = 1u; i < VIDEO_MODE_COUNT; i++) {
+    for (i = 0u; i < VIDEO_MODE_COUNT; i++) {
         const video_mode_spec_t *spec = &video_specs[i];
+        const video_mode_geometry_t *geometry =
+            video_mode_geometry((video_mode_id_t)i);
+        ui_layout_t candidate;
         unsigned int words;
 
-        if ((spec->frame_width & 63u) != 0u ||
-            spec->visible_width > spec->frame_width ||
-            spec->visible_height > spec->frame_height)
+        if (spec->id != (video_mode_id_t)i || geometry == NULL ||
+            geometry->frame_count == 0u ||
+            geometry->frame_count > GS_UI_FRAME_COUNT ||
+            (geometry->frame_width & 63u) != 0u ||
+            ui_layout_configure(&candidate,
+                                geometry->surface_width,
+                                geometry->surface_height,
+                                geometry->frame_width,
+                                geometry->frame_height,
+                                geometry->viewport_x,
+                                geometry->viewport_y,
+                                geometry->viewport_width,
+                                geometry->viewport_height) < 0)
             return 0;
+        if (i == 0u)
+            continue;
         if (spec->psm == GS_PSM_32)
-            words = spec->frame_width * spec->frame_height;
+            words = geometry->frame_width * geometry->frame_height;
         else if (spec->psm == GS_PSM_16 &&
-                 (spec->frame_height & 1u) == 0u)
-            words = spec->frame_width * (spec->frame_height >> 1);
+                 (geometry->frame_height & 1u) == 0u)
+            words = geometry->frame_width *
+                    (geometry->frame_height >> 1);
         else
             return 0;
-        if (words > reserved_words)
+        if (words > reserved_words / geometry->frame_count)
             return 0;
     }
     return 1;
@@ -363,39 +494,108 @@ static int video_specs_fit_reserved_vram(void)
 
 static void configure_alternate_frames(const video_mode_spec_t *spec)
 {
+    const video_mode_geometry_t *geometry = video_mode_geometry(spec->id);
     unsigned int i;
 
-    /* The addresses describe two fixed 704x512x32-bit reservations. Only the
-       view placed over each reservation changes between alternate modes. */
+    /* Each mode supplies its stride, height and format without moving either
+       base address. In single-buffer modes frame zero may span across the
+       unused frame-one base; active_frame_count ensures it is never selected. */
     for (i = 0; i < GS_UI_FRAME_COUNT; i++) {
-        alternate_frames[i].width = spec->frame_width;
-        alternate_frames[i].height = spec->frame_height;
+        alternate_frames[i].width = geometry->frame_width;
+        alternate_frames[i].height = geometry->frame_height;
         alternate_frames[i].psm = spec->psm;
         alternate_frames[i].mask = 0;
     }
 }
 
-static int clear_frame_pair(framebuffer_t pair[GS_UI_FRAME_COUNT])
+static int wait_gif_idle_bounded(unsigned int timeout_ms)
 {
-    packet_t *packet;
+    u64 start = GetTimerSystemTime();
+    u64 timeout = MSec2TimerBusClock(timeout_ms);
+
+    while ((GS_UI_GIF_CHCR & 0x100u) != 0u) {
+        if (GetTimerSystemTime() - start >= timeout)
+            return -1;
+    }
+    return 0;
+}
+
+static int wait_finish_bounded(unsigned int timeout_ms)
+{
+    u64 start = GetTimerSystemTime();
+    u64 timeout = MSec2TimerBusClock(timeout_ms);
+
+    while ((*GS_REG_CSR & 2u) == 0u) {
+        if (GetTimerSystemTime() - start >= timeout)
+            return -1;
+    }
+    *GS_REG_CSR = 2u;
+    return 0;
+}
+
+static void reset_gif_path(void)
+{
+    /* Stop only PATH3/GIF. libdebug's init_scr() resets every DMA channel and
+       eventually damages unrelated live SIF/IOP state after repeated video
+       tests. A mode transaction owns only the channel it actually uses. */
+    GS_UI_GIF_CHCR = 0u;
+    GIF_REG_CTRL = GIF_SET_CTRL(1, 0);
+    __asm__ __volatile__("sync.l; sync.p");
+    GIF_REG_CTRL = GIF_SET_CTRL(0, 0);
+    *DMA_REG_STAT = DMA_SET_STAT(1u << DMA_CHANNEL_GIF, 0, 0, 0, 0, 0, 0);
+    (void)dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
+    dma_channel_fast_waits(DMA_CHANNEL_GIF);
+}
+
+static int submit_normal_and_wait(packet_t *packet, qword_t *q)
+{
+    int result;
+
+    if (wait_gif_idle_bounded(GS_UI_GIF_TIMEOUT_MS) < 0)
+        return -1;
+    *GS_REG_CSR = 2u;
+    __asm__ __volatile__("sync.l; sync.p");
+    result = dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
+                                     (int)(q - packet->data), 0, 0);
+    __asm__ __volatile__("sync.l; sync.p");
+    if (result < 0 ||
+        wait_gif_idle_bounded(GS_UI_GIF_TIMEOUT_MS) < 0 ||
+        wait_finish_bounded(GS_UI_GIF_TIMEOUT_MS) < 0)
+        return -1;
+    return 0;
+}
+
+static int clear_frames(framebuffer_t pair[GS_UI_FRAME_COUNT],
+                        unsigned int frame_count)
+{
     qword_t *q;
+    unsigned int required_qwords;
     unsigned int i;
 
-    packet = packet_init(64, PACKET_NORMAL);
-    if (packet == NULL)
+    if (frame_clear_packet == NULL || frame_count == 0u ||
+        frame_count > GS_UI_FRAME_COUNT)
         return -1;
-    q = packet->data;
-    for (i = 0; i < GS_UI_FRAME_COUNT; i++) {
+    required_qwords = gs_ui_clear_packet_required_qwords(
+        pair[0].width, frame_count);
+    if (required_qwords == 0u ||
+        required_qwords > (unsigned int)frame_clear_packet->qwords)
+        return -2;
+
+    packet_reset(frame_clear_packet);
+    q = frame_clear_packet->data;
+    for (i = 0; i < frame_count; i++) {
+        if (pair[i].width != pair[0].width)
+            return -3;
         q = draw_setup_environment(q, GS_UI_CONTEXT, &pair[i], &zbuffer);
         q = draw_clear(q, GS_UI_CONTEXT, 0, 0,
                        pair[i].width, pair[i].height, 0, 0, 0);
     }
     q = draw_finish(q);
-    dma_wait_fast();
-    dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
-                            (int)(q - packet->data), 0, 0);
-    draw_wait_finish();
-    packet_free(packet);
+    if ((unsigned int)(q - frame_clear_packet->data) >
+            (unsigned int)frame_clear_packet->qwords)
+        return -4;
+    if (submit_normal_and_wait(frame_clear_packet, q) < 0)
+        return -5;
     return 0;
 }
 
@@ -404,30 +604,32 @@ static int setup_environment(void)
     packet_t *packet;
     qword_t *q;
     unsigned int i;
-    int texture_address;
 
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
 
-    /* Native frame zero remains at VRAM 0 for init_scr()/emergency libdebug
-       compatibility. The alternate pair reserves the largest 32-bit layout:
-       704x512. The same byte ranges also cover 768x448 at 32-bit and the wider
-       720p/1080i layouts at 16-bit. Four buffers plus the font atlas use 3.875
-       MiB of GS VRAM and leave 128 KiB free. */
+    /* Native frame zero remains at VRAM 0 for startup libdebug compatibility.
+       The alternate reservation is physically two 640x1080x16-bit regions.
+       It can instead hold two 768x448x32 480p frames, one full 32-bit 576p or
+       720p surface, or two correct 640x540x32 1080i FRAME buffers. Two small
+       fixed atlases follow it and leave about 144 KiB of VRAM unallocated. */
     graph_vram_clear();
     if (!video_specs_fit_reserved_vram() ||
         allocate_frame_pair(native_frames, GS_UI_WIDTH, GS_UI_HEIGHT,
                             GS_PSM_32, 1) < 0 ||
         allocate_frame_pair(alternate_frames, GS_UI_ALT_STORAGE_WIDTH,
-                            GS_UI_ALT_STORAGE_HEIGHT, GS_PSM_32, 0) < 0)
+                            GS_UI_ALT_STORAGE_HEIGHT,
+                            GS_UI_ALT_STORAGE_PSM, 0) < 0)
         return -1;
 
-    texture_address = graph_vram_allocate(GS_UI_ATLAS_W, GS_UI_ATLAS_H,
-                                          GS_PSM_32, GRAPH_ALIGN_BLOCK);
-    if (texture_address < 0)
-        return -2;
+    for (i = 0u; i < GS_UI_FONT_VARIANT_COUNT; i++) {
+        int texture_address = graph_vram_allocate(
+            GS_UI_ATLAS_W, GS_UI_ATLAS_H, GS_PSM_32, GRAPH_ALIGN_BLOCK);
 
-    font_texture.address = (unsigned int)texture_address;
+        if (texture_address < 0)
+            return -2;
+        font_texture_addresses[i] = (unsigned int)texture_address;
+    }
 
     zbuffer.enable = DRAW_DISABLE;
     zbuffer.method = ZTEST_METHOD_ALLPASS;
@@ -456,6 +658,10 @@ static int setup_environment(void)
     }
     active_frames = native_frames;
     draw_frame_index = 1u;
+    if (apply_render_spec(&video_specs[VIDEO_MODE_NATIVE]) < 0) {
+        packet_free(packet);
+        return -4;
+    }
     q = draw_setup_environment(q, GS_UI_CONTEXT,
                                &active_frames[draw_frame_index], &zbuffer);
     /* libdraw draw2d primitives add the GS +2048 bias themselves. */
@@ -463,33 +669,57 @@ static int setup_environment(void)
     q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
                           0, GS_UI_HEIGHT - 1);
     q = draw_finish(q);
-    dma_wait_fast();
-    dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
-                            (int)(q - packet->data), 0, 0);
-    draw_wait_finish();
+    if (submit_normal_and_wait(packet, q) < 0) {
+        packet_free(packet);
+        return -5;
+    }
     packet_free(packet);
     return 0;
 }
 
-static int upload_font_texture(void)
+static int upload_font_variant(unsigned int variant)
 {
-    packet_t *packet;
+    ui_font_raster_t raster;
     qword_t *q;
+    int result;
 
-    build_font_atlas();
-    packet = packet_init(4096, PACKET_NORMAL);
-    if (packet == NULL)
+    if (variant >= GS_UI_FONT_VARIANT_COUNT || font_upload_packet == NULL)
         return -1;
-    q = packet->data;
+    describe_font_raster(active_font, variant, &raster);
+    build_font_atlas(&raster);
+    q = font_upload_packet->data;
     q = draw_texture_transfer(q, font_atlas, GS_UI_ATLAS_W, GS_UI_ATLAS_H,
-                              GS_PSM_32, font_texture.address,
+                              GS_PSM_32, font_texture_addresses[variant],
                               GS_UI_ATLAS_W);
     q = draw_texture_flush(q);
-    dma_wait_fast();
-    dma_channel_send_chain(DMA_CHANNEL_GIF, packet->data,
-                           (int)(q - packet->data), 0, 0);
-    dma_wait_fast();
-    packet_free(packet);
+    if (wait_gif_idle_bounded(GS_UI_GIF_TIMEOUT_MS) < 0)
+        return -2;
+    result = dma_channel_send_chain(DMA_CHANNEL_GIF,
+                                    font_upload_packet->data,
+                                    (int)(q - font_upload_packet->data),
+                                    0, 0);
+    if (result < 0 ||
+        wait_gif_idle_bounded(GS_UI_GIF_TIMEOUT_MS) < 0)
+        return -3;
+    /* DMA completion only proves that PATH3 consumed the chain. Queue FINISH
+       behind TEXFLUSH and wait for the GS as well before the shared atlas is
+       rebuilt for the second variant. */
+    q = font_upload_packet->data;
+    q = draw_finish(q);
+    if (submit_normal_and_wait(font_upload_packet, q) < 0)
+        return -4;
+    return 0;
+}
+
+static int upload_font_textures(void)
+{
+    unsigned int variant;
+
+    for (variant = 0u; variant < GS_UI_FONT_VARIANT_COUNT; variant++) {
+        if (upload_font_variant(variant) < 0)
+            return -1;
+    }
+    select_font_variant();
     return 0;
 }
 
@@ -529,20 +759,102 @@ static int setup_texture_state(void)
     q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
     q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
     q = draw_finish(q);
-    dma_wait_fast();
-    dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
-                            (int)(q - packet->data), 0, 0);
-    draw_wait_finish();
+    if (submit_normal_and_wait(packet, q) < 0) {
+        packet_free(packet);
+        return -2;
+    }
     packet_free(packet);
     return 0;
 }
+
+static int wait_vsync_bounded(unsigned int timeout_ms)
+{
+    u64 start = GetTimerSystemTime();
+    u64 timeout = MSec2TimerBusClock(timeout_ms);
+
+    *GS_REG_CSR = 8u;
+    while ((*GS_REG_CSR & 8u) == 0u) {
+        if (GetTimerSystemTime() - start >= timeout)
+            return -1;
+    }
+    return 0;
+}
+
+static int rom_version_number(void)
+{
+    char romname[16];
+
+    memset(romname, 0, sizeof(romname));
+    GetRomName(romname);
+    return (int)strtol(romname, NULL, 10);
+}
+
+static int setup_legacy_576p(void)
+{
+    u64 gcont = ((u64)GetGsVParam() & 1u) << 25;
+
+    /* Older retail ROMs do not implement SetGsCrt(0x53); PS2SDK silently
+       substitutes PAL. The DVE parameters for 576p are identical to 480p, so
+       use the kernel's 480p setup and change only the established GS timing.
+       This deliberately avoids raw DVE/DEV9 bus access while HDD is active.
+       Timing values are adapted from Open PS2 Loader GSM under AFL-2.0; see
+       THIRD_PARTY_NOTICES.md. */
+    if (graph_set_mode(GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P,
+                       GRAPH_MODE_FRAME, GRAPH_DISABLE) < 0)
+        return -1;
+
+    *GS_REG_SMODE1 = 0x00000017404B0504ULL | gcont;
+    *GS_REG_SYNCH1 = 0x000402E02003C827ULL;
+    *GS_REG_SYNCH2 = 0x000000000019CA67ULL;
+    *GS_REG_SYNCHV = 0x00A9000002700005ULL;
+    *GS_REG_SMODE2 = 0u;
+    *GS_REG_SRFSH = 4u;
+    *GS_REG_SMODE1 = 0x0000001740490504ULL | gcont;
+    __asm__ __volatile__("sync.l; sync.p");
+    return 0;
+}
+
+static void program_explicit_display(const video_mode_spec_t *spec)
+{
+    int dx = spec->display_x;
+    int dy = spec->display_y;
+    u64 display;
+
+    if (GetSyscallHandler(__NR__GetGsDxDyOffset) != NULL) {
+        int offset_x;
+        int offset_y;
+        int ignored_width;
+        int ignored_height;
+
+        _GetGsDxDyOffset(spec->crt_mode, &offset_x, &offset_y,
+                         &ignored_width, &ignored_height);
+        dx += offset_x;
+        dy += offset_y;
+    }
+    if (spec->id == VIDEO_MODE_1080I)
+        *GS_REG_SMODE2 = GS_SET_SMODE2(1, 1, 0);
+    display = GS_SET_DISPLAY(
+        dx, dy, spec->magh, spec->magv,
+        spec->display_width - 1u, spec->display_height - 1u);
+    /* GS privileged display registers are write-only from the EE's point of
+       view. Reading DISPLAY1 back does not reproduce the value just written;
+       real hardware and GS dumps instead expose undefined bus data. Since
+       PMODE selects read circuit 2 for these modes, such a read-back copy can
+       leave DISPLAY2 with a zero-sized window and an otherwise valid signal
+       will remain black. Write the locally assembled value to both circuits. */
+    *GS_REG_DISPLAY1 = display;
+    *GS_REG_DISPLAY2 = display;
+}
+
+static int restore_native_video(int hard_recovery);
 
 static qword_t *begin_frame(packet_t **packet_out)
 {
     packet_t *packet;
     qword_t *q;
 
-    dma_wait_fast();
+    if (wait_gif_idle_bounded(GS_UI_GIF_TIMEOUT_MS) < 0)
+        frame_fault_pending = 1;
     packet = render_packet;
     q = packet->data;
 
@@ -552,7 +864,7 @@ static qword_t *begin_frame(packet_t **packet_out)
         q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
         q = draw_scissor_area(q, GS_UI_CONTEXT, 0,
                               active_visible_width() - 1,
-                              0, render_visible_height - 1);
+                              0, render_layout.active_height - 1);
         q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
         q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
         q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
@@ -561,6 +873,12 @@ static qword_t *begin_frame(packet_t **packet_out)
         q = draw_framebuffer(q, GS_UI_CONTEXT,
                              &active_frames[draw_frame_index]);
     }
+    /* The complete output is cleared before the logical viewport is drawn.
+       Letterboxed layouts therefore have deterministic black bars instead of
+       pixels left behind by an earlier frame. */
+    q = draw_clear(q, GS_UI_CONTEXT, 0, 0,
+                   active_visible_width(), render_layout.active_height,
+                   0, 0, 0);
 
     *packet_out = packet;
     return q;
@@ -570,13 +888,44 @@ static void end_frame(packet_t *packet, qword_t *q)
 {
     unsigned int completed_frame = draw_frame_index;
 
+    if (frame_fault_pending) {
+        frame_fault_pending = 0;
+        (void)restore_native_video(1);
+        console_dirty = 0;
+        return;
+    }
+    /* A single full-resolution 32-bit surface deliberately trades flipping
+       for color correctness and VRAM safety. Start its draw immediately after
+       VBlank so the GS follows the scanout beam instead of racing it. */
+    if (active_frame_count == 1u &&
+        wait_vsync_bounded(GS_UI_VSYNC_TIMEOUT_MS) < 0) {
+        (void)restore_native_video(1);
+        console_dirty = 0;
+        return;
+    }
     q = draw_finish(q);
-    dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
-                            (int)(q - packet->data), 0, 0);
-    draw_wait_finish();
-    graph_wait_vsync();
+    if (submit_normal_and_wait(packet, q) < 0) {
+        (void)restore_native_video(1);
+        console_dirty = 0;
+        return;
+    }
+    if (active_frame_count > 1u &&
+        wait_vsync_bounded(GS_UI_VSYNC_TIMEOUT_MS) < 0) {
+        (void)restore_native_video(1);
+        console_dirty = 0;
+        return;
+    }
+    /* 1080i FRAME buffers contain both fields. Keep each completed buffer on
+       the read circuit for two VBlanks so odd and even fields are never taken
+       from different UI frames. */
+    if (video_mode == VIDEO_MODE_1080I &&
+        wait_vsync_bounded(GS_UI_VSYNC_TIMEOUT_MS) < 0) {
+        (void)restore_native_video(1);
+        console_dirty = 0;
+        return;
+    }
     present_framebuffer(&active_frames[completed_frame]);
-    draw_frame_index ^= 1u;
+    draw_frame_index = (draw_frame_index + 1u) % active_frame_count;
     console_dirty = 0;
 }
 
@@ -615,23 +964,36 @@ int gs_ui_initialize(void)
         return 0;
     if (setup_environment() < 0)
         return -1;
-    if (upload_font_texture() < 0)
+    font_upload_packet = packet_init(GS_UI_FONT_UPLOAD_QWORDS,
+                                     PACKET_NORMAL);
+    if (font_upload_packet == NULL)
         return -2;
-    if (setup_texture_state() < 0)
+    if (upload_font_textures() < 0)
         return -3;
+    if (setup_texture_state() < 0)
+        return -4;
+    native_bootstrap_packet = packet_init(64, PACKET_NORMAL);
+    if (native_bootstrap_packet == NULL)
+        return -5;
+    frame_clear_packet = packet_init(GS_UI_CLEAR_PACKET_QWORDS,
+                                     PACKET_NORMAL);
+    if (frame_clear_packet == NULL)
+        return -6;
 
     /* end_frame() waits for GS FINISH before returning, so a second 256 KiB
        packet cannot overlap useful work. Reuse one packet and leave that EE
        memory available to the forensic workspace. */
     render_packet = packet_init(GS_UI_PACKET_QWORDS, PACKET_NORMAL);
     if (render_packet == NULL)
-        return -4;
+        return -7;
 
     console_buffer[0] = '\0';
     console_used = 0;
     console_dirty = 0;
     draw_state_dirty = 0;
     blending_enabled = -1;
+    frame_fault_pending = 0;
+    video_transition_state = VIDEO_TRANSITION_STABLE;
     renderer_ready = 1;
     gs_ui_render_message("Starting",
                          "Graphics Synthesizer frontend ready.",
@@ -651,41 +1013,136 @@ video_mode_id_t gs_ui_video_mode_current(void)
 
 int gs_ui_video_mode_supported(video_mode_id_t mode)
 {
-    char romname[15] = {0};
-
-    if ((unsigned int)mode >= VIDEO_MODE_COUNT)
-        return 0;
-    if (mode != VIDEO_MODE_576P)
-        return 1;
-
-    /* PS2SDK otherwise silently substitutes PAL for 576p on old ROMs. A
-       rejected menu item is safer than displaying a mode different from the
-       one the user was asked to confirm. */
-    GetRomName(romname);
-    return strtol(romname, NULL, 10) >= 220;
+    return (unsigned int)mode < VIDEO_MODE_COUNT;
 }
 
-static void restore_native_video(void)
+ui_font_id_t gs_ui_font_current(void)
 {
-    /* This is deliberately the same read-circuit bootstrap already proven on
-       physical hardware. It is also the timed escape hatch from any unsupported
-       display, cable or alternate-mode combination. */
-    init_scr();
-    /* libdebug's init_scr() resets DMA globally. Re-establish libdma's GIF
-       channel state before the next application frame is submitted. */
-    dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
-    dma_channel_fast_waits(DMA_CHANNEL_GIF);
+    return active_font;
+}
+
+int gs_ui_font_apply(ui_font_id_t font)
+{
+    ui_font_id_t previous;
+
+    if ((unsigned int)font >= UI_FONT_COUNT)
+        return -1;
+    if (font == active_font)
+        return 0;
+
+    previous = active_font;
+    active_font = font;
+    select_font_variant();
+    if (renderer_ready && upload_font_textures() < 0) {
+        active_font = previous;
+        select_font_variant();
+        (void)upload_font_textures();
+        return -2;
+    }
+    blending_enabled = -1;
+    draw_state_dirty = 1;
+    return 0;
+}
+
+static int bootstrap_native_gs(void)
+{
+    qword_t *q;
+
+    if (native_bootstrap_packet == NULL)
+        return -1;
+
+    /* This is init_scr()'s hardware-proven GS bootstrap without its DmaReset(),
+       which resets unrelated SIF/IOP channels. Reset the GS itself, ask the
+       kernel for the console's native timing, then reproduce libdebug's exact
+       read circuit before output is enabled. */
+    graph_disable_output();
+    *GS_REG_CSR = 0x200u;
+    GsPutIMR(0xff00u);
+    SetGsCrt(GRAPH_MODE_INTERLACED, graph_get_region(), GRAPH_MODE_FIELD);
+    __asm__ __volatile__("sync.l; sync.p");
+
     active_frames = native_frames;
-    apply_render_spec(&video_specs[VIDEO_MODE_NATIVE]);
+    active_frame_count = GS_UI_FRAME_COUNT;
+    if (apply_render_spec(&video_specs[VIDEO_MODE_NATIVE]) < 0)
+        return -2;
+    draw_frame_index = 1u;
+
+    *GS_REG_DISPFB1 = 0u;
+    *GS_REG_DISPFB2 = GS_UI_NATIVE_DISPFB2;
+    *GS_REG_DISPLAY1 = 0u;
+    *GS_REG_DISPLAY2 = GS_UI_NATIVE_DISPLAY2;
+    *GS_REG_BGCOLOR = 0u;
+
+    /* GS reset clears every general drawing register. Rebuild the complete
+       libdraw context while PMODE is still disabled, targeting the hidden
+       native back buffer; frame zero remains the immediately visible image. */
+    q = native_bootstrap_packet->data;
+    q = draw_setup_environment(q, GS_UI_CONTEXT,
+                               &native_frames[draw_frame_index], &zbuffer);
+    q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
+    q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
+                          0, GS_UI_HEIGHT - 1);
+    q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
+    q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
+    q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
+    q = draw_finish(q);
+    if (submit_normal_and_wait(native_bootstrap_packet, q) < 0)
+        return -3;
+
+    *GS_REG_PMODE = GS_UI_NATIVE_PMODE;
+    __asm__ __volatile__("sync.l; sync.p");
+    return 0;
+}
+
+static int restore_native_video(int hard_recovery)
+{
+    int result;
+
+    video_transition_state = VIDEO_TRANSITION_RESTORING;
+    if (hard_recovery ||
+        wait_gif_idle_bounded(GS_UI_GIF_TIMEOUT_MS) < 0)
+        reset_gif_path();
+
+    result = bootstrap_native_gs();
+    if (result < 0 && !hard_recovery) {
+        /* One controlled PATH3 recovery is allowed if the otherwise healthy
+           transaction could not submit its post-reset environment packet. */
+        reset_gif_path();
+        result = bootstrap_native_gs();
+    }
+    if (result < 0)
+        goto fail;
+
     video_mode = VIDEO_MODE_NATIVE;
+    blending_enabled = -1;
+    draw_state_dirty = 0;
+    frame_fault_pending = 0;
+    video_transition_state = VIDEO_TRANSITION_STABLE;
+    return 0;
+
+fail:
+    video_mode = VIDEO_MODE_NATIVE;
+    active_frames = native_frames;
+    active_frame_count = GS_UI_FRAME_COUNT;
     draw_frame_index = 1u;
     blending_enabled = -1;
     draw_state_dirty = 1;
+    frame_fault_pending = 0;
+    video_transition_state = VIDEO_TRANSITION_STABLE;
+    return -2;
+}
+
+static int fail_video_switch(int error)
+{
+    (void)restore_native_video(1);
+    return error;
 }
 
 int gs_ui_video_mode_apply(video_mode_id_t mode)
 {
     const video_mode_spec_t *spec;
+    const video_mode_geometry_t *geometry;
+    int mode_result;
 
     if (!renderer_ready)
         return -1;
@@ -695,39 +1152,58 @@ int gs_ui_video_mode_apply(video_mode_id_t mode)
         return -3;
     if (mode == video_mode)
         return 0;
+    if (video_transition_state != VIDEO_TRANSITION_STABLE)
+        return -9;
 
-    dma_wait_fast();
-    graph_wait_vsync();
-    if (mode == VIDEO_MODE_NATIVE) {
-        restore_native_video();
-        return 0;
-    }
+    video_transition_state = VIDEO_TRANSITION_SWITCHING;
+    if (wait_gif_idle_bounded(GS_UI_GIF_TIMEOUT_MS) < 0)
+        return fail_video_switch(-10);
+    if (wait_vsync_bounded(GS_UI_VSYNC_TIMEOUT_MS) < 0)
+        return fail_video_switch(-11);
+    if (mode == VIDEO_MODE_NATIVE)
+        return restore_native_video(0);
 
     spec = &video_specs[(unsigned int)mode];
+    geometry = video_mode_geometry(mode);
     graph_disable_output();
-    if (graph_set_mode(spec->interlace, spec->graph_mode,
-                       spec->frame_mode, spec->flicker_filter) < 0 ||
-        graph_set_screen(spec->screen_x, spec->screen_y,
-                         spec->visible_width, spec->visible_height) < 0) {
-        restore_native_video();
-        return -4;
+    if (mode == VIDEO_MODE_576P && rom_version_number() < 220)
+        mode_result = setup_legacy_576p();
+    else
+        mode_result = graph_set_mode(spec->interlace, spec->graph_mode,
+                                     spec->frame_mode,
+                                     spec->flicker_filter);
+    if (mode_result < 0) {
+        return fail_video_switch(-4);
+    }
+    if (spec->explicit_display) {
+        program_explicit_display(spec);
+    } else if (graph_set_screen(spec->screen_x, spec->screen_y,
+                                geometry->surface_width,
+                                geometry->surface_height) < 0) {
+        return fail_video_switch(-4);
     }
 
     configure_alternate_frames(spec);
-    if (clear_frame_pair(alternate_frames) < 0) {
-        restore_native_video();
-        return -5;
-    }
+    if (clear_frames(alternate_frames, geometry->frame_count) < 0)
+        return fail_video_switch(-5);
 
     active_frames = alternate_frames;
-    apply_render_spec(spec);
+    active_frame_count = geometry->frame_count;
+    if (apply_render_spec(spec) < 0)
+        return fail_video_switch(-6);
     video_mode = mode;
     draw_frame_index = 0u;
     graph_set_bgcolor(0, 0, 0);
-    present_framebuffer(&alternate_frames[1]);
+    present_framebuffer(&alternate_frames[
+        active_frame_count > 1u ? 1u : 0u]);
     blending_enabled = -1;
     draw_state_dirty = 1;
+    frame_fault_pending = 0;
     graph_enable_output();
+    if (wait_vsync_bounded(GS_UI_VSYNC_TIMEOUT_MS) < 0) {
+        return fail_video_switch(-8);
+    }
+    video_transition_state = VIDEO_TRANSITION_STABLE;
     return 0;
 }
 

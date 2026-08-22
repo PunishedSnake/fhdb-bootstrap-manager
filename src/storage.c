@@ -18,6 +18,7 @@
 #include "app_config.h"
 #include "boot_chain.h"
 #include "storage.h"
+#include "ui_font.h"
 #include "ui_theme_ps2.h"
 
 #define APP_CONFIG_BYTES 512u
@@ -65,6 +66,7 @@ static const ui_theme_palette_t palettes[UI_THEME_COUNT] = {
 
 static ui_theme_id_t current_theme = UI_THEME_AQUA;
 static video_mode_id_t preferred_video_mode = VIDEO_MODE_NATIVE;
+static ui_font_id_t preferred_font = UI_FONT_MSX;
 
 unsigned int storage_selected(void)
 {
@@ -422,9 +424,12 @@ static int parse_app_config(const char *buffer)
 {
     ui_theme_id_t original_theme = current_theme;
     video_mode_id_t original_video = preferred_video_mode;
+    ui_font_id_t original_font = preferred_font;
     video_mode_id_t parsed_video;
+    ui_font_id_t parsed_font;
     char value[64];
     int found = 0;
+    int migrated = 0;
 
     if (config_value(buffer, "theme", value, sizeof(value))) {
         found = 1;
@@ -432,16 +437,34 @@ static int parse_app_config(const char *buffer)
             goto invalid;
     }
     if (config_value(buffer, "video_mode", value, sizeof(value))) {
+        int video_result;
+
         found = 1;
-        if (video_mode_from_identifier(value, &parsed_video) < 0)
+        video_result = video_mode_from_identifier(value, &parsed_video);
+        if (video_result < 0)
             goto invalid;
+        if (video_result == VIDEO_MODE_MIGRATED)
+            migrated = 1;
         preferred_video_mode = parsed_video;
     }
-    return found ? 0 : -2;
+    if (config_value(buffer, "font", value, sizeof(value))) {
+        found = 1;
+        if (ui_font_from_identifier(value, &parsed_font) < 0) {
+            /* Fonts are cosmetic and must never make a recovery tool fail to
+               start. Unknown identifiers fall back to the original PS2SDK
+               raster and are rewritten when storage is writable. */
+            preferred_font = UI_FONT_MSX;
+            migrated = 1;
+        } else {
+            preferred_font = parsed_font;
+        }
+    }
+    return found ? migrated : -2;
 
 invalid:
     current_theme = original_theme;
     preferred_video_mode = original_video;
+    preferred_font = original_font;
     return -3;
 }
 
@@ -456,8 +479,16 @@ int app_config_load(void)
         return -1;
 
     result = read_text_file(path, buffer, sizeof(buffer));
-    if (result >= 0)
-        return parse_app_config(buffer);
+    if (result >= 0) {
+        result = parse_app_config(buffer);
+        /* v0.4.1 exposed five modes which failed physical display testing.
+           Sanitize them before any GS switch and rewrite the preference when
+           possible. Failure to rewrite is non-fatal: this session still uses
+           native output and will never apply the unsafe identifier. */
+        if (result == VIDEO_MODE_MIGRATED)
+            (void)app_config_save();
+        return result;
+    }
 
     /* A present HDDMAN.CFG is authoritative. Do not hide a malformed or
        unreadable current config behind an older development filename. */
@@ -470,15 +501,16 @@ int app_config_load(void)
     if (read_text_file(legacy_path, buffer, sizeof(buffer)) < 0)
         return result;
 
-    /* Migration is deliberately read-only: do not rewrite/delete the old file
-       during startup. The next explicit save always creates HDDMAN.CFG. */
-    return parse_app_config(buffer);
+    result = parse_app_config(buffer);
+    if (result == VIDEO_MODE_MIGRATED)
+        (void)app_config_save();
+    return result;
 }
 
 int app_config_save(void)
 {
     char path[STORAGE_LAUNCH_PATH_SIZE];
-    char buffer[192];
+    char buffer[224];
     int length;
 
     if (app_config_path(path, sizeof(path)) < 0)
@@ -486,9 +518,11 @@ int app_config_save(void)
     length = snprintf(buffer, sizeof(buffer),
                       "# PS2 HDD Bootstrap Manager UI and video\n"
                       "theme=%s\n"
-                      "video_mode=%s\n",
+                      "video_mode=%s\n"
+                      "font=%s\n",
                       ui_theme_identifier(current_theme),
-                      video_mode_identifier(preferred_video_mode));
+                      video_mode_identifier(preferred_video_mode),
+                      ui_font_identifier(preferred_font));
     if (length < 0 || (unsigned int)length >= sizeof(buffer))
         return -2;
     return write_whole_file(path, buffer, length);
@@ -504,5 +538,18 @@ int app_config_set_video_mode(video_mode_id_t mode)
     if ((unsigned int)mode >= VIDEO_MODE_COUNT)
         return -1;
     preferred_video_mode = mode;
+    return 0;
+}
+
+ui_font_id_t app_config_font(void)
+{
+    return preferred_font;
+}
+
+int app_config_set_font(ui_font_id_t font)
+{
+    if ((unsigned int)font >= UI_FONT_COUNT)
+        return -1;
+    preferred_font = font;
     return 0;
 }
