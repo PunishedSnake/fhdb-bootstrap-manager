@@ -64,6 +64,9 @@
 #define GS_UI_VSYNC_TIMEOUT_MS 250u
 #define GS_UI_GIF_TIMEOUT_MS 250u
 #define GS_UI_GIF_CHCR (*(volatile u32 *)0x1000A000)
+#define GS_UI_NATIVE_PMODE 0x000000000000FF62ULL
+#define GS_UI_NATIVE_DISPFB2 0x0000000000001400ULL
+#define GS_UI_NATIVE_DISPLAY2 0x001BF9FF0983227CULL
 
 extern const u8 msx[];
 
@@ -116,17 +119,6 @@ typedef enum {
 } video_transition_state_t;
 
 typedef struct {
-    u64 pmode;
-    u64 smode2;
-    u64 dispfb1;
-    u64 dispfb2;
-    u64 display1;
-    u64 display2;
-    u64 bgcolor;
-    int valid;
-} native_video_snapshot_t;
-
-typedef struct {
     unsigned int width;
     unsigned int height;
     unsigned int first;
@@ -145,6 +137,7 @@ static lod_t font_lod;
 static blend_t alpha_blend;
 static packet_t *render_packet;
 static packet_t *font_upload_packet;
+static packet_t *native_bootstrap_packet;
 static unsigned int font_texture_addresses[GS_UI_FONT_VARIANT_COUNT];
 static unsigned int draw_frame_index;
 static unsigned int active_frame_count = GS_UI_FRAME_COUNT;
@@ -164,7 +157,6 @@ static int blending_enabled = -1;
 static int frame_fault_pending;
 static video_transition_state_t video_transition_state =
     VIDEO_TRANSITION_STABLE;
-static native_video_snapshot_t native_video_snapshot;
 
 static float scaled_x(float value)
 {
@@ -948,18 +940,6 @@ int gs_ui_initialize(void)
 {
     if (renderer_ready)
         return 0;
-
-    /* main() has just completed the only allowed init_scr() call. Preserve its
-       physically validated native read-circuit contract for every later
-       rollback without ever repeating its global DMAC reset. */
-    native_video_snapshot.pmode = *GS_REG_PMODE;
-    native_video_snapshot.smode2 = *GS_REG_SMODE2;
-    native_video_snapshot.dispfb1 = *GS_REG_DISPFB1;
-    native_video_snapshot.dispfb2 = *GS_REG_DISPFB2;
-    native_video_snapshot.display1 = *GS_REG_DISPLAY1;
-    native_video_snapshot.display2 = *GS_REG_DISPLAY2;
-    native_video_snapshot.bgcolor = *GS_REG_BGCOLOR;
-    native_video_snapshot.valid = 1;
     if (setup_environment() < 0)
         return -1;
     font_upload_packet = packet_init(GS_UI_FONT_UPLOAD_QWORDS,
@@ -970,13 +950,16 @@ int gs_ui_initialize(void)
         return -3;
     if (setup_texture_state() < 0)
         return -4;
+    native_bootstrap_packet = packet_init(64, PACKET_NORMAL);
+    if (native_bootstrap_packet == NULL)
+        return -5;
 
     /* end_frame() waits for GS FINISH before returning, so a second 256 KiB
        packet cannot overlap useful work. Reuse one packet and leave that EE
        memory available to the forensic workspace. */
     render_packet = packet_init(GS_UI_PACKET_QWORDS, PACKET_NORMAL);
     if (render_packet == NULL)
-        return -5;
+        return -6;
 
     console_buffer[0] = '\0';
     console_used = 0;
@@ -1035,57 +1018,78 @@ int gs_ui_font_apply(ui_font_id_t font)
     return 0;
 }
 
-static int restore_native_video(int hard_recovery)
+static int bootstrap_native_gs(void)
 {
-    int region;
+    qword_t *q;
 
-    video_transition_state = VIDEO_TRANSITION_RESTORING;
-    if (hard_recovery) {
-        /* A timed-out PATH3 packet is the only case that warrants resetting
-           GIF. Normal mode changes arrive here with an already idle channel. */
-        reset_gif_path();
-    } else if (wait_gif_idle_bounded(GS_UI_GIF_TIMEOUT_MS) < 0) {
-        reset_gif_path();
-        hard_recovery = 1;
-    }
+    if (native_bootstrap_packet == NULL)
+        return -1;
 
+    /* This is init_scr()'s hardware-proven GS bootstrap without its DmaReset(),
+       which resets unrelated SIF/IOP channels. Reset the GS itself, ask the
+       kernel for the console's native timing, then reproduce libdebug's exact
+       read circuit before output is enabled. */
     graph_disable_output();
-    region = graph_get_region();
-    if (hard_recovery) {
-        if (graph_set_mode(GRAPH_MODE_INTERLACED, region,
-                           GRAPH_MODE_FIELD, GRAPH_ENABLE) < 0)
-            goto fail;
-    } else {
-        /* SetGsCrt changes only the output timing. Avoid resetting the GS on a
-           healthy alternate->native transaction; its draw context, VRAM and
-           PATH3 state remain valid across arbitrarily many menu cycles. */
-        SetGsCrt(GRAPH_MODE_INTERLACED, region, GRAPH_MODE_FIELD);
-    }
+    *GS_REG_CSR = 0x200u;
+    GsPutIMR(0xff00u);
+    SetGsCrt(GRAPH_MODE_INTERLACED, graph_get_region(), GRAPH_MODE_FIELD);
+    __asm__ __volatile__("sync.l; sync.p");
 
-    /* Restore the complete libdebug read circuit, not merely its timing.
-       DISPFB is part of the hardware-proven native contract as much as
-       DISPLAY and PMODE are. Output is enabled only after every register is
-       back in place. */
-    if (native_video_snapshot.valid) {
-        *GS_REG_SMODE2 = native_video_snapshot.smode2;
-        *GS_REG_DISPFB1 = native_video_snapshot.dispfb1;
-        *GS_REG_DISPFB2 = native_video_snapshot.dispfb2;
-        *GS_REG_DISPLAY1 = native_video_snapshot.display1;
-        *GS_REG_DISPLAY2 = native_video_snapshot.display2;
-        *GS_REG_BGCOLOR = native_video_snapshot.bgcolor;
-    }
     active_frames = native_frames;
     active_frame_count = GS_UI_FRAME_COUNT;
     if (apply_render_spec(&video_specs[VIDEO_MODE_NATIVE]) < 0)
-        goto fail;
-    video_mode = VIDEO_MODE_NATIVE;
+        return -2;
     draw_frame_index = 1u;
-    if (native_video_snapshot.valid)
-        *GS_REG_PMODE = native_video_snapshot.pmode;
-    else
-        graph_enable_output();
+
+    *GS_REG_DISPFB1 = 0u;
+    *GS_REG_DISPFB2 = GS_UI_NATIVE_DISPFB2;
+    *GS_REG_DISPLAY1 = 0u;
+    *GS_REG_DISPLAY2 = GS_UI_NATIVE_DISPLAY2;
+    *GS_REG_BGCOLOR = 0u;
+
+    /* GS reset clears every general drawing register. Rebuild the complete
+       libdraw context while PMODE is still disabled, targeting the hidden
+       native back buffer; frame zero remains the immediately visible image. */
+    q = native_bootstrap_packet->data;
+    q = draw_setup_environment(q, GS_UI_CONTEXT,
+                               &native_frames[draw_frame_index], &zbuffer);
+    q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
+    q = draw_scissor_area(q, GS_UI_CONTEXT, 0, GS_UI_WIDTH - 1,
+                          0, GS_UI_HEIGHT - 1);
+    q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
+    q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
+    q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
+    q = draw_finish(q);
+    if (submit_normal_and_wait(native_bootstrap_packet, q) < 0)
+        return -3;
+
+    *GS_REG_PMODE = GS_UI_NATIVE_PMODE;
+    __asm__ __volatile__("sync.l; sync.p");
+    return 0;
+}
+
+static int restore_native_video(int hard_recovery)
+{
+    int result;
+
+    video_transition_state = VIDEO_TRANSITION_RESTORING;
+    if (hard_recovery ||
+        wait_gif_idle_bounded(GS_UI_GIF_TIMEOUT_MS) < 0)
+        reset_gif_path();
+
+    result = bootstrap_native_gs();
+    if (result < 0 && !hard_recovery) {
+        /* One controlled PATH3 recovery is allowed if the otherwise healthy
+           transaction could not submit its post-reset environment packet. */
+        reset_gif_path();
+        result = bootstrap_native_gs();
+    }
+    if (result < 0)
+        goto fail;
+
+    video_mode = VIDEO_MODE_NATIVE;
     blending_enabled = -1;
-    draw_state_dirty = 1;
+    draw_state_dirty = 0;
     frame_fault_pending = 0;
     video_transition_state = VIDEO_TRANSITION_STABLE;
     return 0;
