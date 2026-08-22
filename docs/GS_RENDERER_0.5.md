@@ -146,6 +146,18 @@ while a timed-out PATH3 receives one isolated recovery attempt. Native and
 scaled font atlases remain at fixed VRAM addresses, so the rebootstrap performs
 no heap allocation or texture upload.
 
+Physical testing then completed three native/480p/native cycles before the
+fourth 480p entry went black. The mode timing was not the accumulating state:
+`clear_frames()` allocated a 64-qword packet even though clearing both 768-wide
+480p buffers emits exactly 100 qwords with PS2SDK v2.0.0. Every switch wrote
+past the packet into the EE heap.
+
+Development build 6 replaces that per-switch allocation with one persistent
+256-qword transition packet. Its required size is calculated and rejected
+before packet construction, checked again before submission, and covered by a
+portable regression that fixes the 480p budget at 100 qwords. No mode switch
+now allocates or frees EE heap memory.
+
 ## Validation boundary
 
 Portable tests prove layout geometry, font identifiers, ASCII source coverage
@@ -160,7 +172,7 @@ Before release, both fonts must be checked in every exposed mode for:
 - mode switch, confirmation, timeout and native restoration;
 - repeated font changes before and after a video-mode change.
 
-The dev5 transition stress test additionally requires at least twenty complete
+The dev6 transition stress test additionally requires at least twenty complete
 `native -> candidate -> native` cycles in one uninterrupted menu session.
 
 576p, 720p and 1080i are exposed only by the development build until their full
