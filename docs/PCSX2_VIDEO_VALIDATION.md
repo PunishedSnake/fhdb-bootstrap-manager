@@ -71,6 +71,13 @@ integer multiple of the source bitmap, keeping text and panels at the same
 apparent scale while leaving the established native and 480p dimensions
 unchanged.
 
+Dev9 performs the final per-mode alignment pass from the second screenshot
+set. The 576p viewport is reduced to 472 lines so the complete footer remains
+visible. 720p grows by one draw line and moves two DISPLAY lines down. 1080i
+uses a 527-line viewport starting at frame line 13 while DISPLAY moves nine
+lines down; those changes cancel at the top edge and extend the lower UI using
+the remaining safe portion of the 1125-line raster.
+
 ## Required PCSX2 record
 
 Every emulator result must record:

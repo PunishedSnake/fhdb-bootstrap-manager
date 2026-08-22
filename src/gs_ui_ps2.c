@@ -106,11 +106,11 @@ static const video_mode_spec_t video_specs[VIDEO_MODE_COUNT] = {
     {VIDEO_MODE_720P,
      GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_720P, GRAPH_MODE_FRAME,
      GRAPH_DISABLE, 0, 0, GS_PSM_32, 0, 1,
-     0x52, 306, 24, 1, 0, 1280, 720},
+     0x52, 306, 26, 1, 0, 1280, 720},
     {VIDEO_MODE_1080I,
      GRAPH_MODE_INTERLACED, GRAPH_MODE_HDTV_1080I, GRAPH_MODE_FRAME,
      GRAPH_DISABLE, 0, 0, GS_PSM_32, 0, 1,
-     0x51, 236, 38, 2, 0, 1920, 1080}
+     0x51, 236, 47, 2, 0, 1920, 1080}
 };
 
 typedef enum {
