@@ -210,6 +210,18 @@ for GS transaction and framebuffer work, with physical hardware retained for
 final promotion. See
 [`PCSX2_VIDEO_VALIDATION.md`](PCSX2_VIDEO_VALIDATION.md).
 
+### 0.4.3 extended-output promotion
+
+GS dumps isolated the remaining black-output fault to `DISPLAY2`: the code had
+used a privileged write-only DISPLAY register as temporary storage. Writing the
+locally assembled value directly to both read circuits made 576p, 720p and
+1080i visible on both PCSX2 and the console. Subsequent captures calibrated the
+three logical viewports against native output; the maintainer accepted the
+final 576p and 720p dev10 geometry as ideal. 0.4.3 therefore promotes all three
+behind the same ten-second confirmation and native-recovery contract. Explicit
+NTSC/PAL modes remain excluded because native already supplies the region-correct
+interlaced path and PAL 576i previously blocked rollback.
+
 ## Large-HDD forensic finding #1 — old node-cap truncation
 
 The first healthy large-HDL forensic scan hit the old 512-node capacity. The partial forward map still looked extremely coherent, but the visible tail was not the physical tail. The old evaluator therefore inferred two fake endpoint changes.

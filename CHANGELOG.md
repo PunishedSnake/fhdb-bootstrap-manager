@@ -2,6 +2,56 @@
 
 All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
+## [0.4.3] - 2026-08-22
+
+**Codename: Michishirube (道標)**
+
+0.4.3 is the corrective display release. It keeps the 0.4.0 recovery contract
+and publishes the renderer work that was temporarily numbered as 0.5.0-dev
+while the actual milestone boundary was still being decided.
+
+### Video and GS
+
+- Added guarded `native`, `480p`, `576p`, `720p` and `1080i` output with
+  ten-second confirmation and native fallback on every alternate startup.
+- Replaced partial or incorrect HDTV frame descriptions with complete 32-bit
+  surfaces and explicit signal/framebuffer/viewport contracts.
+- Corrected 1080i FRAME storage to two 640x540 buffers and retained each frame
+  for both interlaced fields.
+- Fixed black HDTV output by writing the assembled DISPLAY value directly to
+  both GS read circuits instead of reading a privileged write-only register
+  back as temporary storage.
+- Added the pre-ROM-2.20 576p setup without raw DVE access through the active
+  DEV9/HDD bus.
+- Added bounded GIF-idle, FINISH and VBlank waits plus a complete native GS
+  rebootstrap that avoids libdebug's unrelated global DMAC reset.
+- Fixed the repeated-switch EE heap corruption caused by a 64-qword clear
+  packet receiving the 100 qwords required by the 480p buffer pair.
+- Calibrated the final 576p, 720p and 1080i UI viewports against matching PCSX2
+  and physical-console evidence.
+
+### UI and fonts
+
+- Added resolution-independent mapping from the stable 640x224 logical UI.
+- Added selectable PS2SDK MSX and BSD-2-Clause Spleen bitmap fonts.
+- Kept native/scaled font atlases resident so mode switching performs no font
+  upload or heap allocation.
+
+### Validation and packaging
+
+- Completed 20 uninterrupted native/480p/native cycles on both the target
+  SCPH-50000 and PCSX2.
+- Promoted PCSX2 to the primary GS iteration gate after it reproduced the
+  console's delayed black-screen failure and mode behavior.
+- Retained the complete portable suite, 30 mounted-HDD fixtures, 9 forensic
+  fixtures and the pinned PS2DEV v2.0.0 R5900 build.
+- Expanded the release ZIP with project, PS2SDK, Spleen and Open PS2 Loader
+  notices required by the shipped code and font data.
+
+The APA evidence weights, recovery authorization, snapshot rules, write order,
+flush/read-back verification and normal payload-first/pointer-last transaction
+are unchanged.
+
 ## [0.4.0] - 2026-08-21
 
 **Codename: Michishirube (道標)**

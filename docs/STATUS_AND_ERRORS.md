@@ -110,7 +110,9 @@ The 0.4.0 UI/status path has been exercised on physical PS2 hardware for:
 - contextual negative-path error presentation.
 
 Post-release physical testing confirmed stable native <-> 480p switching.
-Later testing rejected the additional 0.4.1 modes, so 0.4.2 removes them and
-sanitizes their persisted identifiers before changing GS state.
+Later 0.4.3 work reconstructed 576p, 720p and 1080i with complete surfaces,
+bounded transactions and calibrated viewports. Matching PCSX2/console behavior
+and the final maintainer captures passed the release gate. Unsafe explicit
+NTSC/PAL identifiers remain sanitized to native before changing GS state.
 
 Exceptional raw repair statuses are instrumented but remain part of the release's experimental destructive-recovery surface until broader independent tests exist.

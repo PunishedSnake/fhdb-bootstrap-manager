@@ -140,7 +140,10 @@ Observed on real PS2 hardware before 0.4.0 release:
 - VBlank-synchronized forensic status with no observed screen tearing — **PASS**.
 
 Post-release maintainer testing on 2026-08-22 additionally reported native <->
-480p switching and continued UI operation — **PASS**. The other alternate video
-modes remain explicitly experimental pending their own display-path coverage.
+480p switching and continued UI operation — **PASS**. The 0.4.3 maintenance
+work subsequently rebuilt 576p, 720p and 1080i around complete framebuffer and
+DISPLAY contracts, bounded rollback and calibrated viewports. Matching
+PCSX2/console behavior plus the accepted final captures complete their 0.4.3
+promotion gate. Explicit NTSC/PAL selectors remain removed.
 
 The remaining release disclaimer applies to exceptional destructive HDD recovery, not to the normal GS frontend.

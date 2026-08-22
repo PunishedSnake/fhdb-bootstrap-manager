@@ -1,9 +1,9 @@
-# Scalable GS renderer and bitmap-font pipeline
+# Scalable GS renderer and bitmap-font pipeline (0.4.3)
 
-This document describes the 0.5 development renderer built on top of the 0.4.2
-display-safety hotfix. Native and 480p are physically proven. Development build
-6 keeps guarded 576p, 720p and 1080i available while fixing the cumulative GIF
-packet overflow exposed by repeated native/480p transactions.
+This document describes the renderer released in 0.4.3. It was developed under
+temporary 0.5.0-dev identifiers on top of the 0.4.2 display-safety branch, then
+kept in the Michishirube line because its completed scope is corrective rather
+than the interoperability milestone assigned to the real 0.5.x roadmap.
 
 ## Geometry contract
 
@@ -83,9 +83,9 @@ atlas addresses never move during a mode switch.
 
 | Mode | Render surface | Logical viewport | Read-circuit result |
 |---|---:|---:|---|
-| 576p | 768x576 stride, 720x576 visible, 32-bit, one buffer | 640x448 at (40,64) | complete progressive 720x576 output |
-| 720p | 640x720, 32-bit, one buffer | 640x448 at (0,136) | horizontal 2x magnification to 1280x720 |
-| 1080i | two 640x540x32 FRAME buffers | 640x448 at (0,46) | two fields form the 1920x1080 signal |
+| 576p | 768x576 stride, 720x576 visible, 32-bit, one buffer | 640x480 at (40,0) | complete progressive 720x576 output |
+| 720p | 640x720, 32-bit, one buffer | 640x720 at (0,0) | horizontal 2x magnification to 1280x720 |
+| 1080i | two 640x540x32 FRAME buffers | 640x527 at (0,13) | two fields form the 1920x1080 signal |
 
 1080i presents each completed framebuffer for two VBlanks. Its odd and even
 fields therefore come from the same UI frame rather than alternating between
@@ -164,14 +164,21 @@ of 576p, 720p and 1080i while logging the requested timing and successful
 return to native. Emulator validation is therefore the primary iteration gate
 for those candidates; physical hardware remains their final release gate.
 
-## Validation boundary
+Later GS dumps showed that the candidate timing and framebuffer contracts were
+valid while `DISPLAY2` contained undefined read-back data. DISPLAY registers
+are privileged write-only state, so the final backend assembles the value once
+in EE memory and writes it independently to both read circuits. That made
+576p, 720p and 1080i visible. Three screenshot-calibration passes then produced
+the final 0.4.3 viewports listed above.
+
+## 0.4.3 validation boundary
 
 Portable tests prove layout geometry, font identifiers, ASCII source coverage
 and deterministic generation. The R5900 build proves PS2SDK API and linker
 compatibility. PCSX2 then tests complete EE/GS transactions quickly, while a
 physical PS2 remains mandatory for final signal and release validation.
 
-Before release, both fonts must be checked in every exposed mode for:
+Both fonts are checked in every exposed mode for:
 
 - complete glyph rows and columns;
 - stable menu/text alignment;
@@ -183,10 +190,10 @@ The dev6 transition stress test completed twenty `native -> 480p -> native`
 cycles in one uninterrupted menu session on both PCSX2 and the target console.
 Future GS changes must preserve that result.
 
-576p, 720p and 1080i are exposed only by the development build until their full
-signal, framebuffer, viewport, field/read-circuit and fallback contracts pass
-the hardware matrix. The stable release must not inherit them merely because
-the compiler accepts the register writes.
+576p, 720p and 1080i passed their signal, framebuffer, viewport,
+field/read-circuit and fallback promotion gates for 0.4.3. Future GS changes
+must repeat the matrix; the compiler accepting a register write remains
+evidence only that a compiler was present.
 
 The detailed emulator-first procedure and evidence categories are maintained
 in [`PCSX2_VIDEO_VALIDATION.md`](PCSX2_VIDEO_VALIDATION.md).

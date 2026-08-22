@@ -1,28 +1,28 @@
 # Video modes, UI scaling and font architecture
 
-## Current development contract
+## Stable 0.4.3 contract
 
-Native and 480p are the hardware-validated baseline. Development build 6 keeps
-three guarded candidates available behind a PCSX2-first validation gate while
-preserving the corrected repeated-switch transaction:
+Native remains the hardware-proven fallback. Every alternate mode uses the
+same confirmation/rollback transaction and its own complete framebuffer plus
+logical viewport:
 
 | Config value | Backing surface | UI viewport | Color | Status |
 |---|---:|---:|---:|---|
 | `native` | 640x224 | 640x224 | 32-bit | proven default and fallback |
 | `480p` | 768x448 stride | 720x448 | 32-bit | 20-cycle PS2 + PCSX2 pass |
-| `576p` | 768x576 stride | 640x448 at (40,64) | 32-bit, single buffer | timing recognized, pixels black |
-| `720p` | 640x720 | 640x448 at (0,136) | 32-bit, single buffer | timing recognized, pixels black |
-| `1080i` | 640x540 FRAME | 640x448 at (0,46) | 32-bit, double buffer | timing recognized, pixels black |
+| `576p` | 768x576 stride | 640x480 at (40,0) | 32-bit, single buffer | visible and calibrated |
+| `720p` | 640x720 | 640x720 at (0,0) | 32-bit, single buffer | visible and calibrated |
+| `1080i` | 640x540 FRAME | 640x527 at (0,13) | 32-bit, double buffer | visible, stable fields and rollback |
 
 The signal timing, framebuffer, visible viewport and logical UI are different
 things. A PS2SDK constant proving that the GS can request a timing does not
 prove that a particular framebuffer/read-circuit configuration is correct, nor
 that a television, cable and console combination can display it.
 
-The development menu may persist a candidate only after ten-second
-confirmation, and it requires confirmation again at every startup. Stable
-releases must contain only modes which passed PCSX2 validation and then
-completed physical validation.
+The menu may persist an alternate mode only after ten-second confirmation, and
+it requires confirmation again at every startup. PCSX2 is the primary fast GS
+gate because it reproduced the console failures; physical testing remains the
+final DVE, cable and display authority.
 
 ## What PS2SDK exposes
 
@@ -67,7 +67,7 @@ VBlank state, the code could not reach its automatic restore logic.
 
 ## Implemented backend model
 
-The 0.5 development renderer requires every mode descriptor to contain the
+The 0.4.3 renderer requires every mode descriptor to contain the
 following independently:
 
 1. signal timing and FIELD/FRAME policy;
@@ -88,14 +88,14 @@ raster damage. Rectangle and text-cell edges are snapped independently, so the
 
 ### Implemented guarded layouts
 
-The development renderer now implements complete surfaces rather than storing
+The stable renderer implements complete surfaces rather than storing
 only the UI band:
 
 | Timing | Framebuffer | UI viewport | Rationale |
 |---|---:|---:|---|
-| 576p | 768x576 stride, 32-bit, single buffered | 640x448 centered at (40,64) | complete 720x576 visible surface; integer 2x vertical UI |
-| 720p | 640x720, 32-bit, single buffered, read-circuit MAGH 2x | 640x448 centered at y=136 | full-height surface without storing 1280 pixels per row |
-| 1080i | 640x540, 32-bit, double buffered, FRAME, read-circuit MAGH 3x | 640x448 centered at y=46 | correct 540-line FRAME storage; two fields form 1080i |
+| 576p | 768x576 stride, 32-bit, single buffered | 640x480 at (40,0) | complete 720x576 visible surface with calibrated UI height |
+| 720p | 640x720, 32-bit, single buffered, read-circuit MAGH 2x | 640x720 at (0,0) | full-height surface without storing 1280 pixels per row |
+| 1080i | 640x540, 32-bit, double buffered, FRAME, read-circuit MAGH 3x | 640x527 at (0,13) | correct 540-line FRAME storage; two fields form 1080i |
 
 The mode descriptors include signal, surface, stride, viewport, color depth,
 interlace policy and exact DISPLAY magnification. Portable tests prove the
@@ -126,8 +126,7 @@ FINISH wait in the mode being tested. The implemented backend:
   complete GS draw-environment packet;
 - resets GIF PATH3 only after a real timeout;
 - never repeats libdebug's global DMAC reset after startup;
-- require ten-second confirmation again at startup until the physical test
-  matrix passes.
+- requires ten-second confirmation again at every alternate-mode startup.
 
 The ordinary render loop uses the same bounded wait. A lost VBlank restores
 native output instead of spinning forever and preventing the input timeout.
@@ -177,8 +176,8 @@ cell changes.
    fall back to `msx` without blocking startup.
 6. Host tests cover identifiers, source glyph coverage, layout transforms and
    deterministic generator output.
-7. Native and 480p have completed real-hardware validation with both fonts;
-   every newly exposed output repeats the same font and switching matrix.
+7. Every 0.4.3 output uses the same font, confirmation and switching matrix;
+   final HDTV geometry was calibrated from matching emulator/console evidence.
 
 The first implementation should remain ASCII-only because the application UI
 is currently ASCII. Latin-1/UTF-8 can be added later through an explicit code

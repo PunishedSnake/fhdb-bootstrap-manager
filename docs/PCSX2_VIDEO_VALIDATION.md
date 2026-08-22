@@ -85,6 +85,10 @@ UI around its observed center instead of moving it down. The 1080i geometry is
 unchanged: its 1080-line DISPLAY window already ends on raster line 1124, so a
 further downward adjustment would enter vertical blanking.
 
+The maintainer accepted the resulting 576p and 720p captures as ideal. Together
+with the earlier matching console/emulator mode behavior and successful 1080i
+output/rollback, this completes the visual promotion gate for stable 0.4.3.
+
 ## Required PCSX2 record
 
 Every emulator result must record:

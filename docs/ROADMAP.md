@@ -10,7 +10,7 @@ Release codenames use Japanese words connected with thresholds, passage, bridges
 | `0.2.0` | **Mon** (門) | gate | General HDD bootstrap management, selectable storage, MagicGate signing, guarded installation. |
 | `0.3.x` | **Torii** (鳥居) | gateway | Stable rescue capsules, payload restoration, boot-chain diagnostics, CI, compatible MBR.XIN/XLF handling. |
 | `0.4.x` | **Michishirube** (道標) | signpost | Modular recovery architecture, regression laboratory, forensic APA reconstruction, guarded metadata recovery, scalable/observable GS UI. |
-| `0.5.x` | **Kakehashi** (架け橋) | bridge | Versioned recovery interchange and cross-tool interoperability contracts. |
+| `0.5.x` | **Kakehashi** (架け橋) | bridge | Versioned recovery interchange plus guarded console-side ISO-to-HDL installation. |
 | `0.6.x` | **Watari** (渡り) | crossing | Host-assisted repair-plan round trip with PS2-side revalidation and final write authority. |
 | `0.7.x` | **Sekisho** (関所) | checkpoint | Transaction journal, interruption recovery, rollback discipline and write-contract hardening. |
 | `0.8.x` | **unassigned** | — | Reserved for a coherent milestone exposed by hardware/interoperability work; no feature is invented merely to fill the number. |
@@ -54,7 +54,7 @@ If the answers point toward a general host tool, the feature belongs in DriveFor
 
 ## Status: released
 
-**0.4.0 released 2026-08-21. 0.4.1 maintenance release published 2026-08-22.**
+**0.4.0 released 2026-08-21. 0.4.1 and 0.4.3 maintenance releases published 2026-08-22.**
 
 The line is now **feature-frozen** except for defects and narrowly scoped validation hardening. Exceptional raw metadata repair remains explicitly experimental until broader independent hardware reports exist.
 
@@ -98,8 +98,10 @@ The line is now **feature-frozen** except for defects and narrowly scoped valida
 - [x] explicit full-row `LOCKED` states;
 - [x] native 640x224 GS rendering and native 8x8 font raster;
 - [x] `aqua`, `amber`, `sakura`, `mono` themes;
-- [x] hardware-tested native/480p switching; removed the failed experimental
-      0.4.1 modes and added safe config migration in 0.4.2;
+- [x] guarded native/480p/576p/720p/1080i switching with complete framebuffers,
+      calibrated viewports and native rollback; unsafe explicit NTSC/PAL modes
+      remain removed;
+- [x] resolution-independent UI scaling and selectable MSX/Spleen fonts;
 - [x] PCSX2-first GS regression gate correlated against 20-cycle physical
       native/480p validation;
 - [x] VBlank-synchronized status rendering;
@@ -162,9 +164,11 @@ Any bug found there should become a 0.4.x regression/fix if it does not require 
 
 # 0.5.x — Kakehashi
 
-**One purpose: make recovery evidence portable between tools without moving write authority away from the PS2.**
+**Two bridge contracts: portable recovery evidence between tools, and guarded
+deployment of game images from removable storage into the PS2's established
+HDL layout.**
 
-Planned scope:
+### Recovery interchange
 
 - version/freeze a machine-readable forensic evidence manifest;
 - define stable disk/session identity fields;
@@ -176,12 +180,30 @@ Planned scope:
 - explicit capability/version negotiation for imported evidence;
 - deterministic comparison of evidence bundles without requiring host write authority.
 
-Not Kakehashi scope:
+### Console-side ISO to HDL installation
+
+- browse ISO sources on `mass:` in a dedicated game-installation menu;
+- validate ISO9660 structure and extract disc identity from `SYSTEM.CNF` before
+  any HDD mutation;
+- preflight source size, target free extents, partition naming and HDL metadata;
+- stream the image in bounded chunks without loading a complete game into EE
+  memory;
+- create OPL/HDL-compatible APA partitions and game metadata without altering
+  existing game partitions;
+- expose live source/target/LBA/progress telemetry through the existing GS
+  operation monitor;
+- define cancellation, partial-install cleanup, flush/read-back and restart
+  behavior before enabling physical writes;
+- validate produced installations against established HDL tooling and OPL;
+- cover CD/DVD images, large files and removable-filesystem constraints
+  explicitly rather than treating every file ending in `.iso` as trustworthy.
+
+### Not Kakehashi scope
 
 - another Windows GUI;
 - generic PFS browsing/export;
 - Dokany/FUSE mounting;
-- HDL game management;
+- general HDL library management beyond the dedicated ISO installer;
 - host physical-drive write support;
 - generic APA partition management.
 
@@ -195,6 +217,12 @@ Those belong to DriveForge or existing host tooling.
 - at least one independent host implementation parses the reference corpus;
 - compatibility is exercised in CI;
 - round trips are byte/digest reproducible where promised by the format.
+- ISO identity and size are validated before target allocation;
+- a produced game is recognized by OPL and established HDL tooling;
+- cancellation and injected I/O failure never expose a partially installed
+  game as complete;
+- at least one CD and one DVD image complete installation on physical hardware
+  with verified byte counts and readable game metadata.
 
 # 0.6.x — Watari
 

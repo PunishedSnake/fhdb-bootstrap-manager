@@ -9,7 +9,7 @@ It began after a real console got trapped in a post-uninstall FHDB boot loop: FH
 
 ## Current release
 
-**0.4.1 — Michishirube (道標)** is the current stable release.
+**0.4.3 — Michishirube (道標)** is the current stable release.
 
 Michishirube expands the project into a modular PS2-side recovery toolkit while preserving the established normal bootstrap write contract from Torii. The release includes:
 
@@ -22,21 +22,24 @@ Michishirube expands the project into a modular PS2-side recovery toolkit while 
 - guarded deterministic master recovery;
 - guarded multi-header topology repair;
 - `HDDRAW`, `HDDMETA`, rescue, log and forensic evidence artifacts;
+- guarded native, 480p, 576p, 720p and 1080i output with automatic native
+  recovery;
+- resolution-independent GS layout and selectable MSX/Spleen bitmap fonts;
 - a large host regression laboratory and guarded physical-HDD fault injector.
 
-0.4.1 builds EE code with `-O2` plus link-time
+0.4.x maintenance builds EE code with `-O2` plus link-time
 optimization. This lets the R5900 compiler optimize across module boundaries
 while the existing section garbage collection continues to remove unused code
 from the stripped release ELF.
 
-The current feature branch identifies itself as **0.5.0-dev10 — Kakehashi**. It
-is based on the 0.4.2 display-safety hotfix and introduces a resolution-aware
-GS viewport plus selectable bitmap fonts. It remains a hardware-test build,
-not a stable release.
+The renderer was temporarily developed under `0.5.0-dev` identifiers while its
+scope was still uncertain. The completed work is released as 0.4.3 because it
+repairs and hardens the 0.4.x display subsystem rather than introducing the
+interchange features assigned to the real 0.5.x roadmap.
 
 ## Important recovery disclaimer
 
-**Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.1.**
+**Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.3.**
 
 Experimental paths include:
 
@@ -109,7 +112,7 @@ The physically validated display contract is intentionally conservative:
 
 Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
 
-The 0.5.0-dev6 transaction completed twenty uninterrupted native/480p/native
+The development transaction completed twenty uninterrupted native/480p/native
 cycles on both the target SCPH-50000 and PCSX2. PCSX2 is now the primary fast
 gate for video work because it reproduces both the former repeated-switch
 failure and the formerly black 576p/720p/1080i candidates while independently
@@ -123,15 +126,14 @@ output. Dev9 applies the final per-mode alignment pass: 576p no longer clips
 its footer, 720p is nudged down by a few output pixels, and 1080i uses the last
 safe timing lines to extend its lower UI without moving the top edge. Dev10
 uses the final screenshot set to remove the small remaining vertical
-compression in 576p and 720p. New modes still require a final repeated-switch
-pass before release.
+compression in 576p and 720p. The maintainer accepted the final dev10 576p and
+720p captures, completing the 0.4.3 visual release gate.
 
-The 0.4.2 hotfix exposes **System -> Video mode** with the two modes that passed
-physical testing: native and 480p. The 0.5 development renderer retains those
-unchanged backends and adds guarded 576p, 720p and 1080i test modes with full
-surfaces, explicit DISPLAY contracts and independent UI viewports. Explicit
-NTSC/PAL choices remain removed; `native` already provides the proven
-region-correct interlaced fallback without reviving the PAL VBlank failure.
+0.4.3 exposes **System -> Video mode** with native, 480p, 576p, 720p and 1080i.
+The renderer uses complete surfaces, explicit DISPLAY contracts and independent
+UI viewports. Explicit NTSC/PAL choices remain removed; `native` already
+provides the proven region-correct interlaced fallback without reviving the PAL
+VBlank failure.
 
 Because the PS2 remains admirably uninterested in negotiating modern display
 capabilities, every non-native choice must be confirmed with X within ten
@@ -140,7 +142,7 @@ native output. Confirmed choices can be stored in `HDDMAN.CFG`, but are guarded
 again at startup. A startup timeout restores native and rewrites the preference
 to `native`, preventing a persistent black-screen loop.
 
-The development renderer treats the signal, complete framebuffer, render
+The 0.4.3 renderer treats the signal, complete framebuffer, render
 surface and logical UI viewport as separate geometry. The existing 640x224 UI
 is transformed into the selected viewport with independently snapped edges,
 so fractional horizontal scales do not accumulate text or panel drift. Every
@@ -184,7 +186,7 @@ video_mode=native
 font=spleen
 ```
 
-The 0.5 development build accepts `native`, `480p`, `576p`, `720p` and `1080i`.
+The 0.4.3 release accepts `native`, `480p`, `576p`, `720p` and `1080i`.
 Native and 480p retain their hardware-tested 32-bit double buffers. Following
 physical dev2 testing, 576p and 720p now use complete single-buffered 32-bit
 surfaces, while 1080i FRAME uses two 640x540x32 buffers. This avoids the failed
@@ -462,8 +464,8 @@ make test-host
 GitHub Actions builds the stripped release ELF using `ps2dev/ps2dev:v2.0.0`, produces SHA-256, and publishes:
 
 ```text
-PS2_HDD_BOOTSTRAP_MANAGER-0.4.1.zip
-PS2_HDD_BOOTSTRAP_MANAGER-0.4.1.ELF
+PS2_HDD_BOOTSTRAP_MANAGER-0.4.3.zip
+PS2_HDD_BOOTSTRAP_MANAGER-0.4.3.ELF
 SHA256SUMS.txt
 HDDMAN.CFG
 ```
@@ -478,7 +480,11 @@ downloads.
 
 0.4.x Michishirube is feature-frozen except for defects and narrowly scoped validation hardening.
 
-The next feature train is **0.5.x Kakehashi**, focused on versioned recovery evidence and interoperability with host-side tooling such as PS2 DriveForge. Host tools may analyze and propose; the PS2 manager remains final write authority after re-reading and revalidating the physical disk.
+The next feature train is **0.5.x Kakehashi**, focused on versioned recovery
+evidence/interoperability and a guarded console-side ISO-to-HDL installer for
+games read from `mass:`. Host tools may analyze and propose; the PS2 manager
+remains final write authority after re-reading and revalidating the physical
+disk.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
@@ -492,7 +498,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded corruption/restore procedure.
 - [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — GS frontend and display-validation history.
 - [`docs/VIDEO_MODES_AND_FONTS.md`](docs/VIDEO_MODES_AND_FONTS.md) — GS timing, viewport, scaling, font and licensing design.
-- [`docs/GS_RENDERER_0.5.md`](docs/GS_RENDERER_0.5.md) — implemented scalable renderer and font pipeline.
+- [`docs/GS_RENDERER_0.4.3.md`](docs/GS_RENDERER_0.4.3.md) — implemented scalable renderer and font pipeline.
 - [`docs/PCSX2_VIDEO_VALIDATION.md`](docs/PCSX2_VIDEO_VALIDATION.md) — emulator-first GS test matrix and physical promotion gate.
 - [`docs/PERFORMANCE_0.4X.md`](docs/PERFORMANCE_0.4X.md) — measured EE/GS optimization record and validation boundary.
 - [`docs/STATUS_AND_ERRORS.md`](docs/STATUS_AND_ERRORS.md) — live telemetry and contextual error presentation.
