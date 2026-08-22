@@ -1,0 +1,19 @@
+#ifndef PS2_HDD_BOOTSTRAP_MANAGER_HDL_STREAM_RPC_H
+#define PS2_HDD_BOOTSTRAP_MANAGER_HDL_STREAM_RPC_H
+
+#include <stdint.h>
+
+#define HDL_STREAM_MAX_PARTITIONS 65u
+#define HDL_STREAM_METADATA_SIZE 1024u
+
+#define HDL_STREAM_IOCTL2_GET_LAYOUT 0x6D01
+#define HDL_STREAM_IOCTL2_FLUSH 0x6D02
+#define HDL_STREAM_IOCTL2_COMMIT_METADATA 0x6D03
+
+typedef struct {
+    uint32_t count;
+    uint32_t starts[HDL_STREAM_MAX_PARTITIONS];
+    uint32_t lengths[HDL_STREAM_MAX_PARTITIONS];
+} hdl_stream_layout_t;
+
+#endif
