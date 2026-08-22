@@ -10,7 +10,7 @@
 
 #define HDL_MIB (1024ull * 1024ull)
 #define HDL_MAIN_DATA_OFFSET (4ull * HDL_MIB)
-#define HDL_SUB_DATA_OFFSET 2048ull
+#define HDL_SUB_DATA_OFFSET (1ull * HDL_MIB)
 #define HDL_INFO_MAGIC 0xDEADFEEDu
 #define HDL_INFO_VERSION 1u
 
@@ -124,6 +124,7 @@ int hdl_metadata_build(const hdl_partition_plan_t *plan,
                        const hdl_metadata_options_t *options,
                        unsigned char metadata[HDL_METADATA_SIZE])
 {
+    uint64_t expected_offset = 0;
     unsigned int i;
 
     if (plan == NULL || starts == NULL || options == NULL || metadata == NULL ||
@@ -149,16 +150,27 @@ int hdl_metadata_build(const hdl_partition_plan_t *plan,
     write_le32(metadata + 240, plan->count);
 
     for (i = 0; i < plan->count; i++) {
-        uint64_t data_start = starts[i] + (i == 0 ? 0x2000ull : 4ull);
+        uint64_t data_offset = i == 0 ? HDL_MAIN_DATA_OFFSET :
+                                               HDL_SUB_DATA_OFFSET;
+        uint64_t data_start = starts[i] + data_offset / 512ull;
         uint64_t part_offset = plan->slices[i].payload_offset / 2048ull;
         unsigned char *entry = metadata + 244 + i * 12;
 
-        if (data_start > UINT32_MAX || part_offset > UINT32_MAX)
+        if (plan->slices[i].allocation_bytes <= data_offset ||
+            plan->slices[i].payload_offset != expected_offset ||
+            (plan->slices[i].payload_offset & 2047ull) != 0 ||
+            (plan->slices[i].payload_bytes & 2047u) != 0 ||
+            plan->slices[i].payload_bytes >
+                plan->slices[i].allocation_bytes - data_offset ||
+            data_start > UINT32_MAX || part_offset > UINT32_MAX)
             return HDL_PARTITION_PHYSICAL_RANGE_INVALID;
         write_le32(entry, (uint32_t)part_offset);
         write_le32(entry + 4, (uint32_t)data_start);
         write_le32(entry + 8, plan->slices[i].payload_bytes);
+        expected_offset += plan->slices[i].payload_bytes;
     }
+    if (expected_offset != plan->image_bytes)
+        return HDL_PARTITION_PHYSICAL_RANGE_INVALID;
     return 0;
 }
 

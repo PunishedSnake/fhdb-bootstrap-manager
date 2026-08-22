@@ -65,10 +65,10 @@ extern unsigned char usbmass_bd_irx[];
 extern unsigned int size_usbmass_bd_irx;
 extern unsigned char ps2dev9_irx[];
 extern unsigned int size_ps2dev9_irx;
-extern unsigned char ps2atad_irx[];
-extern unsigned int size_ps2atad_irx;
-extern unsigned char ps2hdd_irx[];
-extern unsigned int size_ps2hdd_irx;
+extern unsigned char ata_bd_irx[];
+extern unsigned int size_ata_bd_irx;
+extern unsigned char ps2hdd_posix_irx[];
+extern unsigned int size_ps2hdd_posix_irx;
 extern unsigned char hdl_stream_irx[];
 extern unsigned int size_hdl_stream_irx;
 extern unsigned char ps2fs_irx[];
@@ -111,12 +111,18 @@ int load_modules(void)
     if (exec_irx(bdm_irx, size_bdm_irx) < 0) return -10;
     if (exec_irx(bdmfs_fatfs_irx, size_bdmfs_fatfs_irx) < 0) return -11;
     if (exec_irx(usbd_irx, size_usbd_irx) < 0) return -12;
-    if (exec_irx(usbmass_bd_irx, size_usbmass_bd_irx) < 0) return -13;
-    if (exec_irx(ps2dev9_irx, size_ps2dev9_irx) < 0) return -14;
-    if (exec_irx(ps2atad_irx, size_ps2atad_irx) < 0) return -15;
-    if (exec_irx(ps2hdd_irx, size_ps2hdd_irx) < 0) return -16;
-    if (exec_irx(hdl_stream_irx, size_hdl_stream_irx) < 0) return -17;
-    if (exec_irx(ps2fs_irx, size_ps2fs_irx) < 0) return -18;
+    if (exec_irx(ps2dev9_irx, size_ps2dev9_irx) < 0) return -13;
+    if (exec_irx(ata_bd_irx, size_ata_bd_irx) < 0) return -14;
+
+    /* Mount the internal ATA disk as hdd0 before USB block devices appear.
+     * ps2hdd-bdm is PS2SDK's POSIX APA build, which provides the public HDL
+     * partition type and HIOCGETPARTSTART required by the guarded streamer. */
+    if (exec_irx(ps2hdd_posix_irx, size_ps2hdd_posix_irx) < 0) return -15;
+    if (exec_irx(hdl_stream_irx, size_hdl_stream_irx) < 0) return -16;
+    if (exec_irx(ps2fs_irx, size_ps2fs_irx) < 0) return -17;
+
+    /* USB mass storage joins BDM only after internal ATA has claimed hdd0. */
+    if (exec_irx(usbmass_bd_irx, size_usbmass_bd_irx) < 0) return -18;
     return 0;
 }
 

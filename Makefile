@@ -10,11 +10,11 @@ EE_LDFLAGS = -flto -Wl,--gc-sections -Wl,--wrap=fileXioOpen -Wl,--wrap=fileXioDe
 # embedded so the manager does not depend on whichever IOP modules launched it.
 IRX_FILES = iomanX.irx fileXio.irx secrman.irx freesio2.irx freepad.irx \
 	mcman.irx mcserv.irx secrsif.irx poweroff.irx bdm.irx \
-	bdmfs_fatfs.irx usbd.irx usbmass_bd.irx ps2dev9.irx ps2atad.irx \
-	ps2hdd.irx ps2fs.irx
+	bdmfs_fatfs.irx usbd.irx usbmass_bd.irx ps2dev9.irx ata_bd.irx \
+	ps2fs.irx
 EE_OBJS += $(IRX_FILES:.irx=_irx.o)
 CUSTOM_IRX = hdl_stream.irx
-EE_OBJS += hdl_stream_irx.o
+EE_OBJS += ps2hdd_posix_irx.o hdl_stream_irx.o
 
 HOST_CC ?= cc
 HOST_APP_ERROR_TEST = tests/test_app_error
@@ -140,6 +140,7 @@ clean:
 	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TESTS)
 	rm -f $(CUSTOM_IRX) hdl_stream_irx.c iop/hdl_stream/*.o \
 		iop/hdl_stream/*.elf iop/hdl_stream/*.irx
+	rm -f ps2hdd_posix_irx.c
 	rm -f $(HOST_SPLEEN_GENERATED)
 	rm -rf $(HOST_HDD_FIXTURE_DIR) $(HOST_FORENSIC_FIXTURE_DIR)
 
@@ -302,6 +303,12 @@ hdl_installer_ps2.o: src/hdl_installer_ps2.c
 
 %_irx.c:
 	$(PS2SDK)/bin/bin2c $(PS2SDK)/iop/irx/$*.irx $@ $*_irx
+
+# The POSIX APA build is the PS2SDK variant that enables the public HDL type
+# and physical-partition layout query. Its distinct generated symbol avoids a
+# hyphenated C identifier while preserving the upstream IRX unchanged.
+ps2hdd_posix_irx.c:
+	$(PS2SDK)/bin/bin2c $(PS2SDK)/iop/irx/ps2hdd-bdm.irx $@ ps2hdd_posix_irx
 
 hdl_stream.irx:
 	$(MAKE) -C iop/hdl_stream IOP_BIN=$(abspath $@)

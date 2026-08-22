@@ -339,24 +339,45 @@ static int target_path(const char *prefix, const char *target,
     return written < 0 || (unsigned int)written >= capacity ? -1 : 0;
 }
 
-static int target_has_metadata(const char *target)
+static int read_target_metadata(const char *target,
+                                unsigned char metadata[HDL_METADATA_SIZE])
 {
-    unsigned char metadata[HDL_METADATA_SIZE];
     char path[64];
+    unsigned int complete = 0;
     int fd;
     int result;
 
     if (target_path("hdd0:", target, path, sizeof(path)) < 0)
-        return 1;
+        return HDL_INSTALL_LAYOUT_MISMATCH;
     fd = fileXioOpen(path, FIO_O_RDONLY, 0);
     if (fd < 0)
-        return 0;
+        return fd;
     result = fileXioLseek(fd, 0x100000, FIO_SEEK_SET);
-    if (result == 0x100000)
-        result = fileXioRead(fd, metadata, sizeof(metadata));
+    if (result != 0x100000) {
+        fileXioClose(fd);
+        return result < 0 ? result : HDL_INSTALL_METADATA_FAILED;
+    }
+    while (complete < HDL_METADATA_SIZE) {
+        result = fileXioRead(fd, metadata + complete,
+                             HDL_METADATA_SIZE - complete);
+        if (result <= 0) {
+            fileXioClose(fd);
+            return result < 0 ? result : HDL_INSTALL_METADATA_FAILED;
+        }
+        complete += (unsigned int)result;
+    }
     fileXioClose(fd);
-    return result == (int)sizeof(metadata) &&
-           metadata[0] == 0xed && metadata[1] == 0xfe &&
+    return 0;
+}
+
+static int target_has_metadata(const char *target)
+{
+    unsigned char metadata[HDL_METADATA_SIZE];
+    int result = read_target_metadata(target, metadata);
+
+    if (result < 0)
+        return result;
+    return metadata[0] == 0xed && metadata[1] == 0xfe &&
            metadata[2] == 0xad && metadata[3] == 0xde;
 }
 
@@ -374,29 +395,20 @@ static int target_metadata_matches(const char *target,
                                    const unsigned char expected[HDL_METADATA_SIZE])
 {
     unsigned char actual[HDL_METADATA_SIZE];
-    char path[64];
-    int fd;
-    int result;
+    int result = read_target_metadata(target, actual);
 
-    if (target_path("hdd0:", target, path, sizeof(path)) < 0)
-        return 0;
-    fd = fileXioOpen(path, FIO_O_RDONLY, 0);
-    if (fd < 0)
-        return 0;
-    result = fileXioLseek(fd, 0x100000, FIO_SEEK_SET);
-    if (result == 0x100000)
-        result = fileXioRead(fd, actual, sizeof(actual));
-    fileXioClose(fd);
-    return result == (int)sizeof(actual) &&
-           memcmp(actual, expected, sizeof(actual)) == 0;
+    return result == 0 && memcmp(actual, expected, sizeof(actual)) == 0;
 }
 
 static int remove_incomplete_target(const char *target)
 {
     char path[64];
+    int metadata_state = target_has_metadata(target);
 
-    if (target_has_metadata(target))
+    if (metadata_state > 0)
         return HDL_INSTALL_TARGET_EXISTS;
+    if (metadata_state < 0)
+        return metadata_state;
     if (target_path("hdd0:", target, path, sizeof(path)) < 0)
         return HDL_INSTALL_LAYOUT_MISMATCH;
     return fileXioRemove(path);
@@ -442,10 +454,7 @@ static int create_partitions(const hdl_transaction_t *transaction,
     fd = fileXioOpen(existing, FIO_O_RDONLY, 0);
     if (fd >= 0) {
         fileXioClose(fd);
-        if (target_has_metadata(transaction->target))
-            return HDL_INSTALL_TARGET_EXISTS;
-        if (remove_incomplete_target(transaction->target) < 0)
-            return HDL_INSTALL_TARGET_EXISTS;
+        return HDL_INSTALL_TARGET_EXISTS;
     }
 
     snprintf(create, sizeof(create), "hdd0:%s,,,%s,HDL",
@@ -543,7 +552,7 @@ static uint32_t physical_lba(const hdl_partition_plan_t *plan,
         uint64_t end = begin + plan->slices[i].payload_bytes;
 
         if (payload_offset >= begin && payload_offset < end)
-            return layout->starts[i] + (i == 0 ? 0x2000u : 4u) +
+            return layout->starts[i] + (i == 0 ? 0x2000u : 0x0800u) +
                    (uint32_t)((payload_offset - begin) / 512u);
     }
     return 0;
@@ -983,15 +992,19 @@ static void begin_new_install(void)
 
 static void incomplete_menu(hdl_transaction_t *transaction)
 {
-    static const app_ui_menu_item_t items[] = {
+    app_ui_menu_item_t items[] = {
         {"Resume incomplete install", "Recheck source, disk and exact target layout", 1},
-        {"Remove incomplete allocation", "Only the journal target; valid games are refused", 1},
+        {"Remove incomplete allocation", "Only a journal-confirmed allocation; valid games are refused", 0},
         {"Keep it for later", "Return without changing journal or HDD", 1}
     };
     unsigned int selected = 0;
     char status[160];
     int choice;
     int result;
+
+    items[1].enabled =
+        transaction->stage >= HDL_TRANSACTION_STAGE_PARTITIONS_CREATED &&
+        transaction->stage < HDL_TRANSACTION_STAGE_METADATA_COMMITTED;
 
     snprintf(status, sizeof(status), "%s | stage %u | %llu/%llu sectors",
              transaction->target, (unsigned int)transaction->stage,

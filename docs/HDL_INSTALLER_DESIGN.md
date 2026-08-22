@@ -28,13 +28,19 @@ partitions. Allocation sizes are limited to the standard 128 MiB, 256 MiB,
 The IOP transport exposes only these payload regions:
 
 - main partition from sector `0x2000`;
-- each sub-partition from sector `4`.
+- each sub-partition from sector `0x0800`.
 
-It delegates transfer, allocation and flushing to `ps2hdd`; it does not issue
-raw ATA writes and cannot address APA headers. The 1024-byte HDLoader metadata
-block is a separate final operation at byte offset `0x100000` of the main
-partition attribute area. That operation writes, flushes, reads back and
-compares the exact bytes.
+The application loads PS2SDK's POSIX APA build (`ps2hdd-bdm.irx`) after the
+internal ATA block device but before USB mass storage joins BDM. This makes the
+internal disk deterministically `hdd0:` and enables PS2SDK's public HDL
+partition type and physical-partition query. A USB disk cannot steal the
+internal HDD unit number.
+
+The transport delegates transfer, allocation and flushing to `ps2hdd`; it
+does not issue raw ATA writes and cannot address APA headers. The 1024-byte
+HDLoader metadata block is a separate final operation at byte offset
+`0x100000` of the main partition attribute area. That operation writes,
+flushes, reads back and compares the exact bytes.
 
 ## Transaction order
 
@@ -46,14 +52,18 @@ compares the exact bytes.
 5. Stream the ISO in aligned chunks while advancing the durable journal.
 6. Flush, seek to the beginning and verify the installed payload.
 7. Build HDLoader metadata from the physical layout returned by the IOP
-   transport.
+   transport. ISO payload begins after the standard 4 MiB main-partition area
+   and after the standard 1 MiB subpartition area.
 8. Commit and read back metadata last.
 9. Mark the journal complete.
 
 Before step 8 the allocation is intentionally not a valid installed game.
 Failure or cancellation before metadata commit may remove only the exact
-partition created by the active journal. Existing game partitions are never
-renamed, deleted or reused by the initial implementation.
+partition confirmed by an active journal that reached `PARTITIONS_CREATED`.
+A merely planned transaction never authorizes deletion. Metadata read errors
+also refuse deletion instead of treating unreadable bytes as an empty game.
+Existing game partitions are never renamed, deleted or reused by the initial
+implementation.
 
 ## Resume and failure policy
 

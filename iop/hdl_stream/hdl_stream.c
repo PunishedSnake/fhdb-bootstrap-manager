@@ -20,7 +20,7 @@
 #include "hdl_stream_rpc.h"
 
 #define HDL_STREAM_MAIN_SKIP 0x2000u
-#define HDL_STREAM_SUB_SKIP 4u
+#define HDL_STREAM_SUB_SKIP 0x0800u
 #define HDL_STREAM_METADATA_OFFSET 0x100000
 #define HDL_STREAM_DEVICE "hdl"
 

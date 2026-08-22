@@ -19,6 +19,11 @@ static hdl_transaction_t planned_transaction(void)
     strcpy(transaction.source_path, "mass:/TEST.ISO");
     strcpy(transaction.game_title, "Test Game");
     transaction.disc_type = 0x14;
+    transaction.layer1_start = 0x123456;
+    transaction.hdl_compat_flags = 0x05;
+    transaction.opl_compat_flags = 0x08;
+    transaction.dma_type = 0x40;
+    transaction.dma_mode = 4;
     for (i = 0; i < sizeof(transaction.source_fingerprint); i++)
         transaction.source_fingerprint[i] = (unsigned char)i;
     return transaction;
@@ -42,12 +47,47 @@ static void test_record_round_trip_and_corruption(void)
     assert(strcmp(decoded.source_path, transaction.source_path) == 0);
     assert(strcmp(decoded.game_title, transaction.game_title) == 0);
     assert(decoded.disc_type == 0x14);
+    assert(decoded.layer1_start == 0x123456);
+    assert(decoded.hdl_compat_flags == 0x05);
+    assert(decoded.opl_compat_flags == 0x08);
+    assert(decoded.dma_type == 0x40);
+    assert(decoded.dma_mode == 4);
     assert(memcmp(decoded.source_fingerprint,
                   transaction.source_fingerprint, 32) == 0);
 
     record[90] ^= 0x80;
     assert(hdl_transaction_decode(record, &decoded) ==
            HDL_TRANSACTION_HASH_MISMATCH);
+}
+
+static void test_every_record_byte_is_authenticated(void)
+{
+    hdl_transaction_t transaction = planned_transaction();
+    hdl_transaction_t decoded;
+    unsigned char original[HDL_TRANSACTION_RECORD_SIZE];
+    unsigned char damaged[HDL_TRANSACTION_RECORD_SIZE];
+    unsigned int i;
+
+    assert(hdl_transaction_encode(&transaction, original) == 0);
+    for (i = 0; i < sizeof(original); i++) {
+        memcpy(damaged, original, sizeof(damaged));
+        damaged[i] ^= 0x01;
+        assert(hdl_transaction_decode(damaged, &decoded) < 0);
+    }
+}
+
+static void test_size_and_sector_count_must_agree(void)
+{
+    hdl_transaction_t transaction = planned_transaction();
+    unsigned char record[HDL_TRANSACTION_RECORD_SIZE];
+
+    transaction.source_bytes++;
+    assert(hdl_transaction_encode(&transaction, record) ==
+           HDL_TRANSACTION_INVALID_ARGUMENT);
+    transaction = planned_transaction();
+    transaction.total_sectors++;
+    assert(hdl_transaction_encode(&transaction, record) ==
+           HDL_TRANSACTION_INVALID_ARGUMENT);
 }
 
 static void test_legal_install_sequence(void)
@@ -107,6 +147,8 @@ static void test_verified_requires_complete_payload(void)
 int main(void)
 {
     test_record_round_trip_and_corruption();
+    test_every_record_byte_is_authenticated();
+    test_size_and_sector_count_must_agree();
     test_legal_install_sequence();
     test_illegal_transitions_fail_closed();
     test_verified_requires_complete_payload();

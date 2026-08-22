@@ -57,6 +57,8 @@ static int transaction_valid(const hdl_transaction_t *transaction)
     if (transaction == NULL || transaction->stage < HDL_TRANSACTION_STAGE_PLANNED ||
         transaction->stage > HDL_TRANSACTION_STAGE_ABORTED ||
         transaction->source_bytes == 0 || transaction->total_sectors == 0 ||
+        (transaction->source_bytes & 2047u) != 0 ||
+        transaction->total_sectors != transaction->source_bytes / 2048u ||
         transaction->completed_sectors > transaction->total_sectors ||
         transaction->partition_count == 0 || transaction->partition_count > 65 ||
         !terminated(transaction->target, sizeof(transaction->target)) ||
