@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "gs_packet_budget.h"
 #include "video_mode.h"
 
 int main(void)
@@ -57,12 +58,25 @@ int main(void)
                 fprintf(stderr, "Video mode %u exceeds reserved VRAM.\n", i);
                 return 1;
             }
+            if (gs_ui_clear_packet_required_qwords(mode->frame_width,
+                                                   mode->frame_count) >
+                GS_UI_CLEAR_PACKET_QWORDS) {
+                fprintf(stderr,
+                        "Video mode %u exceeds the GS clear packet.\n", i);
+                return 1;
+            }
         }
         if (video_mode_geometry((video_mode_id_t)VIDEO_MODE_COUNT) != NULL) {
             fprintf(stderr, "Out-of-range video geometry was accepted.\n");
             return 1;
         }
 
+        mode = video_mode_geometry(VIDEO_MODE_480P);
+        if (gs_ui_clear_packet_required_qwords(mode->frame_width,
+                                               mode->frame_count) != 100u) {
+            fprintf(stderr, "480p clear-packet budget is incorrect.\n");
+            return 1;
+        }
         mode = video_mode_geometry(VIDEO_MODE_576P);
         if (mode->bits_per_pixel != 32u || mode->frame_count != 1u ||
             mode->frame_width != 768u || mode->frame_height != 576u) {

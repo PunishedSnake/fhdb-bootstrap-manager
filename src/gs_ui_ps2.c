@@ -33,6 +33,7 @@
 #include <string.h>
 
 #include "app_identity.h"
+#include "gs_packet_budget.h"
 #include "gs_ui_ps2.h"
 #include "spleen_font_data.h"
 #include "ui_font.h"
@@ -138,6 +139,7 @@ static blend_t alpha_blend;
 static packet_t *render_packet;
 static packet_t *font_upload_packet;
 static packet_t *native_bootstrap_packet;
+static packet_t *frame_clear_packet;
 static unsigned int font_texture_addresses[GS_UI_FONT_VARIANT_COUNT];
 static unsigned int draw_frame_index;
 static unsigned int active_frame_count = GS_UI_FRAME_COUNT;
@@ -563,25 +565,34 @@ static int submit_normal_and_wait(packet_t *packet, qword_t *q)
 static int clear_frames(framebuffer_t pair[GS_UI_FRAME_COUNT],
                         unsigned int frame_count)
 {
-    packet_t *packet;
     qword_t *q;
+    unsigned int required_qwords;
     unsigned int i;
 
-    packet = packet_init(64, PACKET_NORMAL);
-    if (packet == NULL)
+    if (frame_clear_packet == NULL || frame_count == 0u ||
+        frame_count > GS_UI_FRAME_COUNT)
         return -1;
-    q = packet->data;
+    required_qwords = gs_ui_clear_packet_required_qwords(
+        pair[0].width, frame_count);
+    if (required_qwords == 0u ||
+        required_qwords > (unsigned int)frame_clear_packet->qwords)
+        return -2;
+
+    packet_reset(frame_clear_packet);
+    q = frame_clear_packet->data;
     for (i = 0; i < frame_count; i++) {
+        if (pair[i].width != pair[0].width)
+            return -3;
         q = draw_setup_environment(q, GS_UI_CONTEXT, &pair[i], &zbuffer);
         q = draw_clear(q, GS_UI_CONTEXT, 0, 0,
                        pair[i].width, pair[i].height, 0, 0, 0);
     }
     q = draw_finish(q);
-    if (submit_normal_and_wait(packet, q) < 0) {
-        packet_free(packet);
-        return -2;
-    }
-    packet_free(packet);
+    if ((unsigned int)(q - frame_clear_packet->data) >
+            (unsigned int)frame_clear_packet->qwords)
+        return -4;
+    if (submit_normal_and_wait(frame_clear_packet, q) < 0)
+        return -5;
     return 0;
 }
 
@@ -953,13 +964,17 @@ int gs_ui_initialize(void)
     native_bootstrap_packet = packet_init(64, PACKET_NORMAL);
     if (native_bootstrap_packet == NULL)
         return -5;
+    frame_clear_packet = packet_init(GS_UI_CLEAR_PACKET_QWORDS,
+                                     PACKET_NORMAL);
+    if (frame_clear_packet == NULL)
+        return -6;
 
     /* end_frame() waits for GS FINISH before returning, so a second 256 KiB
        packet cannot overlap useful work. Reuse one packet and leave that EE
        memory available to the forensic workspace. */
     render_packet = packet_init(GS_UI_PACKET_QWORDS, PACKET_NORMAL);
     if (render_packet == NULL)
-        return -6;
+        return -7;
 
     console_buffer[0] = '\0';
     console_used = 0;
