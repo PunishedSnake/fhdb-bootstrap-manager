@@ -49,21 +49,22 @@ speedup. Raw HDD RPC latency will still dominate much of a physical scan.
 | stable 0.4.0 (`20cbe5f`) | 615,988 B | 279,952 B | 335,056 B | 2,977,120 B |
 | optimized 640x448 source, no LTO (`fe06bf2`) | 620,212 B | 284,040 B | 335,072 B | 2,977,184 B |
 | same 640x448 source with LTO (`84b829b`) | 612,276 B | 276,136 B | 335,076 B | 2,977,432 B |
-| final native-stride 720x448 build (`dd84a83`) | 613,556 B | 277,392 B | 335,076 B | 2,977,432 B |
+| preliminary 720x448 build (`dd84a83`) | 613,556 B | 277,392 B | 335,076 B | 2,977,432 B |
 
 Link-time optimization removes 7,936 bytes from the directly comparable source.
-After correcting 480p to its native 720-pixel stride and reserving separate
-framebuffer pairs, the final build remains 2,432 bytes smaller than stable 0.4.0
-despite adding the mode switcher, timed fallback and double-buffered presentation.
+The final hardware-correct build uses a 768-pixel GS stride for its 720-pixel
+visible progressive image because `FBW` is encoded in 64-pixel units. Its
+stripped size is recorded after the pinned R5900 CI build below.
 
 ## GS/EE presentation work
 
 - compatibility `scr_printf` screens are assembled and submitted once when
   they become interactive instead of rebuilding a full frame per line;
 - blend state and per-string glyph color setup are cached;
-- dedicated native 640x224 and progressive 720x448 framebuffer pairs are
+- dedicated native 640x224 and progressive 768x448 framebuffer pairs are
   swapped on VBlank, eliminating writes into the buffer currently scanned by
-  the display while preserving the correct stride for each read circuit;
+  the display; the progressive buffers expose a 720x448 visible image while
+  retaining the 64-pixel-aligned stride required by GS `FBW`;
 - stable GS environment registers are not resent on every frame and are
   refreshed only after a display-mode reset;
 - one reusable GIF packet replaces a redundant pair because `end_frame()` waits

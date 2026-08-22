@@ -38,8 +38,9 @@ Instead:
 Physical retesting confirmed that this removed the visible forensic-scan tearing. The status panel refreshes less frequently during rapid reads, as intended, while remaining responsive for write-sensitive transitions.
 
 The renderer keeps a dedicated 640x224 pair for native output and a dedicated
-720x448 pair for the optional progressive application mode. This preserves the
-correct read-circuit stride in both modes. The 3.75 MiB GS allocation removes
+768x448 pair for the optional 720x448 visible progressive application mode.
+This preserves the GS's required 64-pixel-aligned read-circuit stride in both
+modes. The 3.75 MiB GS allocation removes
 the tearing race without weakening I/O throughput and leaves 256 KiB free.
 
 ## Current status coverage

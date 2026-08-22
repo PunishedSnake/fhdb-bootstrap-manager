@@ -33,6 +33,7 @@
 #define GS_UI_WIDTH 640
 #define GS_UI_HEIGHT 224
 #define GS_UI_PROGRESSIVE_WIDTH 720
+#define GS_UI_PROGRESSIVE_STRIDE 768
 #define GS_UI_PROGRESSIVE_HEIGHT 448
 #define GS_UI_FRAME_COUNT 2
 #define GS_UI_FONT_SRC_W 8
@@ -46,6 +47,11 @@
 #define GS_UI_CONTEXT 0
 #define GS_UI_CONSOLE_BYTES 8192u
 #define GS_UI_MAX_MENU_ITEMS 12u
+
+#if (GS_UI_PROGRESSIVE_STRIDE & 63) != 0 || \
+    GS_UI_PROGRESSIVE_STRIDE < GS_UI_PROGRESSIVE_WIDTH
+#error "Progressive GS stride must cover 720 pixels and align to FBW units"
+#endif
 
 extern const u8 msx[];
 
@@ -82,6 +88,26 @@ static float scaled_y(float value)
     /* Native output is the default and pays no COP1 multiply. Progressive
        output uses an exact integer expansion, expressed as an addition. */
     return render_scale_y == 1u ? value : value + value;
+}
+
+static unsigned int active_visible_width(void)
+{
+    return video_mode == GS_UI_VIDEO_480P
+        ? GS_UI_PROGRESSIVE_WIDTH : GS_UI_WIDTH;
+}
+
+static void present_framebuffer(const framebuffer_t *frame)
+{
+    if (video_mode == GS_UI_VIDEO_480P) {
+        /* Non-interlaced output uses read circuit 2. Do not use the filtered
+           helper here: it offsets DISPFB2 by one row for interlaced flicker
+           filtering and would silently discard the first progressive row. */
+        graph_set_framebuffer(1, frame->address, frame->width,
+                              GS_PSM_32, 0, 0);
+        return;
+    }
+    graph_set_framebuffer_filtered(frame->address, frame->width,
+                                   GS_PSM_32, 0, 0);
 }
 
 static void select_blending(int enabled)
@@ -262,12 +288,12 @@ static int setup_environment(void)
 
     /* Keep a dedicated pair for each read-circuit stride. Native frame zero
        remains at VRAM 0 for init_scr()/emergency libdebug compatibility. HDTV
-       480p has 720 active pixels, so sharing a 640-pixel stride would make its
-       read circuit spill 80 pixels into the next row. Four buffers plus the
-       font atlas use 3.75 MiB of the GS's 4 MiB. */
+       480p has 720 active pixels, but GS FBW is encoded in 64-pixel units, so
+       its physical stride must round up to 768. Four buffers plus the font
+       atlas use 3.75 MiB of the GS's 4 MiB. */
     graph_vram_clear();
     if (allocate_frame_pair(native_frames, GS_UI_WIDTH, GS_UI_HEIGHT, 1) < 0 ||
-        allocate_frame_pair(progressive_frames, GS_UI_PROGRESSIVE_WIDTH,
+        allocate_frame_pair(progressive_frames, GS_UI_PROGRESSIVE_STRIDE,
                             GS_UI_PROGRESSIVE_HEIGHT, 0) < 0)
         return -1;
 
@@ -300,7 +326,7 @@ static int setup_environment(void)
         q = draw_setup_environment(q, GS_UI_CONTEXT, &progressive_frames[i],
                                    &zbuffer);
         q = draw_clear(q, GS_UI_CONTEXT, 0, 0,
-                       GS_UI_PROGRESSIVE_WIDTH, GS_UI_PROGRESSIVE_HEIGHT,
+                       GS_UI_PROGRESSIVE_STRIDE, GS_UI_PROGRESSIVE_HEIGHT,
                        0, 0, 0);
     }
     active_frames = native_frames;
@@ -400,7 +426,7 @@ static qword_t *begin_frame(packet_t **packet_out)
                                    &active_frames[draw_frame_index], &zbuffer);
         q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
         q = draw_scissor_area(q, GS_UI_CONTEXT, 0,
-                              active_frames[draw_frame_index].width - 1,
+                              active_visible_width() - 1,
                               0, GS_UI_HEIGHT * (int)render_scale_y - 1);
         q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
         q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
@@ -424,9 +450,7 @@ static void end_frame(packet_t *packet, qword_t *q)
                             (int)(q - packet->data), 0, 0);
     draw_wait_finish();
     graph_wait_vsync();
-    graph_set_framebuffer_filtered(active_frames[completed_frame].address,
-                                   active_frames[completed_frame].width,
-                                   GS_PSM_32, 0, 0);
+    present_framebuffer(&active_frames[completed_frame]);
     draw_frame_index ^= 1u;
     console_dirty = 0;
 }
@@ -554,9 +578,8 @@ int gs_ui_video_mode_apply(gs_ui_video_mode_t mode)
         return -3;
     }
     graph_set_bgcolor(0, 0, 0);
-    graph_set_framebuffer_filtered(progressive_frames[1].address,
-                                   GS_UI_PROGRESSIVE_WIDTH,
-                                   GS_PSM_32, 0, 0);
+    graph_set_framebuffer(1, progressive_frames[1].address,
+                          progressive_frames[1].width, GS_PSM_32, 0, 0);
     active_frames = progressive_frames;
     draw_frame_index = 0u;
     render_scale_y = 2u;

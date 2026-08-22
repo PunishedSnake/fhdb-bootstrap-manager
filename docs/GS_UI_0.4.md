@@ -26,10 +26,10 @@ reset; each ordinary frame changes only its draw framebuffer.
 ## Experimental application video mode
 
 **System -> Video mode** can switch the manager itself to a 480p progressive
-output backed by a 720x448 framebuffer. Layout coordinates remain the proven
-640x224 design and expand by the exact 720/640 = 9/8 horizontal ratio and an
-integer factor of two vertically. An 8x8 source glyph therefore becomes exactly
-9x16 pixels; there is no discarded bitmap row.
+output with a 720x448 visible image in a 768x448 framebuffer. Layout coordinates
+remain the proven 640x224 design and expand by the exact 720/640 = 9/8
+horizontal ratio and an integer factor of two vertically. An 8x8 source glyph
+therefore becomes exactly 9x16 pixels; there is no discarded bitmap row.
 
 480p requires a compatible display and video path. The manager therefore shows
 a ten-second confirmation screen after switching. X keeps the mode for the
@@ -98,16 +98,18 @@ Low-level transports publish exact LBA information; higher layers publish the hu
 A large healthy-disk forensic scan performs thousands of raw reads. Waiting for one VBlank per read would serialize disk I/O to 50/60 operations per second, so 0.4.0 separates telemetry production from frame presentation.
 
 - complete frames are rendered into an off-screen native buffer and swapped on
-  VBlank using PS2SDK `graph_wait_vsync()` and
-  `graph_set_framebuffer_filtered()`;
+  VBlank using PS2SDK `graph_wait_vsync()`; native interlaced output updates the
+  filtered framebuffer pair, while progressive output updates read circuit 2
+  directly without the filtered helper's one-row offset;
 - high-rate ordinary READ events are coalesced and the newest state is presented every 32 reads;
 - WRITE / VERIFY / FLUSH / POINTER and semantic phase changes remain immediate;
 - disk I/O itself is not limited to the display frame rate.
 
 Physical retesting confirmed that visible forensic-scan screen tearing disappeared. The screen updates less frequently during rapid reads, which is intentional.
 
-Native output owns two 640x224 buffers; progressive output owns two 720x448
-buffers so the HDTV read circuit receives its correct 720-pixel stride. Together
+Native output owns two 640x224 buffers; progressive output owns two 768x448
+buffers for a 720x448 visible image. The padded width is required because GS
+`FBW` is encoded in 64-pixel units. Together
 with the font atlas, the four buffers use 3.75 MiB of the GS's 4 MiB and leave
 256 KiB free. Separate pairs also let the timed fallback return to a clean
 native-stride frame instead of briefly interpreting progressive rows as 640-wide.
