@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "apa.h"
+#include "app_config.h"
 #include "app_identity.h"
 #include "app_ui_ps2.h"
 #include "bootstrap_signing.h"
@@ -98,8 +99,8 @@ int main(int argc, char **argv)
     u64 stage_end;
     int result;
     int hdd_status;
-    int theme_config_result;
-    char theme_path[STORAGE_LAUNCH_PATH_SIZE];
+    int app_config_result;
+    char config_path[STORAGE_LAUNCH_PATH_SIZE];
 
     memset(&timing, 0, sizeof(timing));
     total_start = GetTimerSystemTime();
@@ -144,7 +145,7 @@ int main(int argc, char **argv)
     fileXioInit();
     poweroffInit();
     bootstrap_signing_init();
-    theme_config_result = ui_theme_load_config();
+    app_config_result = app_config_load();
     stage_end = GetTimerSystemTime();
     timing.services_ms = elapsed_ms(stage_start, stage_end);
 
@@ -213,10 +214,13 @@ int main(int argc, char **argv)
                          header_buffer + APA_OSD_START_OFFSET),
                      (unsigned int)read_le32(
                          header_buffer + APA_OSD_SIZE_OFFSET));
-    if (ui_theme_config_path(theme_path, sizeof(theme_path)) >= 0)
+    if (app_config_path(config_path, sizeof(config_path)) >= 0) {
         session_log_line("UI theme: %s; config=%s; load=%d",
                          ui_theme_name(ui_theme_current_id()),
-                         theme_path, theme_config_result);
+                         config_path, app_config_result);
+        session_log_line("Preferred video mode: %s",
+                         video_mode_name(app_config_video_mode()));
+    }
     session_log_line(
         "Startup timing ms: iop=%u modules=%u services=%u pad=%u hdd_status=%u header=%u total=%u",
         timing.iop_reset_ms, timing.modules_ms, timing.services_ms,

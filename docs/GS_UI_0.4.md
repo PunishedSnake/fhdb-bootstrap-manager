@@ -23,20 +23,32 @@ one reusable 256 KiB EE packet replaces the previously redundant pair. Stable
 GS environment registers are emitted once and refreshed only after a video-mode
 reset; each ordinary frame changes only its draw framebuffer.
 
-## Experimental application video mode
+## Application video modes
 
-**System -> Video mode** can switch the manager itself to a 480p progressive
-output with a 720x448 visible image in a 768x448 framebuffer. Layout coordinates
-remain the proven 640x224 design and expand by the exact 720/640 = 9/8
-horizontal ratio and an integer factor of two vertically. An 8x8 source glyph
-therefore becomes exactly 9x16 pixels; there is no discarded bitmap row.
+**System -> Video mode** switches only the manager's own GS output:
 
-480p requires a compatible display and video path. The manager therefore shows
-a ten-second confirmation screen after switching. X keeps the mode for the
-current session; TRIANGLE or no confirmation restores the hardware-proven
-`init_scr()` interlaced output automatically. The choice is deliberately not
-written to `HDDMAN.CFG` before physical validation across console revisions,
-cables and displays.
+| Config value | Visible UI | Color | Status |
+|---|---:|---:|---|
+| `native` | 640x224 FIELD | 32-bit | hardware-proven default |
+| `ntsc-480i` | 640x448 FRAME | 32-bit | experimental |
+| `pal-576i` | 640x512 FRAME | 32-bit | experimental |
+| `480p` | 720x448 progressive | 32-bit | hardware-tested |
+| `576p` | 656x512 progressive | 32-bit | experimental; ROM 2.20+ |
+| `720p` | 1280x448 progressive | 16-bit | experimental, letterboxed |
+| `1080i` | 960x448 interlaced | 16-bit | experimental, centered |
+
+Layout coordinates remain the proven 640x224 design. 480p expands them by the
+exact 720/640 = 9/8 horizontal ratio and an integer factor of two vertically;
+720p uses exact 2x scaling. The 720p and 1080i views deliberately use 16-bit
+framebuffers so both retain true VBlank-swapped buffers inside 4 MiB of VRAM.
+The fixed allocation consumes 3.875 MiB including the font atlas and leaves
+128 KiB free.
+
+Every alternate mode requires a ten-second confirmation. X keeps and saves the
+choice; TRIANGLE, no confirmation, an unsupported ROM, or an internal setup
+failure restores the hardware-proven `init_scr()` output. A persisted alternate
+mode is guarded again at startup. Startup failure/timeout also saves `native`,
+so a display mismatch cannot become an eternal black-screen preference.
 
 Linker wrappers for `scr_printf`, `scr_vprintf`, and `scr_clear` route older incremental text screens through `gs_debug_compat_ps2` and therefore through the same GS renderer. The real libdebug renderer remains reachable only as a last-resort GS-initialization failure display.
 
@@ -73,7 +85,11 @@ with the small format:
 
 ```text
 theme=aqua
+video_mode=native
 ```
+
+Video identifiers are `native`, `ntsc-480i`, `pal-576i`, `480p`, `576p`,
+`720p`, and `1080i`.
 
 When `argv[0]` exposes a usable launch path, the manager reads/writes the config beside the ELF. Otherwise the selected backup/report storage root is used as a deterministic fallback. Missing/unwritable config is non-fatal. 0.4.x retains read-only compatibility with the development-only legacy `MICHISHIRUBE.CFG`, but official assets and new saves use `HDDMAN.CFG` only.
 
@@ -107,12 +123,12 @@ A large healthy-disk forensic scan performs thousands of raw reads. Waiting for 
 
 Physical retesting confirmed that visible forensic-scan screen tearing disappeared. The screen updates less frequently during rapid reads, which is intentional.
 
-Native output owns two 640x224 buffers; progressive output owns two 768x448
-buffers for a 720x448 visible image. The padded width is required because GS
-`FBW` is encoded in 64-pixel units. Together
-with the font atlas, the four buffers use 3.75 MiB of the GS's 4 MiB and leave
-256 KiB free. Separate pairs also let the timed fallback return to a clean
-native-stride frame instead of briefly interpreting progressive rows as 640-wide.
+Native output owns two 640x224 buffers. Two 704x512x32-bit-sized alternate
+reservations cover every other mode: 480p views them as 768x448x32, while 720p
+and 1080i use wider 16-bit layouts. Widths stay aligned for GS `FBW`. Together
+with the font atlas, the four buffers use 3.875 MiB of the GS's 4 MiB and leave
+128 KiB free. Separate pairs also let the timed fallback return to a clean
+native-stride frame instead of briefly reinterpreting alternate rows as native.
 
 ## Physical validation result
 
@@ -126,5 +142,9 @@ Observed on real PS2 hardware before 0.4.0 release:
 - theme/config behavior — **PASS**;
 - live status outside forensic-only workflows — **PASS**;
 - VBlank-synchronized forensic status with no observed screen tearing — **PASS**.
+
+Post-release maintainer testing on 2026-08-22 additionally reported native <->
+480p switching and continued UI operation — **PASS**. The other alternate video
+modes remain explicitly experimental pending their own display-path coverage.
 
 The remaining release disclaimer applies to exceptional destructive HDD recovery, not to the normal GS frontend.

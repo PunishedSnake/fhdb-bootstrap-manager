@@ -179,23 +179,21 @@ The final 0.4.0 display contract is:
 
 The VSync build was physically retested: screen tearing during forensic scanning disappeared. The visible status refresh rate is lower by design, while disk I/O itself is not forced to wait for one VBlank per raw read because high-rate read telemetry is coalesced.
 
-### Post-release GS optimization pending physical validation
+### Post-release GS optimization physical result
 
 The 0.4.x optimization branch adds true two-framebuffer VBlank swapping and an
-optional application-owned 480p mode backed by a 720x448 framebuffer. The 480p
-choice is guarded by a ten-second confirmation timeout and is never persisted.
+application-owned 480p mode backed by a 720x448 visible / 768x448-stride pair.
+The maintainer's 2026-08-22 physical retest reported successful switching in
+both directions and correct operation after the change. This validates the
+native <-> 480p transition on the tested console/display path, including the
+full GS-state restoration that follows each mode reset.
 
-The following items must be checked on physical hardware before treating that
-mode as validated:
-
-- native mode still boots through the proven `init_scr()` signal path;
-- native and progressive screens fill the intended display area;
-- 480p text retains complete glyph rows and stable nearest-neighbour edges;
-- automatic timeout restores native output when 480p is not visible;
-- confirmed 480p remains stable across menus and live HDD status screens;
-- repeated native <-> 480p switches do not corrupt the font atlas or buffers.
-
-Until those checks pass, 480p is an experimental convenience, not a new default.
+The same backend now exposes guarded NTSC 480i, PAL 576i, 576p, 720p and 1080i
+choices. Those additional signals are not covered by this physical result and
+remain experimental. Every alternate mode has a ten-second confirmation and
+automatic native fallback. A confirmed mode may be saved in `HDDMAN.CFG`, but
+is guarded again at startup; failure or timeout persists `native` to avoid a
+black-screen boot loop. 576p is disabled on ROM versions older than 2.20.
 
 ## Large-HDD forensic finding #1 — old node-cap truncation
 

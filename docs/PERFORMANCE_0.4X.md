@@ -63,17 +63,20 @@ and double-buffered presentation.
 - compatibility `scr_printf` screens are assembled and submitted once when
   they become interactive instead of rebuilding a full frame per line;
 - blend state and per-string glyph color setup are cached;
-- dedicated native 640x224 and progressive 768x448 framebuffer pairs are
-  swapped on VBlank, eliminating writes into the buffer currently scanned by
-  the display; the progressive buffers expose a 720x448 visible image while
-  retaining the 64-pixel-aligned stride required by GS `FBW`;
+- dedicated native 640x224 and alternate framebuffer pairs are swapped on
+  VBlank, eliminating writes into the buffer currently scanned by the display;
+  fixed 704x512x32-bit alternate reservations safely cover 480i, 576i, 480p,
+  576p and the wider 16-bit 720p/1080i layouts;
 - stable GS environment registers are not resent on every frame and are
   refreshed only after a display-mode reset;
 - one reusable GIF packet replaces a redundant pair because `end_frame()` waits
   for GS FINISH before returning, releasing 256 KiB of EE heap;
-- experimental 480p renders the existing 640x224 layout into 720x448 through
-  exact 9/8 horizontal and 2x vertical expansion, and automatically restores
-  native output unless confirmed within ten seconds.
+- hardware-tested 480p renders the existing 640x224 layout into 720x448
+  through exact 9/8 horizontal and 2x vertical expansion;
+- experimental NTSC 480i, PAL 576i, 576p, 720p and 1080i choices share the
+  same timed confirmation and automatic native fallback;
+- `HDDMAN.CFG` can persist a confirmed mode, while startup confirmation and a
+  fail-back-to-`native` rewrite prevent a persistent display mismatch.
 
 ## Validation
 
@@ -84,5 +87,6 @@ and double-buffered presentation.
 - guarded hardware fault-injector self-test: pass;
 - stripped R5900 build with PS2DEV v2.0.0 and LTO: pass.
 
-True double buffering and 480p remain pending physical-console validation. The
-native startup mode remains the previously validated default.
+True double buffering and native <-> 480p switching passed the maintainer's
+physical-console retest. The added alternate modes remain experimental; native
+remains the shipped default.

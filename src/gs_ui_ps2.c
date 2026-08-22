@@ -20,9 +20,11 @@
 #include <graph.h>
 #include <gs_psm.h>
 #include <packet.h>
+#include <rom0_info.h>
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "app_identity.h"
@@ -32,9 +34,8 @@
 
 #define GS_UI_WIDTH 640
 #define GS_UI_HEIGHT 224
-#define GS_UI_PROGRESSIVE_WIDTH 720
-#define GS_UI_PROGRESSIVE_STRIDE 768
-#define GS_UI_PROGRESSIVE_HEIGHT 448
+#define GS_UI_ALT_STORAGE_WIDTH 704
+#define GS_UI_ALT_STORAGE_HEIGHT 512
 #define GS_UI_FRAME_COUNT 2
 #define GS_UI_FONT_SRC_W 8
 #define GS_UI_FONT_SRC_H 8
@@ -48,15 +49,53 @@
 #define GS_UI_CONSOLE_BYTES 8192u
 #define GS_UI_MAX_MENU_ITEMS 12u
 
-#if (GS_UI_PROGRESSIVE_STRIDE & 63) != 0 || \
-    GS_UI_PROGRESSIVE_STRIDE < GS_UI_PROGRESSIVE_WIDTH
-#error "Progressive GS stride must cover 720 pixels and align to FBW units"
-#endif
-
 extern const u8 msx[];
 
+typedef struct {
+    int interlace;
+    int graph_mode;
+    int frame_mode;
+    int flicker_filter;
+    int screen_x;
+    int screen_y;
+    unsigned int visible_width;
+    unsigned int visible_height;
+    unsigned int frame_width;
+    unsigned int frame_height;
+    unsigned int psm;
+    float scale_x;
+    float scale_y;
+    float offset_x;
+    float offset_y;
+    int filtered_presentation;
+} video_mode_spec_t;
+
+static const video_mode_spec_t video_specs[VIDEO_MODE_COUNT] = {
+    {GRAPH_MODE_INTERLACED, GRAPH_MODE_AUTO, GRAPH_MODE_FIELD, GRAPH_ENABLE,
+     0, 0, 640, 224, 640, 224, GS_PSM_32,
+     1.0f, 1.0f, 0.0f, 0.0f, 1},
+    {GRAPH_MODE_INTERLACED, GRAPH_MODE_NTSC, GRAPH_MODE_FRAME, GRAPH_ENABLE,
+     0, 0, 640, 448, 640, 448, GS_PSM_32,
+     1.0f, 2.0f, 0.0f, 0.0f, 1},
+    {GRAPH_MODE_INTERLACED, GRAPH_MODE_PAL, GRAPH_MODE_FRAME, GRAPH_ENABLE,
+     0, 0, 640, 512, 640, 512, GS_PSM_32,
+     1.0f, 2.0f, 0.0f, 32.0f, 1},
+    {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 0, 720, 448, 768, 448, GS_PSM_32,
+     1.125f, 2.0f, 0.0f, 0.0f, 0},
+    {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_576P, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 32, 656, 512, 704, 512, GS_PSM_32,
+     1.0f, 2.0f, 8.0f, 32.0f, 0},
+    {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_720P, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 136, 1280, 448, 1280, 448, GS_PSM_16,
+     2.0f, 2.0f, 0.0f, 0.0f, 0},
+    {GRAPH_MODE_INTERLACED, GRAPH_MODE_HDTV_1080I, GRAPH_MODE_FRAME,
+     GRAPH_ENABLE, 0, 46, 960, 448, 960, 448, GS_PSM_16,
+     1.5f, 2.0f, 0.0f, 0.0f, 1}
+};
+
 static framebuffer_t native_frames[GS_UI_FRAME_COUNT];
-static framebuffer_t progressive_frames[GS_UI_FRAME_COUNT];
+static framebuffer_t alternate_frames[GS_UI_FRAME_COUNT];
 static framebuffer_t *active_frames = native_frames;
 static zbuffer_t zbuffer;
 static texbuffer_t font_texture;
@@ -65,8 +104,14 @@ static lod_t font_lod;
 static blend_t alpha_blend;
 static packet_t *render_packet;
 static unsigned int draw_frame_index;
-static unsigned int render_scale_y = 1u;
-static gs_ui_video_mode_t video_mode = GS_UI_VIDEO_NATIVE;
+static float render_scale_x = 1.0f;
+static float render_scale_y = 1.0f;
+static float render_offset_x;
+static float render_offset_y;
+static unsigned int render_visible_width = GS_UI_WIDTH;
+static unsigned int render_visible_height = GS_UI_HEIGHT;
+static int render_filtered = 1;
+static video_mode_id_t video_mode = VIDEO_MODE_NATIVE;
 static int draw_state_dirty;
 static u32 font_atlas[GS_UI_ATLAS_W * GS_UI_ATLAS_H]
     __attribute__((aligned(64)));
@@ -78,36 +123,48 @@ static int blending_enabled = -1;
 
 static float scaled_x(float value)
 {
-    /* 480p has 720 active pixels. 640 logical pixels therefore expand by an
-       exact 9/8 ratio; an 8-pixel glyph becomes exactly 9 pixels wide. */
-    return video_mode == GS_UI_VIDEO_480P ? value * 1.125f : value;
+    if (render_scale_x == 1.0f)
+        return value + render_offset_x;
+    return value * render_scale_x + render_offset_x;
 }
 
 static float scaled_y(float value)
 {
-    /* Native output is the default and pays no COP1 multiply. Progressive
-       output uses an exact integer expansion, expressed as an addition. */
-    return render_scale_y == 1u ? value : value + value;
+    if (render_scale_y == 1.0f)
+        return value + render_offset_y;
+    if (render_scale_y == 2.0f)
+        return value + value + render_offset_y;
+    return value * render_scale_y + render_offset_y;
 }
 
 static unsigned int active_visible_width(void)
 {
-    return video_mode == GS_UI_VIDEO_480P
-        ? GS_UI_PROGRESSIVE_WIDTH : GS_UI_WIDTH;
+    return render_visible_width;
+}
+
+static void apply_render_spec(const video_mode_spec_t *spec)
+{
+    render_scale_x = spec->scale_x;
+    render_scale_y = spec->scale_y;
+    render_offset_x = spec->offset_x;
+    render_offset_y = spec->offset_y;
+    render_visible_width = spec->visible_width;
+    render_visible_height = spec->visible_height;
+    render_filtered = spec->filtered_presentation;
 }
 
 static void present_framebuffer(const framebuffer_t *frame)
 {
-    if (video_mode == GS_UI_VIDEO_480P) {
+    if (!render_filtered) {
         /* Non-interlaced output uses read circuit 2. Do not use the filtered
            helper here: it offsets DISPFB2 by one row for interlaced flicker
            filtering and would silently discard the first progressive row. */
         graph_set_framebuffer(1, frame->address, frame->width,
-                              GS_PSM_32, 0, 0);
+                              frame->psm, 0, 0);
         return;
     }
     graph_set_framebuffer_filtered(frame->address, frame->width,
-                                   GS_PSM_32, 0, 0);
+                                   frame->psm, 0, 0);
 }
 
 static void select_blending(int enabled)
@@ -256,12 +313,13 @@ static void build_font_atlas(void)
 
 static int allocate_frame_pair(framebuffer_t pair[GS_UI_FRAME_COUNT],
                                unsigned int width, unsigned int height,
+                               unsigned int psm,
                                int require_zero_address)
 {
     unsigned int i;
 
     for (i = 0; i < GS_UI_FRAME_COUNT; i++) {
-        int address = graph_vram_allocate(width, height, GS_PSM_32,
+        int address = graph_vram_allocate(width, height, psm,
                                           GRAPH_ALIGN_PAGE);
 
         if (address < 0 ||
@@ -270,9 +328,74 @@ static int allocate_frame_pair(framebuffer_t pair[GS_UI_FRAME_COUNT],
         pair[i].address = (unsigned int)address;
         pair[i].width = width;
         pair[i].height = height;
-        pair[i].psm = GS_PSM_32;
+        pair[i].psm = psm;
         pair[i].mask = 0;
     }
+    return 0;
+}
+
+static int video_specs_fit_reserved_vram(void)
+{
+    const unsigned int reserved_words =
+        GS_UI_ALT_STORAGE_WIDTH * GS_UI_ALT_STORAGE_HEIGHT;
+    unsigned int i;
+
+    for (i = 1u; i < VIDEO_MODE_COUNT; i++) {
+        const video_mode_spec_t *spec = &video_specs[i];
+        unsigned int words;
+
+        if ((spec->frame_width & 63u) != 0u ||
+            spec->visible_width > spec->frame_width ||
+            spec->visible_height > spec->frame_height)
+            return 0;
+        if (spec->psm == GS_PSM_32)
+            words = spec->frame_width * spec->frame_height;
+        else if (spec->psm == GS_PSM_16 &&
+                 (spec->frame_height & 1u) == 0u)
+            words = spec->frame_width * (spec->frame_height >> 1);
+        else
+            return 0;
+        if (words > reserved_words)
+            return 0;
+    }
+    return 1;
+}
+
+static void configure_alternate_frames(const video_mode_spec_t *spec)
+{
+    unsigned int i;
+
+    /* The addresses describe two fixed 704x512x32-bit reservations. Only the
+       view placed over each reservation changes between alternate modes. */
+    for (i = 0; i < GS_UI_FRAME_COUNT; i++) {
+        alternate_frames[i].width = spec->frame_width;
+        alternate_frames[i].height = spec->frame_height;
+        alternate_frames[i].psm = spec->psm;
+        alternate_frames[i].mask = 0;
+    }
+}
+
+static int clear_frame_pair(framebuffer_t pair[GS_UI_FRAME_COUNT])
+{
+    packet_t *packet;
+    qword_t *q;
+    unsigned int i;
+
+    packet = packet_init(64, PACKET_NORMAL);
+    if (packet == NULL)
+        return -1;
+    q = packet->data;
+    for (i = 0; i < GS_UI_FRAME_COUNT; i++) {
+        q = draw_setup_environment(q, GS_UI_CONTEXT, &pair[i], &zbuffer);
+        q = draw_clear(q, GS_UI_CONTEXT, 0, 0,
+                       pair[i].width, pair[i].height, 0, 0, 0);
+    }
+    q = draw_finish(q);
+    dma_wait_fast();
+    dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
+                            (int)(q - packet->data), 0, 0);
+    draw_wait_finish();
+    packet_free(packet);
     return 0;
 }
 
@@ -286,15 +409,17 @@ static int setup_environment(void)
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
 
-    /* Keep a dedicated pair for each read-circuit stride. Native frame zero
-       remains at VRAM 0 for init_scr()/emergency libdebug compatibility. HDTV
-       480p has 720 active pixels, but GS FBW is encoded in 64-pixel units, so
-       its physical stride must round up to 768. Four buffers plus the font
-       atlas use 3.75 MiB of the GS's 4 MiB. */
+    /* Native frame zero remains at VRAM 0 for init_scr()/emergency libdebug
+       compatibility. The alternate pair reserves the largest 32-bit layout:
+       704x512. The same byte ranges also cover 768x448 at 32-bit and the wider
+       720p/1080i layouts at 16-bit. Four buffers plus the font atlas use 3.875
+       MiB of GS VRAM and leave 128 KiB free. */
     graph_vram_clear();
-    if (allocate_frame_pair(native_frames, GS_UI_WIDTH, GS_UI_HEIGHT, 1) < 0 ||
-        allocate_frame_pair(progressive_frames, GS_UI_PROGRESSIVE_STRIDE,
-                            GS_UI_PROGRESSIVE_HEIGHT, 0) < 0)
+    if (!video_specs_fit_reserved_vram() ||
+        allocate_frame_pair(native_frames, GS_UI_WIDTH, GS_UI_HEIGHT,
+                            GS_PSM_32, 1) < 0 ||
+        allocate_frame_pair(alternate_frames, GS_UI_ALT_STORAGE_WIDTH,
+                            GS_UI_ALT_STORAGE_HEIGHT, GS_PSM_32, 0) < 0)
         return -1;
 
     texture_address = graph_vram_allocate(GS_UI_ATLAS_W, GS_UI_ATLAS_H,
@@ -323,10 +448,10 @@ static int setup_environment(void)
                        0, 0, 0);
     }
     for (i = 0; i < GS_UI_FRAME_COUNT; i++) {
-        q = draw_setup_environment(q, GS_UI_CONTEXT, &progressive_frames[i],
+        q = draw_setup_environment(q, GS_UI_CONTEXT, &alternate_frames[i],
                                    &zbuffer);
         q = draw_clear(q, GS_UI_CONTEXT, 0, 0,
-                       GS_UI_PROGRESSIVE_STRIDE, GS_UI_PROGRESSIVE_HEIGHT,
+                       GS_UI_ALT_STORAGE_WIDTH, GS_UI_ALT_STORAGE_HEIGHT,
                        0, 0, 0);
     }
     active_frames = native_frames;
@@ -427,7 +552,7 @@ static qword_t *begin_frame(packet_t **packet_out)
         q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
         q = draw_scissor_area(q, GS_UI_CONTEXT, 0,
                               active_visible_width() - 1,
-                              0, GS_UI_HEIGHT * (int)render_scale_y - 1);
+                              0, render_visible_height - 1);
         q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
         q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
         q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
@@ -519,71 +644,87 @@ int gs_ui_is_ready(void)
     return renderer_ready;
 }
 
-const char *gs_ui_video_mode_name(gs_ui_video_mode_t mode)
-{
-    switch (mode) {
-        case GS_UI_VIDEO_480P:
-            return "480p progressive (720x448)";
-        case GS_UI_VIDEO_NATIVE:
-        default:
-            return "Native interlaced (640x224 field)";
-    }
-}
-
-gs_ui_video_mode_t gs_ui_video_mode_current(void)
+video_mode_id_t gs_ui_video_mode_current(void)
 {
     return video_mode;
+}
+
+int gs_ui_video_mode_supported(video_mode_id_t mode)
+{
+    char romname[15] = {0};
+
+    if ((unsigned int)mode >= VIDEO_MODE_COUNT)
+        return 0;
+    if (mode != VIDEO_MODE_576P)
+        return 1;
+
+    /* PS2SDK otherwise silently substitutes PAL for 576p on old ROMs. A
+       rejected menu item is safer than displaying a mode different from the
+       one the user was asked to confirm. */
+    GetRomName(romname);
+    return strtol(romname, NULL, 10) >= 220;
 }
 
 static void restore_native_video(void)
 {
     /* This is deliberately the same read-circuit bootstrap already proven on
-       physical hardware. It is also the timed escape hatch from an unsupported
-       480p display/cable combination. */
+       physical hardware. It is also the timed escape hatch from any unsupported
+       display, cable or alternate-mode combination. */
     init_scr();
     /* libdebug's init_scr() resets DMA globally. Re-establish libdma's GIF
        channel state before the next application frame is submitted. */
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
     active_frames = native_frames;
-    render_scale_y = 1u;
-    video_mode = GS_UI_VIDEO_NATIVE;
+    apply_render_spec(&video_specs[VIDEO_MODE_NATIVE]);
+    video_mode = VIDEO_MODE_NATIVE;
     draw_frame_index = 1u;
     blending_enabled = -1;
     draw_state_dirty = 1;
 }
 
-int gs_ui_video_mode_apply(gs_ui_video_mode_t mode)
+int gs_ui_video_mode_apply(video_mode_id_t mode)
 {
+    const video_mode_spec_t *spec;
+
     if (!renderer_ready)
         return -1;
-    if ((unsigned int)mode >= (unsigned int)GS_UI_VIDEO_MODE_COUNT)
+    if ((unsigned int)mode >= VIDEO_MODE_COUNT)
         return -2;
+    if (!gs_ui_video_mode_supported(mode))
+        return -3;
     if (mode == video_mode)
         return 0;
 
     dma_wait_fast();
     graph_wait_vsync();
-    if (mode == GS_UI_VIDEO_NATIVE) {
+    if (mode == VIDEO_MODE_NATIVE) {
         restore_native_video();
         return 0;
     }
 
+    spec = &video_specs[(unsigned int)mode];
     graph_disable_output();
-    if (graph_set_mode(GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P,
-                       GRAPH_MODE_FRAME, GRAPH_DISABLE) < 0 ||
-        graph_set_screen(0, 0, GS_UI_PROGRESSIVE_WIDTH,
-                         GS_UI_PROGRESSIVE_HEIGHT) < 0) {
+    if (graph_set_mode(spec->interlace, spec->graph_mode,
+                       spec->frame_mode, spec->flicker_filter) < 0 ||
+        graph_set_screen(spec->screen_x, spec->screen_y,
+                         spec->visible_width, spec->visible_height) < 0) {
         restore_native_video();
-        return -3;
+        return -4;
     }
-    graph_set_bgcolor(0, 0, 0);
-    graph_set_framebuffer(1, progressive_frames[1].address,
-                          progressive_frames[1].width, GS_PSM_32, 0, 0);
-    active_frames = progressive_frames;
+
+    configure_alternate_frames(spec);
+    if (clear_frame_pair(alternate_frames) < 0) {
+        restore_native_video();
+        return -5;
+    }
+
+    active_frames = alternate_frames;
+    apply_render_spec(spec);
+    video_mode = mode;
     draw_frame_index = 0u;
-    render_scale_y = 2u;
-    video_mode = GS_UI_VIDEO_480P;
+    graph_set_bgcolor(0, 0, 0);
+    present_framebuffer(&alternate_frames[1]);
     blending_enabled = -1;
     draw_state_dirty = 1;
     graph_enable_output();

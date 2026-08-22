@@ -37,11 +37,13 @@ Instead:
 
 Physical retesting confirmed that this removed the visible forensic-scan tearing. The status panel refreshes less frequently during rapid reads, as intended, while remaining responsive for write-sensitive transitions.
 
-The renderer keeps a dedicated 640x224 pair for native output and a dedicated
-768x448 pair for the optional 720x448 visible progressive application mode.
-This preserves the GS's required 64-pixel-aligned read-circuit stride in both
-modes. The 3.75 MiB GS allocation removes
-the tearing race without weakening I/O throughput and leaves 256 KiB free.
+The renderer keeps a dedicated 640x224 pair for native output and two fixed
+alternate backing ranges large enough for 480i, 576i, 480p, 576p, 720p and
+1080i views. Each selected view retains a separate draw/display framebuffer.
+The widest modes reinterpret the alternate ranges as 16-bit buffers; the
+others remain 32-bit. The 3.875 MiB allocation, including the font atlas,
+removes the tearing race without weakening I/O throughput and leaves 128 KiB
+free.
 
 ## Current status coverage
 
@@ -109,5 +111,9 @@ The 0.4.0 UI/status path has been exercised on physical PS2 hardware for:
 - VBlank synchronization with no observed scan-time tearing;
 - diagnostics/backup/source-load status;
 - contextual negative-path error presentation.
+
+Post-release physical testing also confirmed stable native <-> 480p switching.
+The additional NTSC/PAL/576p/720p/1080i outputs remain experimental and are
+protected by timed confirmation plus automatic native fallback.
 
 Exceptional raw repair statuses are instrumented but remain part of the release's experimental destructive-recovery surface until broader independent tests exist.
