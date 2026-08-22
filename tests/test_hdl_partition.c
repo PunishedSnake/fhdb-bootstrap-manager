@@ -86,6 +86,7 @@ static void test_metadata_layout(void)
     };
     uint32_t starts[2] = {0x100000, 0x900000};
     unsigned char metadata[HDL_METADATA_SIZE];
+    hdl_metadata_info_t parsed;
 
     assert(hdl_partition_plan(5ull * 1024ull * MIB, 0x800000, &plan) == 0);
     assert(hdl_metadata_build(&plan, starts, 2, &options, metadata) == 0);
@@ -106,6 +107,64 @@ static void test_metadata_layout(void)
     assert(read_le32(metadata + 256) == (4092 * MIB) / 2048);
     assert(read_le32(metadata + 260) == 0x900800);
     assert(read_le32(metadata + 264) == 1028 * MIB);
+    assert(hdl_metadata_parse(metadata, &parsed) == 0);
+    assert(strcmp(parsed.game_title, "Example Game") == 0);
+    assert(strcmp(parsed.startup, "SLUS_123.45") == 0);
+    assert(parsed.metadata_version == 0x00010000u);
+    assert(parsed.disc_type == 0x14);
+    assert(parsed.layer1_start == 0x123456);
+    assert(parsed.partition_count == 2);
+    assert(parsed.hdl_compat_flags == 0x05);
+    assert(parsed.opl_compat_flags == 0x08);
+    assert(parsed.dma_mode == 4);
+}
+
+static void test_metadata_parser_rejects_unsafe_identity(void)
+{
+    hdl_partition_plan_t plan;
+    hdl_metadata_options_t options = {
+        "Example Game", "SLUS_123.45", 0x14, 0, 0, 0, 0, 4
+    };
+    uint32_t starts[1] = {0x100000};
+    unsigned char metadata[HDL_METADATA_SIZE];
+    hdl_metadata_info_t parsed;
+
+    assert(hdl_partition_plan(100 * MIB, 0x800000, &plan) == 0);
+    assert(hdl_metadata_build(&plan, starts, 1, &options, metadata) == 0);
+
+    metadata[0] ^= 1;
+    assert(hdl_metadata_parse(metadata, &parsed) ==
+           HDL_PARTITION_METADATA_INVALID);
+    metadata[0] ^= 1;
+    metadata[8] = '\0';
+    assert(hdl_metadata_parse(metadata, &parsed) ==
+           HDL_PARTITION_METADATA_INVALID);
+    memcpy(metadata + 8, "Example Game", 13);
+    metadata[236] = 0x13;
+    assert(hdl_metadata_parse(metadata, &parsed) ==
+           HDL_PARTITION_METADATA_INVALID);
+    metadata[236] = 0x14;
+    metadata[240] = 0;
+    assert(hdl_metadata_parse(metadata, &parsed) ==
+           HDL_PARTITION_METADATA_INVALID);
+}
+
+static void test_metadata_parser_bounds_full_text_fields(void)
+{
+    unsigned char metadata[HDL_METADATA_SIZE] = {0};
+    hdl_metadata_info_t parsed;
+
+    metadata[0] = 0xed;
+    metadata[1] = 0xfe;
+    metadata[2] = 0xad;
+    metadata[3] = 0xde;
+    memset(metadata + 8, 'T', HDL_GAME_TITLE_MAX);
+    memset(metadata + 172, 'S', HDL_STARTUP_MAX);
+    metadata[236] = 0x14;
+    metadata[240] = 1;
+    assert(hdl_metadata_parse(metadata, &parsed) == 0);
+    assert(strlen(parsed.game_title) == HDL_GAME_TITLE_MAX);
+    assert(strlen(parsed.startup) == HDL_STARTUP_MAX);
 }
 
 static void test_tampered_plan_is_rejected(void)
@@ -142,6 +201,8 @@ int main(void)
     test_subpartition_reserves_one_megabyte();
     test_max_partition_limit_and_overflow();
     test_metadata_layout();
+    test_metadata_parser_rejects_unsafe_identity();
+    test_metadata_parser_bounds_full_text_fields();
     test_tampered_plan_is_rejected();
     test_partition_id_is_sanitized_and_bounded();
     puts("All HDL partition planning tests passed.");

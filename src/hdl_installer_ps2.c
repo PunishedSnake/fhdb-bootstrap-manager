@@ -31,9 +31,12 @@
 #define HDL_INSTALL_JOURNAL "mass:/HDLINSTALL.TXN"
 #define HDL_INSTALL_JOURNAL_NEW "mass:/HDLINSTALL.NEW"
 #define HDL_INSTALL_MAX_IMAGES 64u
+#define HDL_INSTALL_MAX_GAMES 128u
 #define HDL_INSTALL_PAGE_SIZE 10u
 #define HDL_INSTALL_IO_BYTES (64u * 1024u)
 #define HDL_INSTALL_JOURNAL_INTERVAL_SECTORS 16384u
+#define HDL_APA_TYPE 0x1337u
+#define HDL_APA_FLAG_SUB 0x0001u
 
 enum {
     HDL_INSTALL_CANCELLED = -560,
@@ -49,7 +52,10 @@ enum {
     HDL_INSTALL_COPY_FAILED = -570,
     HDL_INSTALL_VERIFY_FAILED = -571,
     HDL_INSTALL_METADATA_FAILED = -572,
-    HDL_INSTALL_MEMORY_FAILED = -573
+    HDL_INSTALL_MEMORY_FAILED = -573,
+    HDL_INSTALL_NO_GAMES = -574,
+    HDL_INSTALL_TARGET_CHANGED = -575,
+    HDL_INSTALL_TARGET_BUSY = -576
 };
 
 typedef struct {
@@ -63,9 +69,19 @@ typedef struct {
     uint64_t bytes;
 } hdl_file_source_t;
 
+typedef struct {
+    char id[HDL_PARTITION_ID_MAX];
+    hdl_metadata_info_t metadata;
+    unsigned char metadata_sha256[32];
+    uint64_t allocation_bytes;
+    int has_main;
+    int metadata_state;
+} hdl_game_entry_t;
+
 static unsigned char admission_header[APA_HEADER_SIZE]
     __attribute__((aligned(64)));
 static hdl_image_entry_t image_entries[HDL_INSTALL_MAX_IMAGES];
+static hdl_game_entry_t game_entries[HDL_INSTALL_MAX_GAMES];
 
 static int source_read(void *context, uint64_t offset,
                        void *destination, size_t size)
@@ -440,6 +456,202 @@ static int recheck_disk(uint32_t *max_partition_sectors,
     *max_partition_sectors = (uint32_t)maximum;
     *free_sectors = (uint32_t)free_space;
     return 0;
+}
+
+static int find_game_entry(const hdl_game_entry_t *games,
+                           unsigned int count, const char *id)
+{
+    unsigned int i;
+
+    for (i = 0; i < count; i++) {
+        if (strcmp(games[i].id, id) == 0)
+            return (int)i;
+    }
+    return -1;
+}
+
+static int compare_game_entries(const hdl_game_entry_t *left,
+                                const hdl_game_entry_t *right)
+{
+    if (left->metadata_state == 0 && right->metadata_state != 0)
+        return -1;
+    if (left->metadata_state != 0 && right->metadata_state == 0)
+        return 1;
+    if (left->metadata_state == 0)
+        return strcmp(left->metadata.game_title, right->metadata.game_title);
+    return strcmp(left->id, right->id);
+}
+
+static void sort_games(hdl_game_entry_t *games, unsigned int count)
+{
+    unsigned int i;
+
+    for (i = 1; i < count; i++) {
+        hdl_game_entry_t value = games[i];
+        unsigned int position = i;
+
+        while (position != 0 &&
+               compare_game_entries(&games[position - 1], &value) > 0) {
+            games[position] = games[position - 1];
+            position--;
+        }
+        games[position] = value;
+    }
+}
+
+static int scan_installed_games(hdl_game_entry_t *games,
+                                unsigned int *count, int *truncated,
+                                unsigned int *orphan_subs)
+{
+    iox_dirent_t entry;
+    unsigned int write_index;
+    int directory;
+    int result;
+
+    *count = 0;
+    *truncated = 0;
+    *orphan_subs = 0;
+    memset(games, 0, sizeof(*games) * HDL_INSTALL_MAX_GAMES);
+    directory = fileXioDopen("hdd0:");
+    if (directory < 0)
+        return directory;
+    while ((result = fileXioDread(directory, &entry)) > 0) {
+        hdl_game_entry_t *game;
+        int index;
+
+        if (entry.stat.mode != HDL_APA_TYPE)
+            continue;
+        index = find_game_entry(games, *count, entry.name);
+        if (index < 0) {
+            if (*count >= HDL_INSTALL_MAX_GAMES) {
+                *truncated = 1;
+                continue;
+            }
+            index = (int)(*count);
+            game = &games[(*count)++];
+            memset(game, 0, sizeof(*game));
+            snprintf(game->id, sizeof(game->id), "%s", entry.name);
+            game->metadata_state = HDL_PARTITION_METADATA_INVALID;
+        }
+        game = &games[index];
+        game->allocation_bytes += (uint64_t)entry.stat.size * 512u;
+        if (!(entry.stat.attr & HDL_APA_FLAG_SUB))
+            game->has_main = 1;
+    }
+    fileXioDclose(directory);
+    if (result < 0)
+        return result;
+
+    write_index = 0;
+    for (unsigned int i = 0; i < *count; i++) {
+        unsigned char metadata[HDL_METADATA_SIZE];
+
+        if (!games[i].has_main) {
+            (*orphan_subs)++;
+            continue;
+        }
+        if (write_index != i)
+            games[write_index] = games[i];
+        result = read_target_metadata(games[write_index].id, metadata);
+        if (result == 0) {
+            sha256_buffer(metadata, sizeof(metadata),
+                          games[write_index].metadata_sha256);
+            result = hdl_metadata_parse(metadata,
+                                        &games[write_index].metadata);
+        }
+        games[write_index].metadata_state = result;
+        write_index++;
+    }
+    *count = write_index;
+    sort_games(games, *count);
+    return *count == 0 ? HDL_INSTALL_NO_GAMES : 0;
+}
+
+static int journal_blocks_game_delete(const char *target)
+{
+    hdl_transaction_t transaction;
+    int result;
+
+    if (!path_exists(HDL_INSTALL_JOURNAL) &&
+        !path_exists(HDL_INSTALL_JOURNAL_NEW))
+        return 0;
+    result = journal_load(&transaction);
+    if (result < 0)
+        return HDL_INSTALL_JOURNAL_INVALID;
+    if (transaction.stage != HDL_TRANSACTION_STAGE_COMPLETE &&
+        strcmp(transaction.target, target) == 0)
+        return HDL_INSTALL_TARGET_BUSY;
+    return 0;
+}
+
+static int verify_game_snapshot(const hdl_game_entry_t *game)
+{
+    unsigned char metadata[HDL_METADATA_SIZE];
+    unsigned char digest[32];
+    hdl_metadata_info_t parsed;
+    iox_stat_t stat;
+    char path[64];
+    int result;
+
+    if (target_path("hdd0:", game->id, path, sizeof(path)) < 0)
+        return HDL_INSTALL_TARGET_CHANGED;
+    result = fileXioGetStat(path, &stat);
+    if (result < 0 || stat.mode != HDL_APA_TYPE ||
+        (stat.attr & HDL_APA_FLAG_SUB))
+        return HDL_INSTALL_TARGET_CHANGED;
+    result = read_target_metadata(game->id, metadata);
+    if (result < 0 || hdl_metadata_parse(metadata, &parsed) < 0)
+        return HDL_INSTALL_TARGET_CHANGED;
+    sha256_buffer(metadata, sizeof(metadata), digest);
+    if (memcmp(digest, game->metadata_sha256, sizeof(digest)) != 0)
+        return HDL_INSTALL_TARGET_CHANGED;
+    return 0;
+}
+
+static int delete_installed_game(const hdl_game_entry_t *game)
+{
+    uint32_t maximum;
+    uint32_t free_sectors;
+    char path[64];
+    int result;
+
+    result = recheck_disk(&maximum, &free_sectors);
+    if (result == 0)
+        result = journal_blocks_game_delete(game->id);
+    if (result == 0)
+        result = verify_game_snapshot(game);
+    if (result < 0)
+        return result;
+    (void)maximum;
+    (void)free_sectors;
+
+    scr_clear();
+    scr_printf("Delete installed HDL game\n\n");
+    scr_printf("Game   : %s\n", game->metadata.game_title);
+    scr_printf("Startup: %s\n", game->metadata.startup);
+    scr_printf("Target : %s\n", game->id);
+    scr_printf("Size   : %llu MiB allocated\n\n",
+               (unsigned long long)(game->allocation_bytes / 1024u / 1024u));
+    scr_printf("This removes the main partition and all of its subs.\n");
+    scr_printf("There is no undo operation.\n\n");
+    scr_printf("Hold L1+R1 and press SQUARE to delete.\n");
+    scr_printf("TRIANGLE returns without changing the HDD.\n");
+    if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_SQUARE))
+        return HDL_INSTALL_CANCELLED;
+
+    result = recheck_disk(&maximum, &free_sectors);
+    if (result == 0)
+        result = journal_blocks_game_delete(game->id);
+    if (result == 0)
+        result = verify_game_snapshot(game);
+    if (result < 0)
+        return result;
+    if (target_path("hdd0:", game->id, path, sizeof(path)) < 0)
+        return HDL_INSTALL_TARGET_CHANGED;
+    result = fileXioRemove(path);
+    session_log_line("HDL game delete target=%s startup=%s result=%d",
+                     game->id, game->metadata.startup, result);
+    return result < 0 ? result : 0;
 }
 
 static int create_partitions(const hdl_transaction_t *transaction,
@@ -1033,25 +1245,281 @@ static void incomplete_menu(hdl_transaction_t *transaction)
     }
 }
 
-void hdl_installer_menu(void)
+static void show_corrupt_journal(void)
+{
+    scr_clear();
+    scr_printf("The HDL transaction journal is corrupt.\n\n");
+    scr_printf("No HDD target can be trusted from this record, so the\n");
+    scr_printf("manager will not delete or modify any partition.\n\n");
+    scr_printf("Remove HDLINSTALL.TXN/NEW manually after inspection.\n");
+    app_ui_wait_to_return();
+}
+
+static void open_new_install(void)
 {
     hdl_transaction_t transaction;
-    int journal_result = journal_load(&transaction);
+    int result = journal_load(&transaction);
 
-    if (journal_result == 0 &&
+    if (result == 0 &&
         transaction.stage != HDL_TRANSACTION_STAGE_COMPLETE) {
         incomplete_menu(&transaction);
         return;
     }
     if (path_exists(HDL_INSTALL_JOURNAL) ||
         path_exists(HDL_INSTALL_JOURNAL_NEW)) {
-        scr_clear();
-        scr_printf("The HDL transaction journal is corrupt.\n\n");
-        scr_printf("No HDD target can be trusted from this record, so the\n");
-        scr_printf("manager will not delete or modify any partition.\n\n");
-        scr_printf("Remove HDLINSTALL.TXN/NEW manually after inspection.\n");
-        app_ui_wait_to_return();
+        show_corrupt_journal();
         return;
     }
     begin_new_install();
+}
+
+static void open_incomplete_transaction(void)
+{
+    hdl_transaction_t transaction;
+    int result = journal_load(&transaction);
+
+    if (result == 0 &&
+        transaction.stage != HDL_TRANSACTION_STAGE_COMPLETE) {
+        incomplete_menu(&transaction);
+        return;
+    }
+    if (path_exists(HDL_INSTALL_JOURNAL) ||
+        path_exists(HDL_INSTALL_JOURNAL_NEW)) {
+        show_corrupt_journal();
+        return;
+    }
+    scr_clear();
+    scr_printf("No incomplete HDL transaction was found.\n\n");
+    scr_printf("There is currently nothing to resume or clean up.\n");
+    app_ui_wait_to_return();
+}
+
+static int select_installed_game(const hdl_game_entry_t *games,
+                                 unsigned int count, int truncated,
+                                 unsigned int orphan_subs)
+{
+    unsigned int page = 0;
+    unsigned int selected = 0;
+
+    for (;;) {
+        app_ui_menu_item_t items[12];
+        char hints[HDL_INSTALL_PAGE_SIZE][112];
+        unsigned int indexes[12];
+        unsigned int start = page * HDL_INSTALL_PAGE_SIZE;
+        unsigned int shown = count - start;
+        unsigned int item_count = 0;
+        unsigned int i;
+        char status[160];
+        int choice;
+
+        if (shown > HDL_INSTALL_PAGE_SIZE)
+            shown = HDL_INSTALL_PAGE_SIZE;
+        for (i = 0; i < shown; i++) {
+            const hdl_game_entry_t *game = &games[start + i];
+
+            if (game->metadata_state == 0) {
+                snprintf(hints[i], sizeof(hints[i]),
+                         "%s | %llu MiB | %u partition%s",
+                         game->metadata.startup,
+                         (unsigned long long)(game->allocation_bytes /
+                                              1024u / 1024u),
+                         game->metadata.partition_count,
+                         game->metadata.partition_count == 1 ? "" : "s");
+                items[item_count].label = game->metadata.game_title;
+            } else {
+                snprintf(hints[i], sizeof(hints[i]),
+                         "Metadata unreadable (code %d); deletion locked",
+                         game->metadata_state);
+                items[item_count].label = game->id;
+            }
+            items[item_count].hint = hints[i];
+            items[item_count].enabled = 1;
+            indexes[item_count++] = start + i;
+        }
+        if (start + shown < count) {
+            items[item_count].label = "Next page";
+            items[item_count].hint = "Show more installed games";
+            items[item_count].enabled = 1;
+            indexes[item_count++] = UINT32_MAX;
+        }
+        if (page != 0) {
+            items[item_count].label = "Previous page";
+            items[item_count].hint = "Return to earlier installed games";
+            items[item_count].enabled = 1;
+            indexes[item_count++] = UINT32_MAX - 1u;
+        }
+        snprintf(status, sizeof(status),
+                 "%u main game%s%s%s | page %u",
+                 count, count == 1 ? "" : "s",
+                 truncated ? " | list truncated" : "",
+                 orphan_subs ? " | orphan subs detected" : "", page + 1u);
+        if (selected >= item_count)
+            selected = 0;
+        choice = app_ui_menu_select("Installed HDL games", status,
+                                    items, item_count, &selected);
+        if (choice < 0)
+            return -1;
+        if (indexes[choice] == UINT32_MAX) {
+            page++;
+            selected = 0;
+            continue;
+        }
+        if (indexes[choice] == UINT32_MAX - 1u) {
+            page--;
+            selected = 0;
+            continue;
+        }
+        return (int)indexes[choice];
+    }
+}
+
+static void show_game_details(const hdl_game_entry_t *game)
+{
+    char digest[65];
+
+    scr_clear();
+    scr_printf("Installed HDL partition\n\n");
+    scr_printf("Target    : %s\n", game->id);
+    scr_printf("Allocation: %llu MiB\n",
+               (unsigned long long)(game->allocation_bytes / 1024u / 1024u));
+    if (game->metadata_state == 0) {
+        sha256_hex(game->metadata_sha256, digest);
+        scr_printf("Game      : %s\n", game->metadata.game_title);
+        scr_printf("Startup   : %s\n", game->metadata.startup);
+        scr_printf("Media     : %s\n",
+                   game->metadata.disc_type == 0x14 ? "PS2 DVD" : "PS2 CD");
+        scr_printf("Parts     : %u\n", game->metadata.partition_count);
+        scr_printf("Compat    : HDL %02x | OPL %02x | DMA %u/%u\n",
+                   game->metadata.hdl_compat_flags,
+                   game->metadata.opl_compat_flags,
+                   game->metadata.dma_type, game->metadata.dma_mode);
+        scr_printf("Metadata  : SHA-256 %.16s...\n", digest);
+    } else {
+        scr_printf("Metadata  : unreadable or structurally invalid\n");
+        scr_printf("Read code : %d\n\n", game->metadata_state);
+        scr_printf("Deletion remains locked because the partition cannot\n");
+        scr_printf("be proven to be an installed HDL game.\n");
+    }
+    app_ui_wait_to_return();
+}
+
+static void show_delete_result(const hdl_game_entry_t *game, int result)
+{
+    scr_clear();
+    if (result == 0) {
+        scr_printf("HDL game removed.\n\n");
+        scr_printf("Game  : %s\n", game->metadata.game_title);
+        scr_printf("Target: %s\n\n", game->id);
+        scr_printf("The main partition and its sub-partitions were removed.\n");
+    } else {
+        scr_printf("HDL game was not removed (code %d).\n\n", result);
+        if (result == HDL_INSTALL_TARGET_CHANGED) {
+            scr_printf("The partition identity or its 1024-byte metadata\n");
+            scr_printf("changed after the list was scanned. Rescan first.\n");
+        } else if (result == HDL_INSTALL_TARGET_BUSY) {
+            scr_printf("An incomplete transaction owns this exact target.\n");
+            scr_printf("Resume or clean up that transaction first.\n");
+        } else if (result == HDL_INSTALL_JOURNAL_INVALID) {
+            scr_printf("The transaction journal is corrupt, so deletion is\n");
+            scr_printf("locked until the record is inspected manually.\n");
+        } else {
+            scr_printf("The disk or APA driver rejected a safety recheck or\n");
+            scr_printf("the final partition removal operation.\n");
+        }
+    }
+    app_ui_wait_to_return();
+}
+
+static int game_action_menu(const hdl_game_entry_t *game)
+{
+    app_ui_menu_item_t items[] = {
+        {"View details", "Inspect partition identity and HDL metadata", 1},
+        {"Delete game partition", "Remove the main partition and every sub", 0}
+    };
+    unsigned int selected = 0;
+    char status[192];
+
+    items[1].enabled = game->metadata_state == 0;
+    snprintf(status, sizeof(status), "%s | %s",
+             game->metadata_state == 0 ? game->metadata.game_title : game->id,
+             game->metadata_state == 0 ? game->metadata.startup :
+                                         "metadata invalid; delete locked");
+    for (;;) {
+        int choice = app_ui_menu_select("HDL game tools", status,
+                                        items, 2, &selected);
+
+        if (choice < 0)
+            return 0;
+        if (choice == 0) {
+            show_game_details(game);
+            continue;
+        }
+        if (choice == 1) {
+            int result = delete_installed_game(game);
+
+            if (result == HDL_INSTALL_CANCELLED)
+                continue;
+            show_delete_result(game, result);
+            return result == 0;
+        }
+    }
+}
+
+static void installed_games_menu(void)
+{
+    for (;;) {
+        unsigned int count;
+        unsigned int orphan_subs;
+        int truncated;
+        int result = scan_installed_games(game_entries, &count, &truncated,
+                                          &orphan_subs);
+
+        if (result < 0) {
+            scr_clear();
+            if (result == HDL_INSTALL_NO_GAMES) {
+                scr_printf("No installed HDL game partitions were found.\n");
+                if (orphan_subs != 0)
+                    scr_printf("\n%u orphan sub-partition group%s detected.\n",
+                               orphan_subs, orphan_subs == 1 ? "" : "s");
+            } else {
+                scr_printf("HDL game list scan failed (code %d).\n", result);
+            }
+            app_ui_wait_to_return();
+            return;
+        }
+        for (;;) {
+            int choice = select_installed_game(game_entries, count,
+                                               truncated, orphan_subs);
+
+            if (choice < 0)
+                return;
+            if (game_action_menu(&game_entries[choice]))
+                break;
+        }
+    }
+}
+
+void hdl_tools_menu(void)
+{
+    static const app_ui_menu_item_t items[] = {
+        {"Install ISO from USB", "Choose a mass:/ ISO and create a verified HDL game", 1},
+        {"Installed HDL games", "List, inspect and safely delete existing games", 1},
+        {"Incomplete transaction", "Resume or remove a journal-owned allocation", 1}
+    };
+    unsigned int selected = 0;
+
+    for (;;) {
+        int choice = app_ui_menu_select(
+            "HDL Tools", "Install and manage APA type 0x1337 game partitions",
+            items, 3, &selected);
+
+        if (choice < 0)
+            return;
+        if (choice == 0)
+            open_new_install();
+        if (choice == 1)
+            installed_games_menu();
+        if (choice == 2)
+            open_incomplete_transaction();
+    }
 }

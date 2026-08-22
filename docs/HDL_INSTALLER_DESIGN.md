@@ -1,9 +1,15 @@
-# HDL game installer design
+# HDL Tools design
 
-The HDL installer is an isolated application feature for installing a legal
-backup image from `mass:` into a standard HDLoader game partition. It is not
-part of the bootstrap or APA recovery menus and it never participates in raw
-forensic repair.
+HDL Tools is an isolated application workspace for installing a legal backup
+image from `mass:` into a standard HDLoader game partition, inspecting
+existing games and deliberately removing a selected game. It is not part of
+the bootstrap or APA recovery menus and it never participates in raw forensic
+repair.
+
+The workspace renders its own top-level menu before journal, USB or HDD I/O.
+Install, installed-game management and incomplete-transaction handling are
+separate operations, so a slow or failed probe cannot leave an unrelated
+status screen visible.
 
 ## Supported source contract
 
@@ -63,7 +69,32 @@ partition confirmed by an active journal that reached `PARTITIONS_CREATED`.
 A merely planned transaction never authorizes deletion. Metadata read errors
 also refuse deletion instead of treating unreadable bytes as an empty game.
 Existing game partitions are never renamed, deleted or reused by the initial
-implementation.
+installation workflow.
+
+## Existing-game management
+
+The installed-game list is built from main APA partitions of type `0x1337`.
+Sub-partitions are grouped by their main identifier and contribute to the
+displayed allocation size. The 1024-byte metadata block is parsed only when it
+has the HDLoader magic, a bounded non-empty title and startup name, a supported
+PS2 media type and a plausible partition count. Unreadable or structurally
+invalid metadata remains visible for inspection, but deletion stays locked.
+
+Deleting a valid game is intentionally separate from cleaning up an
+incomplete install. Before showing the confirmation screen, and again after
+the user holds `L1+R1+SQUARE`, the manager:
+
+1. rechecks normal `ps2hdd` disk admission;
+2. refuses an exact target owned by an incomplete transaction;
+3. re-reads the partition stat and requires a main APA type `0x1337` entry;
+4. re-reads and parses the complete metadata block;
+5. compares its SHA-256 with the snapshot selected from the freshly scanned
+   list.
+
+Only then is the named main partition passed to the normal APA remove call,
+which also removes its registered sub-partitions. A corrupt transaction journal
+or any identity change fails closed. There is no generic partition delete and
+no raw APA deletion path.
 
 ## Resume and failure policy
 

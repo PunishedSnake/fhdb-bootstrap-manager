@@ -477,7 +477,7 @@ void manager_menu_run(unsigned char header[APA_HEADER_SIZE],
         {"Bootstrap", "Install, disable, restore and bootstrap backup", 1},
         {"Diagnostics", "Boot-chain evidence and reports", 1},
         {"Recovery", "Deterministic repair and forensic APA workspace", 1},
-        {"HDL Games", "Install a PS2 ISO from mass: with full verification", 1},
+        {"HDL Tools", "Install, inspect and remove HDL game partitions", 1},
         {"Backup & Storage", "Rescue backup destination and storage selection", 1},
         {"System", "Controller, theme, font, video mode, restart and power", 1}
     };
@@ -507,7 +507,7 @@ void manager_menu_run(unsigned char header[APA_HEADER_SIZE],
                 recovery_menu(header, boot_chain);
                 break;
             case 3:
-                hdl_installer_menu();
+                hdl_tools_menu();
                 break;
             case 4:
                 backup_storage_menu(header, boot_chain);

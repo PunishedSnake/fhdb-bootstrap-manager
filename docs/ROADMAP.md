@@ -180,16 +180,22 @@ HDL layout.**
 - explicit capability/version negotiation for imported evidence;
 - deterministic comparison of evidence bundles without requiring host write authority.
 
-### Console-side ISO to HDL installation
+### Console-side HDL Tools
 
-- browse ISO sources on `mass:` in a dedicated game-installation menu;
+- render a dedicated HDL workspace before starting USB or HDD I/O;
+- browse ISO sources on `mass:` in a dedicated installation operation;
 - validate ISO9660 structure and extract disc identity from `SYSTEM.CNF` before
   any HDD mutation;
 - preflight source size, target free extents, partition naming and HDL metadata;
 - stream the image in bounded chunks without loading a complete game into EE
   memory;
-- create OPL/HDL-compatible APA partitions and game metadata without altering
-  existing game partitions;
+- create OPL/HDL-compatible APA partitions and game metadata without reusing
+  an existing game partition;
+- list installed HDL games from their APA type and validated metadata;
+- show malformed or unreadable game metadata as locked rather than silently
+  treating it as safe to remove;
+- delete an explicitly selected, metadata-verified game through the normal APA
+  remove call after repeated identity checks and a controller chord;
 - expose live source/target/LBA/progress telemetry through the existing GS
   operation monitor;
 - define cancellation, partial-install cleanup, flush/read-back and restart
@@ -203,7 +209,7 @@ HDL layout.**
 - another Windows GUI;
 - generic PFS browsing/export;
 - Dokany/FUSE mounting;
-- general HDL library management beyond the dedicated ISO installer;
+- HDL renaming, compatibility editing, extraction or generic partition tools;
 - host physical-drive write support;
 - generic APA partition management.
 

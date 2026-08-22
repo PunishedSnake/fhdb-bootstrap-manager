@@ -37,6 +37,31 @@ static void write_le32(unsigned char *destination, uint32_t value)
     destination[3] = (unsigned char)(value >> 24);
 }
 
+static uint32_t read_le32(const unsigned char *source)
+{
+    return (uint32_t)source[0] | ((uint32_t)source[1] << 8) |
+           ((uint32_t)source[2] << 16) | ((uint32_t)source[3] << 24);
+}
+
+static int read_metadata_text(char *destination, size_t destination_size,
+                              const unsigned char *source, size_t source_size)
+{
+    size_t length = 0;
+    size_t i;
+
+    while (length < source_size && source[length] != '\0')
+        length++;
+    if (length == 0 || destination_size <= length)
+        return HDL_PARTITION_METADATA_INVALID;
+    for (i = 0; i < length; i++) {
+        if (source[i] < 0x20u || source[i] == 0x7fu)
+            return HDL_PARTITION_METADATA_INVALID;
+    }
+    memcpy(destination, source, length);
+    destination[length] = '\0';
+    return 0;
+}
+
 static uint64_t choose_allocation(uint64_t required, uint64_t maximum)
 {
     size_t i;
@@ -171,6 +196,36 @@ int hdl_metadata_build(const hdl_partition_plan_t *plan,
     }
     if (expected_offset != plan->image_bytes)
         return HDL_PARTITION_PHYSICAL_RANGE_INVALID;
+    return 0;
+}
+
+int hdl_metadata_parse(const unsigned char metadata[HDL_METADATA_SIZE],
+                       hdl_metadata_info_t *info)
+{
+    uint32_t partition_count;
+
+    if (metadata == NULL || info == NULL)
+        return HDL_PARTITION_INVALID_ARGUMENT;
+    memset(info, 0, sizeof(*info));
+    partition_count = read_le32(metadata + 240);
+    if (read_le32(metadata) != HDL_INFO_MAGIC || partition_count == 0 ||
+        partition_count > HDL_MAX_PARTITIONS ||
+        (read_le32(metadata + 236) != 0x12u &&
+         read_le32(metadata + 236) != 0x14u) ||
+        read_metadata_text(info->game_title, sizeof(info->game_title),
+                           metadata + 8, HDL_GAME_TITLE_MAX) < 0 ||
+        read_metadata_text(info->startup, sizeof(info->startup),
+                           metadata + 172, HDL_STARTUP_MAX) < 0)
+        return HDL_PARTITION_METADATA_INVALID;
+
+    info->metadata_version = read_le32(metadata + 4);
+    info->hdl_compat_flags = metadata[168];
+    info->opl_compat_flags = metadata[169];
+    info->dma_type = metadata[170];
+    info->dma_mode = metadata[171];
+    info->layer1_start = read_le32(metadata + 232);
+    info->disc_type = read_le32(metadata + 236);
+    info->partition_count = partition_count;
     return 0;
 }
 

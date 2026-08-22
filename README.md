@@ -481,10 +481,11 @@ downloads.
 0.4.x Michishirube is feature-frozen except for defects and narrowly scoped validation hardening.
 
 The next feature train is **0.5.x Kakehashi**, focused on versioned recovery
-evidence/interoperability and a guarded console-side ISO-to-HDL installer for
-games read from `mass:`. Host tools may analyze and propose; the PS2 manager
-remains final write authority after re-reading and revalidating the physical
-disk.
+evidence/interoperability and guarded console-side **HDL Tools**. The PS2 can
+install ISO images read from `mass:`, inspect existing HDL game metadata and
+remove a selected game only after repeated identity checks and an explicit
+controller chord. Host tools may analyze and propose; the PS2 manager remains
+final write authority after re-reading and revalidating the physical disk.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
