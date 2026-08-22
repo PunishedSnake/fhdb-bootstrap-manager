@@ -10,6 +10,7 @@
 #include <hdd-ioctl.h>
 #include <iomanX.h>
 #include <irx.h>
+#include <loadcore.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/fcntl.h>
