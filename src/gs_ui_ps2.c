@@ -13,6 +13,7 @@
 
 #include <kernel.h>
 #include <tamtypes.h>
+#include <timer.h>
 
 #include <debug.h>
 #include <dma.h>
@@ -27,6 +28,9 @@
 
 #include "app_identity.h"
 #include "gs_ui_ps2.h"
+#include "spleen_font_data.h"
+#include "ui_font.h"
+#include "ui_layout.h"
 #include "ui_theme_ps2.h"
 #include "version.h"
 
@@ -35,17 +39,18 @@
 #define GS_UI_ALT_STORAGE_WIDTH 768
 #define GS_UI_ALT_STORAGE_HEIGHT 448
 #define GS_UI_FRAME_COUNT 2
-#define GS_UI_FONT_SRC_W 8
-#define GS_UI_FONT_SRC_H 8
-#define GS_UI_GLYPH_W 8
-#define GS_UI_GLYPH_H 8
+#define GS_UI_FONT_SLOT_W 8
+#define GS_UI_FONT_SLOT_H 16
+#define GS_UI_GLYPH_W UI_LOGICAL_CELL_WIDTH
+#define GS_UI_GLYPH_H UI_LOGICAL_CELL_HEIGHT
 #define GS_UI_LINE_STEP 10
 #define GS_UI_ATLAS_W 128
-#define GS_UI_ATLAS_H 64
+#define GS_UI_ATLAS_H 128
 #define GS_UI_PACKET_QWORDS 16384
 #define GS_UI_CONTEXT 0
 #define GS_UI_CONSOLE_BYTES 8192u
 #define GS_UI_MAX_MENU_ITEMS 12u
+#define GS_UI_VSYNC_TIMEOUT_MS 250u
 
 extern const u8 msx[];
 
@@ -56,26 +61,34 @@ typedef struct {
     int flicker_filter;
     int screen_x;
     int screen_y;
-    unsigned int visible_width;
-    unsigned int visible_height;
+    unsigned int active_width;
+    unsigned int active_height;
     unsigned int frame_width;
     unsigned int frame_height;
+    unsigned int viewport_x;
+    unsigned int viewport_y;
+    unsigned int viewport_width;
+    unsigned int viewport_height;
     unsigned int psm;
-    float scale_x;
-    float scale_y;
-    float offset_x;
-    float offset_y;
     int filtered_presentation;
 } video_mode_spec_t;
 
 static const video_mode_spec_t video_specs[VIDEO_MODE_COUNT] = {
     {GRAPH_MODE_INTERLACED, GRAPH_MODE_AUTO, GRAPH_MODE_FIELD, GRAPH_ENABLE,
-     0, 0, 640, 224, 640, 224, GS_PSM_32,
-     1.0f, 1.0f, 0.0f, 0.0f, 1},
+     0, 0, 640, 224, 640, 224, 0, 0, 640, 224, GS_PSM_32, 1},
     {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P, GRAPH_MODE_FRAME,
-     GRAPH_DISABLE, 0, 0, 720, 448, 768, 448, GS_PSM_32,
-     1.125f, 2.0f, 0.0f, 0.0f, 0}
+     GRAPH_DISABLE, 0, 0, 720, 448, 768, 448, 0, 0, 720, 448,
+     GS_PSM_32, 0}
 };
+
+typedef struct {
+    unsigned int width;
+    unsigned int height;
+    unsigned int first;
+    unsigned int count;
+    unsigned int bytes_per_glyph;
+    const u8 *data;
+} ui_font_raster_t;
 
 static framebuffer_t native_frames[GS_UI_FRAME_COUNT];
 static framebuffer_t alternate_frames[GS_UI_FRAME_COUNT];
@@ -87,14 +100,11 @@ static lod_t font_lod;
 static blend_t alpha_blend;
 static packet_t *render_packet;
 static unsigned int draw_frame_index;
-static float render_scale_x = 1.0f;
-static float render_scale_y = 1.0f;
-static float render_offset_x;
-static float render_offset_y;
-static unsigned int render_visible_width = GS_UI_WIDTH;
-static unsigned int render_visible_height = GS_UI_HEIGHT;
+static ui_layout_t render_layout;
 static int render_filtered = 1;
 static video_mode_id_t video_mode = VIDEO_MODE_NATIVE;
+static ui_font_id_t active_font = UI_FONT_MSX;
+static ui_font_raster_t font_raster;
 static int draw_state_dirty;
 static u32 font_atlas[GS_UI_ATLAS_W * GS_UI_ATLAS_H]
     __attribute__((aligned(64)));
@@ -106,34 +116,58 @@ static int blending_enabled = -1;
 
 static float scaled_x(float value)
 {
-    if (render_scale_x == 1.0f)
-        return value + render_offset_x;
-    return value * render_scale_x + render_offset_x;
+    return ui_layout_snap_x(&render_layout, value);
 }
 
 static float scaled_y(float value)
 {
-    if (render_scale_y == 1.0f)
-        return value + render_offset_y;
-    if (render_scale_y == 2.0f)
-        return value + value + render_offset_y;
-    return value * render_scale_y + render_offset_y;
+    return ui_layout_snap_y(&render_layout, value);
 }
 
 static unsigned int active_visible_width(void)
 {
-    return render_visible_width;
+    return render_layout.active_width;
 }
 
-static void apply_render_spec(const video_mode_spec_t *spec)
+static void select_font_raster(void)
 {
-    render_scale_x = spec->scale_x;
-    render_scale_y = spec->scale_y;
-    render_offset_x = spec->offset_x;
-    render_offset_y = spec->offset_y;
-    render_visible_width = spec->visible_width;
-    render_visible_height = spec->visible_height;
+    if (active_font == UI_FONT_SPLEEN) {
+        if (render_layout.scale_y >= 1.5f) {
+            font_raster.width = 8u;
+            font_raster.height = 16u;
+            font_raster.bytes_per_glyph = 16u;
+            font_raster.data = spleen_8x16_ascii;
+        } else {
+            font_raster.width = 5u;
+            font_raster.height = 8u;
+            font_raster.bytes_per_glyph = 8u;
+            font_raster.data = spleen_5x8_ascii;
+        }
+        font_raster.first = SPLEEN_ASCII_FIRST;
+        font_raster.count = SPLEEN_ASCII_COUNT;
+    } else {
+        font_raster.width = 8u;
+        font_raster.height = 8u;
+        font_raster.first = 0u;
+        font_raster.count = 128u;
+        font_raster.bytes_per_glyph = 8u;
+        font_raster.data = msx;
+    }
+}
+
+static int apply_render_spec(const video_mode_spec_t *spec)
+{
+    int result = ui_layout_configure(
+        &render_layout, spec->active_width, spec->active_height,
+        spec->frame_width, spec->frame_height,
+        spec->viewport_x, spec->viewport_y,
+        spec->viewport_width, spec->viewport_height);
+
+    if (result < 0)
+        return result;
     render_filtered = spec->filtered_presentation;
+    select_font_raster();
+    return 0;
 }
 
 static void present_framebuffer(const framebuffer_t *frame)
@@ -208,22 +242,43 @@ static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
     texrect_t glyph;
     unsigned int glyph_x;
     unsigned int glyph_y;
+    unsigned int cell_x;
+    unsigned int cell_y;
+    unsigned int cell_width;
+    unsigned int cell_height;
+    unsigned int output_width;
+    unsigned int output_height;
+    unsigned int output_x;
+    unsigned int output_y;
 
     if (ch >= 128u)
         ch = '?';
-    glyph_x = ((unsigned int)ch & 15u) * GS_UI_FONT_SRC_W;
-    glyph_y = ((unsigned int)ch >> 4) * GS_UI_FONT_SRC_H;
+    glyph_x = ((unsigned int)ch & 15u) * GS_UI_FONT_SLOT_W;
+    glyph_y = ((unsigned int)ch >> 4) * GS_UI_FONT_SLOT_H;
 
-    glyph.v0.x = scaled_x(x);
-    glyph.v0.y = scaled_y(y);
+    ui_layout_text_cell(&render_layout, x, y, &cell_x, &cell_y,
+                        &cell_width, &cell_height);
+    output_width = font_raster.width;
+    output_height = font_raster.height;
+    if (active_font == UI_FONT_MSX && cell_height >= 16u)
+        output_height = 16u;
+    if (output_width > cell_width)
+        output_width = cell_width;
+    if (output_height > cell_height)
+        output_height = cell_height;
+    output_x = cell_x + (cell_width - output_width) / 2u;
+    output_y = cell_y + (cell_height - output_height) / 2u;
+
+    glyph.v0.x = (float)output_x;
+    glyph.v0.y = (float)output_y;
     glyph.v0.z = 2;
-    glyph.v1.x = scaled_x(x + GS_UI_GLYPH_W);
-    glyph.v1.y = scaled_y(y + GS_UI_GLYPH_H);
+    glyph.v1.x = (float)(output_x + output_width);
+    glyph.v1.y = (float)(output_y + output_height);
     glyph.v1.z = 2;
     glyph.t0.u = (float)glyph_x;
     glyph.t0.v = (float)glyph_y;
-    glyph.t1.u = (float)(glyph_x + GS_UI_FONT_SRC_W);
-    glyph.t1.v = (float)(glyph_y + GS_UI_FONT_SRC_H);
+    glyph.t1.u = (float)(glyph_x + font_raster.width);
+    glyph.t1.v = (float)(glyph_y + font_raster.height);
     glyph.color = *color;
 
     select_blending(1);
@@ -276,15 +331,24 @@ static void build_font_atlas(void)
 
     memset(font_atlas, 0, sizeof(font_atlas));
     for (ch = 0; ch < 128u; ch++) {
-        unsigned int gx = (ch & 15u) * GS_UI_FONT_SRC_W;
-        unsigned int gy = (ch >> 4) * GS_UI_FONT_SRC_H;
+        unsigned int source_ch = ch;
+        unsigned int gx = (ch & 15u) * GS_UI_FONT_SLOT_W;
+        unsigned int gy = (ch >> 4) * GS_UI_FONT_SLOT_H;
+        const u8 *source;
         unsigned int row;
 
-        for (row = 0; row < GS_UI_FONT_SRC_H; row++) {
-            unsigned char bits = msx[ch * GS_UI_FONT_SRC_H + row];
+        if (source_ch < font_raster.first ||
+            source_ch >= font_raster.first + font_raster.count)
+            source_ch = '?';
+        source = font_raster.data +
+                 (source_ch - font_raster.first) *
+                     font_raster.bytes_per_glyph;
+
+        for (row = 0; row < font_raster.height; row++) {
+            unsigned char bits = source[row];
             unsigned int col;
 
-            for (col = 0; col < GS_UI_FONT_SRC_W; col++) {
+            for (col = 0; col < font_raster.width; col++) {
                 if ((bits & (0x80u >> col)) != 0u)
                     font_atlas[(gy + row) * GS_UI_ATLAS_W + gx + col] =
                         0x80ffffffu;
@@ -323,14 +387,21 @@ static int video_specs_fit_reserved_vram(void)
         GS_UI_ALT_STORAGE_WIDTH * GS_UI_ALT_STORAGE_HEIGHT;
     unsigned int i;
 
-    for (i = 1u; i < VIDEO_MODE_COUNT; i++) {
+    for (i = 0u; i < VIDEO_MODE_COUNT; i++) {
         const video_mode_spec_t *spec = &video_specs[i];
+        ui_layout_t candidate;
         unsigned int words;
 
         if ((spec->frame_width & 63u) != 0u ||
-            spec->visible_width > spec->frame_width ||
-            spec->visible_height > spec->frame_height)
+            ui_layout_configure(&candidate,
+                                spec->active_width, spec->active_height,
+                                spec->frame_width, spec->frame_height,
+                                spec->viewport_x, spec->viewport_y,
+                                spec->viewport_width,
+                                spec->viewport_height) < 0)
             return 0;
+        if (i == 0u)
+            continue;
         if (spec->psm == GS_PSM_32)
             words = spec->frame_width * spec->frame_height;
         else if (spec->psm == GS_PSM_16 &&
@@ -393,8 +464,8 @@ static int setup_environment(void)
 
     /* Native frame zero remains at VRAM 0 for init_scr()/emergency libdebug
        compatibility. The alternate pair is the exact hardware-tested 480p
-       backing layout. Four buffers plus the font atlas use 3.75 MiB of GS
-       VRAM and leave 256 KiB free. */
+       backing layout. Four buffers plus the adaptive 128x128 font atlas use
+       about 3.78 MiB of GS VRAM and leave 224 KiB free. */
     graph_vram_clear();
     if (!video_specs_fit_reserved_vram() ||
         allocate_frame_pair(native_frames, GS_UI_WIDTH, GS_UI_HEIGHT,
@@ -437,6 +508,10 @@ static int setup_environment(void)
     }
     active_frames = native_frames;
     draw_frame_index = 1u;
+    if (apply_render_spec(&video_specs[VIDEO_MODE_NATIVE]) < 0) {
+        packet_free(packet);
+        return -4;
+    }
     q = draw_setup_environment(q, GS_UI_CONTEXT,
                                &active_frames[draw_frame_index], &zbuffer);
     /* libdraw draw2d primitives add the GS +2048 bias themselves. */
@@ -458,7 +533,9 @@ static int upload_font_texture(void)
     qword_t *q;
 
     build_font_atlas();
-    packet = packet_init(4096, PACKET_NORMAL);
+    /* 128x128x32-bit image data alone occupies 4096 qwords; reserve room for
+       the transfer and GIF tags as well. */
+    packet = packet_init(8192, PACKET_NORMAL);
     if (packet == NULL)
         return -1;
     q = packet->data;
@@ -518,6 +595,21 @@ static int setup_texture_state(void)
     return 0;
 }
 
+static int wait_vsync_bounded(unsigned int timeout_ms)
+{
+    u64 start = GetTimerSystemTime();
+    u64 timeout = MSec2TimerBusClock(timeout_ms);
+
+    graph_start_vsync();
+    while (!graph_check_vsync()) {
+        if (GetTimerSystemTime() - start >= timeout)
+            return -1;
+    }
+    return 0;
+}
+
+static int restore_native_video(void);
+
 static qword_t *begin_frame(packet_t **packet_out)
 {
     packet_t *packet;
@@ -533,7 +625,7 @@ static qword_t *begin_frame(packet_t **packet_out)
         q = draw_primitive_xyoffset(q, GS_UI_CONTEXT, 2048.0f, 2048.0f);
         q = draw_scissor_area(q, GS_UI_CONTEXT, 0,
                               active_visible_width() - 1,
-                              0, render_visible_height - 1);
+                              0, render_layout.active_height - 1);
         q = draw_texture_sampling(q, GS_UI_CONTEXT, &font_lod);
         q = draw_texturebuffer(q, GS_UI_CONTEXT, &font_texture, &no_clut);
         q = draw_alpha_blending(q, GS_UI_CONTEXT, &alpha_blend);
@@ -542,6 +634,12 @@ static qword_t *begin_frame(packet_t **packet_out)
         q = draw_framebuffer(q, GS_UI_CONTEXT,
                              &active_frames[draw_frame_index]);
     }
+    /* The complete output is cleared before the logical viewport is drawn.
+       Letterboxed layouts therefore have deterministic black bars instead of
+       pixels left behind by an earlier frame. */
+    q = draw_clear(q, GS_UI_CONTEXT, 0, 0,
+                   active_visible_width(), render_layout.active_height,
+                   0, 0, 0);
 
     *packet_out = packet;
     return q;
@@ -555,7 +653,11 @@ static void end_frame(packet_t *packet, qword_t *q)
     dma_channel_send_normal(DMA_CHANNEL_GIF, packet->data,
                             (int)(q - packet->data), 0, 0);
     draw_wait_finish();
-    graph_wait_vsync();
+    if (wait_vsync_bounded(GS_UI_VSYNC_TIMEOUT_MS) < 0) {
+        (void)restore_native_video();
+        console_dirty = 0;
+        return;
+    }
     present_framebuffer(&active_frames[completed_frame]);
     draw_frame_index ^= 1u;
     console_dirty = 0;
@@ -635,7 +737,35 @@ int gs_ui_video_mode_supported(video_mode_id_t mode)
     return (unsigned int)mode < VIDEO_MODE_COUNT;
 }
 
-static void restore_native_video(void)
+ui_font_id_t gs_ui_font_current(void)
+{
+    return active_font;
+}
+
+int gs_ui_font_apply(ui_font_id_t font)
+{
+    ui_font_id_t previous;
+
+    if ((unsigned int)font >= UI_FONT_COUNT)
+        return -1;
+    if (font == active_font)
+        return 0;
+
+    previous = active_font;
+    active_font = font;
+    select_font_raster();
+    if (renderer_ready && upload_font_texture() < 0) {
+        active_font = previous;
+        select_font_raster();
+        (void)upload_font_texture();
+        return -2;
+    }
+    blending_enabled = -1;
+    draw_state_dirty = 1;
+    return 0;
+}
+
+static int restore_native_video(void)
 {
     /* This is deliberately the same read-circuit bootstrap already proven on
        physical hardware. It is also the timed escape hatch from any unsupported
@@ -646,11 +776,15 @@ static void restore_native_video(void)
     dma_channel_initialize(DMA_CHANNEL_GIF, NULL, 0);
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
     active_frames = native_frames;
-    apply_render_spec(&video_specs[VIDEO_MODE_NATIVE]);
+    if (apply_render_spec(&video_specs[VIDEO_MODE_NATIVE]) < 0)
+        return -1;
     video_mode = VIDEO_MODE_NATIVE;
     draw_frame_index = 1u;
     blending_enabled = -1;
     draw_state_dirty = 1;
+    if (upload_font_texture() < 0)
+        return -2;
+    return 0;
 }
 
 int gs_ui_video_mode_apply(video_mode_id_t mode)
@@ -667,10 +801,10 @@ int gs_ui_video_mode_apply(video_mode_id_t mode)
         return 0;
 
     dma_wait_fast();
-    graph_wait_vsync();
+    if (wait_vsync_bounded(GS_UI_VSYNC_TIMEOUT_MS) < 0)
+        (void)restore_native_video();
     if (mode == VIDEO_MODE_NATIVE) {
-        restore_native_video();
-        return 0;
+        return restore_native_video();
     }
 
     spec = &video_specs[(unsigned int)mode];
@@ -678,26 +812,37 @@ int gs_ui_video_mode_apply(video_mode_id_t mode)
     if (graph_set_mode(spec->interlace, spec->graph_mode,
                        spec->frame_mode, spec->flicker_filter) < 0 ||
         graph_set_screen(spec->screen_x, spec->screen_y,
-                         spec->visible_width, spec->visible_height) < 0) {
-        restore_native_video();
+                         spec->active_width, spec->active_height) < 0) {
+        (void)restore_native_video();
         return -4;
     }
 
     configure_alternate_frames(spec);
     if (clear_frame_pair(alternate_frames) < 0) {
-        restore_native_video();
+        (void)restore_native_video();
         return -5;
     }
 
     active_frames = alternate_frames;
-    apply_render_spec(spec);
+    if (apply_render_spec(spec) < 0) {
+        (void)restore_native_video();
+        return -6;
+    }
     video_mode = mode;
     draw_frame_index = 0u;
     graph_set_bgcolor(0, 0, 0);
     present_framebuffer(&alternate_frames[1]);
     blending_enabled = -1;
     draw_state_dirty = 1;
+    if (upload_font_texture() < 0) {
+        (void)restore_native_video();
+        return -7;
+    }
     graph_enable_output();
+    if (wait_vsync_bounded(GS_UI_VSYNC_TIMEOUT_MS) < 0) {
+        (void)restore_native_video();
+        return -8;
+    }
     return 0;
 }
 

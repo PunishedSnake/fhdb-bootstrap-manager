@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o manager_menu_ps2.o app_ui_ps2.o disk_status_ps2.o gs_ui_ps2.o gs_debug_compat_ps2.o app_error.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o forensic_controller_ps2.o platform.o storage.o video_mode.o header_backup.o repair_snapshot.o forensic_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o apa_forensic.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o hdd_forensic_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
+EE_OBJS = main.o manager_menu_ps2.o app_ui_ps2.o disk_status_ps2.o gs_ui_ps2.o gs_debug_compat_ps2.o app_error.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o forensic_controller_ps2.o platform.o storage.o video_mode.o ui_layout.o ui_font.o spleen_font_data.o header_backup.o repair_snapshot.o forensic_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o apa_forensic.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o hdd_forensic_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o
 EE_LIBS = -ldebug -ldraw -lgraph -lpacket -ldma -lm -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 # LTO lets the R5900 compiler optimize across the deliberately small modules
 # while section GC still removes unused recovery/UI helpers from the final ELF.
@@ -21,6 +21,8 @@ HOST_APA_REPAIR_TEST = tests/test_apa_repair
 HOST_APA_FORENSIC_TEST = tests/test_apa_forensic
 HOST_APA_FORENSIC_DORMANT_TEST = tests/test_apa_forensic_dormant_free
 HOST_VIDEO_MODE_TEST = tests/test_video_mode
+HOST_UI_LAYOUT_TEST = tests/test_ui_layout
+HOST_UI_FONT_TEST = tests/test_ui_font
 HOST_FORENSIC_FIXTURE_TEST = tests/test_forensic_fixtures
 HOST_BOOT_CHAIN_TEST = tests/test_boot_chain
 HOST_BOOT_PAYLOAD_TEST = tests/test_boot_payload
@@ -31,9 +33,10 @@ HOST_RESCUE_IMAGE_TEST = tests/test_rescue_image
 HOST_HDD_FIXTURE_TEST = tests/test_hdd_fixtures
 HOST_HDD_MUTATION_TEST = tests/test_hdd_mutations
 HOST_HDD_REPAIR_FIXTURE_TEST = tests/test_hdd_repair_fixtures
+HOST_SPLEEN_GENERATED = tests/generated_spleen_font_data.c
 HOST_HDD_FIXTURE_DIR = tests/generated_hdds
 HOST_FORENSIC_FIXTURE_DIR = tests/generated_forensic_hdds
-HOST_TESTS = $(HOST_APP_ERROR_TEST) $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_APA_FORENSIC_TEST) $(HOST_APA_FORENSIC_DORMANT_TEST) $(HOST_VIDEO_MODE_TEST) $(HOST_FORENSIC_FIXTURE_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST) $(HOST_HDD_REPAIR_FIXTURE_TEST)
+HOST_TESTS = $(HOST_APP_ERROR_TEST) $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_APA_FORENSIC_TEST) $(HOST_APA_FORENSIC_DORMANT_TEST) $(HOST_VIDEO_MODE_TEST) $(HOST_UI_LAYOUT_TEST) $(HOST_UI_FONT_TEST) $(HOST_FORENSIC_FIXTURE_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST) $(HOST_HDD_REPAIR_FIXTURE_TEST)
 
 all: $(EE_BIN)
 
@@ -64,6 +67,18 @@ test-host:
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
 		tests/test_video_mode.c src/video_mode.c -o $(HOST_VIDEO_MODE_TEST)
 	./$(HOST_VIDEO_MODE_TEST)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_ui_layout.c src/ui_layout.c -o $(HOST_UI_LAYOUT_TEST)
+	./$(HOST_UI_LAYOUT_TEST)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_ui_font.c src/ui_font.c src/spleen_font_data.c \
+		-o $(HOST_UI_FONT_TEST)
+	./$(HOST_UI_FONT_TEST)
+	python3 tools/generate_spleen_font.py \
+		--font-5x8 third_party/spleen/spleen-5x8.bdf.gz \
+		--font-8x16 third_party/spleen/spleen-8x16.bdf.gz \
+		--output $(HOST_SPLEEN_GENERATED)
+	cmp src/spleen_font_data.c $(HOST_SPLEEN_GENERATED)
 	python3 tools/generate_forensic_fixtures.py $(HOST_FORENSIC_FIXTURE_DIR)
 	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
 		tests/test_forensic_fixtures.c src/apa_forensic.c src/apa.c \
@@ -107,6 +122,7 @@ test-host:
 
 clean:
 	rm -f $(EE_BIN) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TESTS)
+	rm -f $(HOST_SPLEEN_GENERATED)
 	rm -rf $(HOST_HDD_FIXTURE_DIR) $(HOST_FORENSIC_FIXTURE_DIR)
 
 main.o: src/main.c
@@ -144,6 +160,15 @@ storage.o: src/storage.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 video_mode.o: src/video_mode.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+ui_layout.o: src/ui_layout.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+ui_font.o: src/ui_font.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+spleen_font_data.o: src/spleen_font_data.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 header_backup.o: src/header_backup.c

@@ -70,12 +70,15 @@ jobs:
           test -f LICENSE
           test -f THIRD_PARTY_NOTICES.md
           test -f PS2SDK_LICENSE.txt
+          test -f third_party/spleen/LICENSE
           sha256sum "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" \
             HDDMAN.CFG LICENSE THIRD_PARTY_NOTICES.md PS2SDK_LICENSE.txt \
+            third_party/spleen/LICENSE \
             > SHA256SUMS.txt
           zip -9 "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.zip" \
             "PS2_HDD_BOOTSTRAP_MANAGER-${VERSION}.ELF" HDDMAN.CFG \
-            SHA256SUMS.txt LICENSE THIRD_PARTY_NOTICES.md PS2SDK_LICENSE.txt
+            SHA256SUMS.txt LICENSE THIRD_PARTY_NOTICES.md PS2SDK_LICENSE.txt \
+            third_party/spleen/LICENSE
 
       - name: Publish stable GitHub release
         if: steps.existing.outputs.exists != 'true'

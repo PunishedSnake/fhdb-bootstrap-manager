@@ -59,9 +59,10 @@ The confirmation screen also called the unbounded `graph_wait_vsync()` before
 the wall-clock input timeout. When PAL 576i stopped producing the expected
 VBlank state, the code could not reach its automatic restore logic.
 
-## Required backend model
+## Implemented backend model
 
-Every future mode descriptor must contain all of the following independently:
+The 0.5 development renderer requires every mode descriptor to contain the
+following independently:
 
 1. signal timing and FIELD/FRAME policy;
 2. read circuit and filtering policy;
@@ -73,10 +74,11 @@ Every future mode descriptor must contain all of the following independently:
 8. bounded synchronization and native restoration policy;
 9. exact VRAM budget for both buffers and texture assets.
 
-The renderer should keep the existing logical 640x224 layout. Panels and other
-vector-like GS primitives may be scaled into a viewport, but bitmap glyphs
-must be selected and placed in output-pixel space to avoid fractional or
-filtered raster damage.
+The renderer keeps the existing logical 640x224 layout. Panels and other
+vector-like GS primitives are scaled into a viewport. Bitmap glyphs are
+selected and placed in output-pixel space to avoid fractional or filtered
+raster damage. Rectangle and text-cell edges are snapped independently, so the
+9/8 horizontal scale used by 480p cannot accumulate drift across a row.
 
 ### Candidate progressive layouts
 
@@ -95,35 +97,39 @@ release gate.
 
 ## Synchronization safety
 
-No mode-switch recovery path may depend on an unbounded VBlank wait in the mode
-being tested. The next experimental backend should:
+No mode-switch recovery path depends on an unbounded VBlank wait in the mode
+being tested. The implemented backend:
 
-- clear/start the VSYNC event explicitly;
-- poll `graph_check_vsync()` against `GetTimerSystemTime()`;
-- abandon the candidate after a short bounded setup interval;
+- clears/starts the VSYNC event explicitly;
+- polls `graph_check_vsync()` against `GetTimerSystemTime()`;
+- abandons the candidate after a bounded 250 ms setup/presentation interval;
 - restore the known-good native CRT/read-circuit state;
 - reinitialize GIF DMA and all GS draw state;
 - keep research modes session-only until the physical test matrix passes.
 
-The ordinary render loop should also detect a lost VBlank and fail closed
-instead of spinning forever.
+The ordinary render loop uses the same bounded wait. A lost VBlank restores
+native output instead of spinning forever and preventing the input timeout.
 
 ## Font architecture
 
-### Current font
+### Available fonts
 
-The renderer uses PS2SDK's 8x8 `msx` font. It builds a 128x64 RGBA atlas once,
-uses nearest-neighbor sampling and supports ASCII bytes. The font data is part
-of PS2SDK and is covered by `AFL-2.0`; see
+The renderer provides two selectable fonts:
+
+- PS2SDK's 8x8 `msx` font under `AFL-2.0`;
+- Spleen under `BSD-2-Clause`, using 5x8 in native output and 8x16 in 480p.
+
+It builds the selected raster into a 128x128 RGBA atlas, uses nearest-neighbor
+sampling and supports the application's printable ASCII UI. See
 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
-### Preferred additional font: Spleen
+### Spleen integration
 
 Spleen is a native bitmap family released under BSD-2-Clause. Its 5x8 and 8x16
 sizes fit the two validated manager outputs without introducing FreeType or
 runtime vector rasterization.
 
-Proposed adaptive mapping:
+Implemented adaptive mapping:
 
 | Output | Spleen raster | Logical cell behavior |
 |---|---:|---|
@@ -134,20 +140,20 @@ Keeping the existing logical advance prevents menus, wrapping and status rows
 from changing when a font or video mode changes. Only the raster inside the
 cell changes.
 
-### Proposed implementation
+### Implementation
 
-1. Add a small `ui_font_t` descriptor containing identifier, source glyph
-   dimensions, destination offsets, supported character map and bitmap data.
-2. Add a deterministic host tool which converts pinned BDF glyphs into compact
-   C tables; generated files record source revision and SPDX identifier.
-3. Build/upload only the selected atlas, reusing the same VRAM allocation.
-4. Replace compile-time glyph metrics in wrapping code with a stable logical
-   cell plus mode-specific output raster metrics.
-5. Add `font=msx` and `font=spleen` to `HDDMAN.CFG`; unknown values fall back
-   to `msx` without blocking startup.
-6. Add host tests for parser round trips, atlas bounds, ASCII coverage, cell
-   placement and deterministic generator output.
-7. Validate both fonts in native and 480p on real hardware before release.
+1. `ui_font` owns stable identifiers and names.
+2. `tools/generate_spleen_font.py` converts pinned BDF glyphs into compact C
+   tables and records the exact upstream revision plus SPDX identifier.
+3. Only the active atlas is uploaded; changing font or video mode rebuilds it.
+4. Text keeps an 8x8 logical cell while the renderer selects a mode-appropriate
+   output raster and centers it in the pixel-snapped cell.
+5. `font=msx` and `font=spleen` are supported in `HDDMAN.CFG`; unknown values
+   fall back to `msx` without blocking startup.
+6. Host tests cover identifiers, source glyph coverage, layout transforms and
+   deterministic generator output.
+7. Both fonts still require real-hardware validation in native and 480p before
+   the development renderer can become a stable release.
 
 The first implementation should remain ASCII-only because the application UI
 is currently ASCII. Latin-1/UTF-8 can be added later through an explicit code
@@ -156,7 +162,7 @@ point map rather than by pretending bytes above 127 are already Unicode.
 ## Licensing decision
 
 The project's existing **MIT License remains appropriate for original source
-code**. PS2SDK remains under AFL-2.0 and any future Spleen data remains under
+code**. PS2SDK remains under AFL-2.0 and the embedded Spleen data remains under
 BSD-2-Clause. These notices coexist; third-party work is not relicensed as MIT.
 
 Release and source distributions must retain:
@@ -164,7 +170,7 @@ Release and source distributions must retain:
 - the project [`LICENSE`](../LICENSE);
 - [`PS2SDK_LICENSE.txt`](../PS2SDK_LICENSE.txt);
 - [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md);
-- the unmodified Spleen BSD-2-Clause license if Spleen data is added;
+- the unmodified Spleen BSD-2-Clause license;
 - links to the corresponding source repositories.
 
 No Sony SDK font, asset, header, library or proprietary documentation may be
