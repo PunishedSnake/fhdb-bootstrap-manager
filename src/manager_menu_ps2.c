@@ -490,8 +490,8 @@ void manager_menu_run(unsigned char header[APA_HEADER_SIZE],
         int choice;
 
         build_dashboard_status(status, sizeof(status), header, boot_chain);
-        choice = app_ui_menu_select("Manager dashboard", status,
-                                    root_items, 6, &selected);
+        choice = app_ui_dashboard_select("Manager dashboard", status,
+                                         root_items, 6, &selected);
         if (choice < 0) {
             app_ui_power_menu();
             continue;

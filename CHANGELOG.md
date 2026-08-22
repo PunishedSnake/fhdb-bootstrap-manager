@@ -2,6 +2,17 @@
 
 All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
+## [Unreleased]
+
+### UI and navigation
+
+- Replaced the root list with a two-by-three card dashboard while retaining a
+  dedicated short description for the selected section.
+- Added directional-pad card navigation without changing the established
+  vertical navigation of ordinary submenus.
+- Discarded acknowledged compatibility-console screens so repeated visits no
+  longer append another `Press X to return.` footer.
+
 ## [0.4.3] - 2026-08-22
 
 **Codename: Michishirube (道標)**

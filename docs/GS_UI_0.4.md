@@ -23,6 +23,14 @@ one reusable 256 KiB EE packet replaces the previously redundant pair. Stable
 GS environment registers are emitted once and refreshed only after a video-mode
 reset; each ordinary frame changes only its draw framebuffer.
 
+The root manager is a two-by-three card dashboard. Card labels remain visible
+at once, while the selected section's longer hint is rendered in one dedicated
+description panel. This avoids shrinking six label-and-hint rows and leaves the
+ordinary vertical menu geometry available for action-oriented submenus. The
+compatibility console is explicitly discarded after an acknowledged status
+screen, so returning to the same controller cannot append another stale
+footer to its previous frame.
+
 ## Application video modes
 
 **System -> Video mode** switches only the manager's own GS output:

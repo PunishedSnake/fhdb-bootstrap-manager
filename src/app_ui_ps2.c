@@ -20,6 +20,8 @@
 #include "version.h"
 
 #define APP_UI_MAX_MENU_ITEMS 12u
+#define APP_UI_DASHBOARD_COLUMNS 3u
+#define APP_UI_DASHBOARD_MAX_ITEMS 6u
 
 static void print_error_details(app_error_domain_t fallback_domain,
                                 int code, int consume)
@@ -128,6 +130,96 @@ void app_ui_wait_to_return(void)
         print_error_details(record.domain, record.code, 1);
     scr_printf("\nPress X to return.\n");
     while (!(wait_for_press() & PAD_CROSS)) {}
+    /* wait_for_press() presents the accumulated compatibility screen. Once
+       X has acknowledged it, retaining those bytes only lets the next visit
+       append another copy of the footer behind the ordinary GS menus. */
+    gs_ui_console_discard();
+}
+
+static unsigned int dashboard_move_horizontal(unsigned int current,
+                                               unsigned int item_count,
+                                               int direction)
+{
+    unsigned int row_start =
+        (current / APP_UI_DASHBOARD_COLUMNS) * APP_UI_DASHBOARD_COLUMNS;
+    unsigned int row_count = item_count - row_start;
+    unsigned int column = current - row_start;
+
+    if (row_count > APP_UI_DASHBOARD_COLUMNS)
+        row_count = APP_UI_DASHBOARD_COLUMNS;
+    if (direction < 0)
+        column = (column + row_count - 1u) % row_count;
+    else
+        column = (column + 1u) % row_count;
+    return row_start + column;
+}
+
+static unsigned int dashboard_move_vertical(unsigned int current,
+                                             unsigned int item_count,
+                                             int direction)
+{
+    unsigned int row_count =
+        (item_count + APP_UI_DASHBOARD_COLUMNS - 1u) /
+        APP_UI_DASHBOARD_COLUMNS;
+    unsigned int row = current / APP_UI_DASHBOARD_COLUMNS;
+    unsigned int column = current % APP_UI_DASHBOARD_COLUMNS;
+    unsigned int target;
+
+    if (direction < 0)
+        row = (row + row_count - 1u) % row_count;
+    else
+        row = (row + 1u) % row_count;
+    target = row * APP_UI_DASHBOARD_COLUMNS + column;
+    if (target >= item_count)
+        target = item_count - 1u;
+    return target;
+}
+
+int app_ui_dashboard_select(const char *title, const char *status,
+                            const app_ui_menu_item_t *items,
+                            unsigned int item_count,
+                            unsigned int *selection)
+{
+    const char *labels[APP_UI_MAX_MENU_ITEMS];
+    const char *hints[APP_UI_MAX_MENU_ITEMS];
+    unsigned char enabled[APP_UI_MAX_MENU_ITEMS];
+    unsigned int current;
+    unsigned int i;
+
+    if (items == NULL || item_count == 0 || selection == NULL ||
+        item_count > APP_UI_DASHBOARD_MAX_ITEMS)
+        return -1;
+    current = *selection < item_count ? *selection : 0;
+
+    for (i = 0; i < item_count; i++) {
+        labels[i] = items[i].label;
+        hints[i] = items[i].hint;
+        enabled[i] = items[i].enabled ? 1u : 0u;
+    }
+
+    for (;;) {
+        u32 pressed;
+
+        gs_ui_render_dashboard(title, status, labels, hints, enabled,
+                               item_count, current);
+        pressed = wait_for_press();
+        if (pressed & PAD_LEFT)
+            current = dashboard_move_horizontal(current, item_count, -1);
+        if (pressed & PAD_RIGHT)
+            current = dashboard_move_horizontal(current, item_count, 1);
+        if (pressed & PAD_UP)
+            current = dashboard_move_vertical(current, item_count, -1);
+        if (pressed & PAD_DOWN)
+            current = dashboard_move_vertical(current, item_count, 1);
+        if ((pressed & PAD_CROSS) && items[current].enabled) {
+            *selection = current;
+            return (int)current;
+        }
+        if (pressed & PAD_TRIANGLE) {
+            *selection = current;
+            return -1;
+        }
+    }
 }
 
 int app_ui_menu_select(const char *title, const char *status,
