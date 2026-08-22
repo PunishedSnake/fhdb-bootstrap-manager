@@ -50,11 +50,13 @@ speedup. Raw HDD RPC latency will still dominate much of a physical scan.
 | optimized 640x448 source, no LTO (`fe06bf2`) | 620,212 B | 284,040 B | 335,072 B | 2,977,184 B |
 | same 640x448 source with LTO (`84b829b`) | 612,276 B | 276,136 B | 335,076 B | 2,977,432 B |
 | preliminary 720x448 build (`dd84a83`) | 613,556 B | 277,392 B | 335,076 B | 2,977,432 B |
+| final 720-visible / 768-stride build (`f0bf71c`) | 613,556 B | 277,456 B | 335,076 B | 2,977,432 B |
 
 Link-time optimization removes 7,936 bytes from the directly comparable source.
 The final hardware-correct build uses a 768-pixel GS stride for its 720-pixel
-visible progressive image because `FBW` is encoded in 64-pixel units. Its
-stripped size is recorded after the pinned R5900 CI build below.
+visible progressive image because `FBW` is encoded in 64-pixel units. It remains
+2,432 bytes smaller than stable 0.4.0 despite the mode switcher, timed fallback
+and double-buffered presentation.
 
 ## GS/EE presentation work
 
