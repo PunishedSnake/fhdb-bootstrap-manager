@@ -121,8 +121,9 @@ FINISH wait in the mode being tested. The implemented backend:
 - clears/starts the VSYNC event explicitly;
 - polls `graph_check_vsync()` against `GetTimerSystemTime()`;
 - abandons the candidate after a bounded 250 ms setup/presentation interval;
-- restores the captured known-good native CRT/read-circuit state;
-- resets only GIF PATH3 and rebuilds all GS draw state;
+- replays the known-good libdebug native CRT/read-circuit constants and a
+  complete GS draw-environment packet;
+- resets GIF PATH3 only after a real timeout;
 - never repeats libdebug's global DMAC reset after startup;
 - require ten-second confirmation again at startup until the physical test
   matrix passes.

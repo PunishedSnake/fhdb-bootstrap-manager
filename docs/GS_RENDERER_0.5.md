@@ -2,8 +2,8 @@
 
 This document describes the 0.5 development renderer built on top of the 0.4.2
 display-safety hotfix. Native and 480p are physically proven. Development build
-4 keeps guarded 576p, 720p and 1080i available while correcting the first-mode
-transaction and native rollback regression observed in dev3.
+5 keeps guarded 576p, 720p and 1080i available while replacing the incomplete
+native rollback used by dev3 and dev4.
 
 ## Geometry contract
 
@@ -59,8 +59,8 @@ do not alter wrapping, menu density or diagnostic layout.
 
 Every presentation and mode transition clears the VSYNC event and polls it
 against the EE system timer. GIF idle and GS FINISH waits are independently
-bounded to 250 ms as well. Failure aborts only GIF PATH3 and restores the
-captured native CRT/read-circuit state, layout and draw environment. Runtime
+bounded to 250 ms as well. Failure aborts only GIF PATH3 and replays the
+known-good native CRT/read-circuit state, layout and draw environment. Runtime
 rollback never repeats `init_scr()` and therefore never resets unrelated SIF
 or IOP DMA channels. The ten-second confirmation can consequently fail closed
 even if an experimental frame never reaches FINISH.
@@ -124,7 +124,7 @@ a bound for GIF idle and GS FINISH before reaching its bounded VBlank check.
 Development build 3 corrects all four conditions while keeping every candidate
 available from the menu.
 
-## Development build 3 physical result and dev4 transaction
+## Development builds 3–5 physical result and rollback transaction
 
 On the target SCPH-50000, dev3 changed the requested signal timing but every
 alternate mode remained black. Returning to native changed the detected timing
@@ -132,14 +132,19 @@ again without restoring a visible framebuffer. The fault therefore preceded
 the planned twenty-cycle stress test and was common to the mode transaction,
 not to any one HDTV geometry.
 
-Development build 4 restores the known-good dev2 ordering with three bounded
-changes. A healthy alternate-to-native return calls `SetGsCrt()` without
-resetting the GS or GIF, then atomically restores the complete captured native
-read circuit including `DISPFB1/2`, `DISPLAY1/2`, `SMODE2`, `BGCOLOR` and
-`PMODE`. A hard GIF/GS reset is reserved for an actual timeout. Finally, native
-and scaled font atlases remain at fixed VRAM addresses and are uploaded only at
-startup or when the user changes font, so a video transaction performs no heap
-allocation and no texture transfer.
+Development build 4 restored the captured `DISPFB`, `DISPLAY`, `SMODE2`,
+`BGCOLOR` and `PMODE` registers after a timing-only `SetGsCrt()` call. Physical
+testing showed that native timing returned but its image did not. Restoring
+privileged read-circuit values was therefore insufficient after an alternate
+mode had reset and reconfigured the GS drawing context.
+
+Development build 5 replays the hardware-proven PS2SDK `init_scr()` sequence:
+GS CSR reset, native `SetGsCrt()`, exact libdebug `DISPFB2`, `DISPLAY2` and
+`PMODE`, followed by a complete libdraw environment packet. It deliberately
+omits only libdebug's global `DmaReset()`: an idle GIF channel is preserved,
+while a timed-out PATH3 receives one isolated recovery attempt. Native and
+scaled font atlases remain at fixed VRAM addresses, so the rebootstrap performs
+no heap allocation or texture upload.
 
 ## Validation boundary
 
@@ -155,7 +160,7 @@ Before release, both fonts must be checked in every exposed mode for:
 - mode switch, confirmation, timeout and native restoration;
 - repeated font changes before and after a video-mode change.
 
-The dev4 transition stress test additionally requires at least twenty complete
+The dev5 transition stress test additionally requires at least twenty complete
 `native -> candidate -> native` cycles in one uninterrupted menu session.
 
 576p, 720p and 1080i are exposed only by the development build until their full
