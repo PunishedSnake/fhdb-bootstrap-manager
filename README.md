@@ -438,6 +438,5 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 ## Credits
 
 - **Hifu Himejima** — project author / hardware validation
-- **OpenAI Codex / ChatGPT** — implementation assistance
 - **PS2DEV / PS2SDK contributors** — EE/IOP toolchain and libraries
 - reverse-engineering references and historical PS2 HDD tooling are credited in the source and project history where applicable
