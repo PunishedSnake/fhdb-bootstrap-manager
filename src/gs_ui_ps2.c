@@ -815,6 +815,7 @@ static void program_explicit_display(const video_mode_spec_t *spec)
 {
     int dx = spec->display_x;
     int dy = spec->display_y;
+    u64 display;
 
     if (GetSyscallHandler(__NR__GetGsDxDyOffset) != NULL) {
         int offset_x;
@@ -829,10 +830,17 @@ static void program_explicit_display(const video_mode_spec_t *spec)
     }
     if (spec->id == VIDEO_MODE_1080I)
         *GS_REG_SMODE2 = GS_SET_SMODE2(1, 1, 0);
-    *GS_REG_DISPLAY1 = GS_SET_DISPLAY(
+    display = GS_SET_DISPLAY(
         dx, dy, spec->magh, spec->magv,
         spec->display_width - 1u, spec->display_height - 1u);
-    *GS_REG_DISPLAY2 = *GS_REG_DISPLAY1;
+    /* GS privileged display registers are write-only from the EE's point of
+       view. Reading DISPLAY1 back does not reproduce the value just written;
+       real hardware and GS dumps instead expose undefined bus data. Since
+       PMODE selects read circuit 2 for these modes, such a read-back copy can
+       leave DISPLAY2 with a zero-sized window and an otherwise valid signal
+       will remain black. Write the locally assembled value to both circuits. */
+    *GS_REG_DISPLAY1 = display;
+    *GS_REG_DISPLAY2 = display;
 }
 
 static int restore_native_video(int hard_recovery);

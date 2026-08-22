@@ -16,12 +16,32 @@ native/480p/native cycles on both the physical console and PCSX2. Neither path
 lost the candidate image, native rollback, input response or the ability to
 start the next transaction.
 
-PCSX2 also recognizes the requested 576p, 720p and 1080i timings while showing
+PCSX2 also recognized the requested 576p, 720p and 1080i timings while showing
 the same black candidate output previously observed during console testing.
-Its console log independently records each timing transition and the return to
-the native PAL/NTSC mode. A recognized timing is therefore evidence for the CRT
-request only; it is not evidence that `DISPLAY`, `DISPFB`, `PMODE` and the draw
-framebuffer form a visible read circuit.
+Its console log independently recorded each timing transition and the return
+to the native PAL/NTSC mode. A recognized timing is therefore evidence for the
+CRT request only; it is not evidence that `DISPLAY`, `DISPFB`, `PMODE` and the
+draw framebuffer form a visible read circuit.
+
+## GS-dump diagnosis for dev7
+
+Native-to-candidate-to-native GS dumps isolated one identical read-circuit
+failure in all three candidates. Their CRT timing registers, `DISPFB2` base,
+stride and pixel format matched the requested modes. `DISPLAY1` also contained
+the intended window:
+
+| Mode | `DISPLAY1` geometry | Active `DISPFB2` |
+|---|---|---|
+| 576p | 255,44; 1440x576; MAGH 1 | FBP 140, FBW 12, PSMCT32 |
+| 720p | 302,24; 1280x720; MAGH 1 | FBP 140, FBW 10, PSMCT32 |
+| 1080i | 232,36; 1920x1080; MAGH 2 | FBP 140/309, FBW 10, PSMCT32 |
+
+However, `PMODE` enabled read circuit 2 while `DISPLAY2` was
+`0x00000000551B6004` in every candidate. Decoded, that undefined value has
+zero display width and height. The application had written `DISPLAY1` and then
+read that privileged register back to populate `DISPLAY2`; GS display-control
+registers cannot be used as EE-side storage. Dev7 now assembles the value once
+in a local `u64` and writes it independently to both registers.
 
 ## Current evidence matrix
 
@@ -29,13 +49,13 @@ framebuffer form a visible read circuit.
 |---|---|---|---|---|---|
 | native | recognized | visible | n/a | visible baseline | proven fallback |
 | 480p | recognized | visible | 20/20 | 20/20 on SCPH-50000 | validated |
-| 576p | recognized | black | returns native | earlier console output black | read-circuit failure |
-| 720p | recognized | black | returns native | earlier console output black | read-circuit failure |
-| 1080i | recognized | black | returns native | earlier console output black | read-circuit failure |
+| 576p | recognized | dev7 retest required | returns native | earlier console output black | DISPLAY2 fix pending validation |
+| 720p | recognized | dev7 retest required | returns native | earlier console output black | DISPLAY2 fix pending validation |
+| 1080i | recognized | dev7 retest required | returns native | earlier console output black | DISPLAY2 fix pending validation |
 
-The working hypothesis for the three black candidates is now their
-framebuffer/read-circuit contract, not whether the requested signal constant
-can be selected.
+The dumps replace the earlier read-circuit hypothesis with a concrete defect
+and register-level regression target. Candidate promotion still depends on
+visible pixels, rollback and repeat testing rather than on the diagnosis alone.
 
 ## Required PCSX2 record
 

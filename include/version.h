@@ -6,7 +6,7 @@
  * reads the same values, so the ELF, tag, and release title cannot silently
  * drift apart.
  */
-#define APP_VERSION "0.5.0-dev6"
+#define APP_VERSION "0.5.0-dev7"
 #define APP_CODENAME "Kakehashi"
 
 #endif
