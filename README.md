@@ -29,7 +29,7 @@ optimization. This lets the R5900 compiler optimize across module boundaries
 while the existing section garbage collection continues to remove unused code
 from the stripped release ELF.
 
-The current feature branch identifies itself as **0.5.0-dev7 — Kakehashi**. It
+The current feature branch identifies itself as **0.5.0-dev8 — Kakehashi**. It
 is based on the 0.4.2 display-safety hotfix and introduces a resolution-aware
 GS viewport plus selectable bitmap fonts. It remains a hardware-test build,
 not a stable release.
@@ -116,8 +116,11 @@ failure and the formerly black 576p/720p/1080i candidates while independently
 logging their timing changes. GS dumps from those candidates showed that their
 timings and framebuffers were valid, but `DISPLAY2` contained undefined
 read-back data instead of the intended display window. Dev7 writes the locally
-assembled display value independently to both read circuits. New modes still
-require emulator retesting and a final physical-console pass before release.
+assembled display value independently to both read circuits. Dev7 subsequently
+produced visible output in every mode with matching emulator and console
+results. Dev8 calibrates the three new viewports against captured native output
+so their UI height and vertical placement no longer collapse as resolution
+increases. New modes still require a final repeated-switch pass before release.
 
 The 0.4.2 hotfix exposes **System -> Video mode** with the two modes that passed
 physical testing: native and 480p. The 0.5 development renderer retains those

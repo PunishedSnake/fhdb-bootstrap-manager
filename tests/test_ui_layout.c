@@ -34,10 +34,10 @@ static void test_576p_letterbox(void)
     ui_layout_t layout;
 
     assert(ui_layout_configure(&layout, 720, 576, 768, 576,
-                               40, 64, 640, 448) == 0);
+                               40, 0, 640, 512) == 0);
     assert(ui_layout_snap_x(&layout, 0.0f) == 40.0f);
     assert(ui_layout_snap_x(&layout, 640.0f) == 680.0f);
-    assert(ui_layout_snap_y(&layout, 0.0f) == 64.0f);
+    assert(ui_layout_snap_y(&layout, 0.0f) == 0.0f);
     assert(ui_layout_snap_y(&layout, 224.0f) == 512.0f);
 }
 
@@ -46,10 +46,10 @@ static void test_720p_magnified_surface(void)
     ui_layout_t layout;
 
     assert(ui_layout_configure(&layout, 640, 720, 640, 720,
-                               0, 136, 640, 448) == 0);
+                               0, 0, 640, 711) == 0);
     assert(ui_layout_snap_x(&layout, 640.0f) == 640.0f);
-    assert(ui_layout_snap_y(&layout, 0.0f) == 136.0f);
-    assert(ui_layout_snap_y(&layout, 224.0f) == 584.0f);
+    assert(ui_layout_snap_y(&layout, 0.0f) == 0.0f);
+    assert(ui_layout_snap_y(&layout, 224.0f) == 711.0f);
 }
 
 static void test_1080i_frame_field_surface(void)
@@ -58,11 +58,11 @@ static void test_1080i_frame_field_surface(void)
     unsigned int x, y, width, height;
 
     assert(ui_layout_configure(&layout, 640, 540, 640, 540,
-                               0, 46, 640, 448) == 0);
-    assert(ui_layout_snap_y(&layout, 0.0f) == 46.0f);
-    assert(ui_layout_snap_y(&layout, 224.0f) == 494.0f);
+                               0, 22, 640, 518) == 0);
+    assert(ui_layout_snap_y(&layout, 0.0f) == 22.0f);
+    assert(ui_layout_snap_y(&layout, 224.0f) == 540.0f);
     ui_layout_text_cell(&layout, 8.0f, 8.0f, &x, &y, &width, &height);
-    assert(x == 8u && y == 62u && width == 8u && height == 16u);
+    assert(x == 8u && y == 41u && width == 8u && height == 18u);
 }
 
 static void test_invalid_geometry(void)

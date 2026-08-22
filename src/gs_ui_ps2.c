@@ -322,8 +322,11 @@ static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
                         &cell_width, &cell_height);
     output_width = font_raster.width;
     output_height = font_raster.height;
-    if (cell_height >= output_height &&
-        cell_height % output_height == 0u)
+    /* The viewport is snapped cell by cell, so its scaled height need not be
+       an exact multiple of the source bitmap. Following the snapped cell
+       keeps text and panels at the same apparent scale in calibrated HDTV
+       modes; nearest GS sampling remains deterministic for 16 -> 19/25 rows. */
+    if (cell_height >= output_height)
         output_height = cell_height;
     if (output_width > cell_width)
         output_width = cell_width;

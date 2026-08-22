@@ -49,13 +49,27 @@ in a local `u64` and writes it independently to both registers.
 |---|---|---|---|---|---|
 | native | recognized | visible | n/a | visible baseline | proven fallback |
 | 480p | recognized | visible | 20/20 | 20/20 on SCPH-50000 | validated |
-| 576p | recognized | dev7 retest required | returns native | earlier console output black | DISPLAY2 fix pending validation |
-| 720p | recognized | dev7 retest required | returns native | earlier console output black | DISPLAY2 fix pending validation |
-| 1080i | recognized | dev7 retest required | returns native | earlier console output black | DISPLAY2 fix pending validation |
+| 576p | recognized | visible in dev7 | returns native | matches emulator | dev8 geometry calibration |
+| 720p | recognized | visible in dev7 | returns native | matches emulator | dev8 geometry calibration |
+| 1080i | recognized | visible in dev7 | returns native | matches emulator | dev8 geometry calibration |
 
 The dumps replace the earlier read-circuit hypothesis with a concrete defect
 and register-level regression target. Candidate promotion still depends on
 visible pixels, rollback and repeat testing rather than on the diagnosis alone.
+
+## Dev8 viewport calibration
+
+Dev7 screenshots from PCSX2 were confirmed to match physical-console output.
+Native, 576p, 720p and 1080i already occupied the same measured horizontal
+span, while their UI heights were approximately 100%, 86%, 63% and 84% of the
+native reference. Dev8 therefore leaves horizontal presentation and the
+validated CRTC timings unchanged, expanding only the logical vertical
+viewports to 512, 711 and 518 lines. Each viewport stays inside its complete
+backing surface; 1080i uses lines 22 through 539 of its 540-line FRAME buffer.
+Glyph quads follow each snapped output cell even when its height is not an
+integer multiple of the source bitmap, keeping text and panels at the same
+apparent scale while leaving the established native and 480p dimensions
+unchanged.
 
 ## Required PCSX2 record
 

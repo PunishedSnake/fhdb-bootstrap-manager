@@ -79,19 +79,28 @@ int main(void)
         }
         mode = video_mode_geometry(VIDEO_MODE_576P);
         if (mode->bits_per_pixel != 32u || mode->frame_count != 1u ||
-            mode->frame_width != 768u || mode->frame_height != 576u) {
+            mode->frame_width != 768u || mode->frame_height != 576u ||
+            mode->viewport_x != 40u || mode->viewport_y != 0u ||
+            mode->viewport_width != 640u ||
+            mode->viewport_height != 512u) {
             fprintf(stderr, "576p regressed from its 32-bit single surface.\n");
             return 1;
         }
         mode = video_mode_geometry(VIDEO_MODE_720P);
         if (mode->bits_per_pixel != 32u || mode->frame_count != 1u ||
-            mode->frame_width != 640u || mode->frame_height != 720u) {
+            mode->frame_width != 640u || mode->frame_height != 720u ||
+            mode->viewport_x != 0u || mode->viewport_y != 0u ||
+            mode->viewport_width != 640u ||
+            mode->viewport_height != 711u) {
             fprintf(stderr, "720p regressed from its 32-bit single surface.\n");
             return 1;
         }
         mode = video_mode_geometry(VIDEO_MODE_1080I);
         if (mode->bits_per_pixel != 32u || mode->frame_count != 2u ||
-            mode->frame_width != 640u || mode->frame_height != 540u) {
+            mode->frame_width != 640u || mode->frame_height != 540u ||
+            mode->viewport_x != 0u || mode->viewport_y != 22u ||
+            mode->viewport_width != 640u ||
+            mode->viewport_height != 518u) {
             fprintf(stderr, "1080i FRAME storage is not 640x540x32x2.\n");
             return 1;
         }
