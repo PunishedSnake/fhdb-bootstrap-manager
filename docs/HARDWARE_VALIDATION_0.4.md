@@ -195,6 +195,21 @@ stall waiting for VBlank. 0.4.2 therefore retains only native and 480p. Legacy
 0.4.1 configuration identifiers are mapped to native before the GS is touched,
 so the failing 576i path cannot be entered during startup.
 
+### 0.5 dev6 repeated-switch result
+
+The maintainer completed twenty uninterrupted native/480p/native cycles with
+0.5.0-dev6 on the target SCPH-50000. Every 480p confirmation screen remained
+visible, every native rollback restored a visible UI, and the following
+transaction remained responsive.
+
+The same ELF completed twenty cycles in PCSX2. The emulator had already
+reproduced the delayed black-screen failure of dev5 and continues to recognize
+576p, 720p and 1080i timing changes while showing the same black candidate
+output class. PCSX2 is consequently accepted as the primary development gate
+for GS transaction and framebuffer work, with physical hardware retained for
+final promotion. See
+[`PCSX2_VIDEO_VALIDATION.md`](PCSX2_VIDEO_VALIDATION.md).
+
 ## Large-HDD forensic finding #1 — old node-cap truncation
 
 The first healthy large-HDL forensic scan hit the old 512-node capacity. The partial forward map still looked extremely coherent, but the visible tail was not the physical tail. The old evaluator therefore inferred two fake endpoint changes.
