@@ -12,6 +12,8 @@
  */
 
 #include <kernel.h>
+#include <rom0_info.h>
+#include <syscallnr.h>
 #include <tamtypes.h>
 #include <timer.h>
 
@@ -19,11 +21,13 @@
 #include <dma.h>
 #include <draw.h>
 #include <graph.h>
+#include <gs_privileged.h>
 #include <gs_psm.h>
 #include <packet.h>
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "app_identity.h"
@@ -36,8 +40,9 @@
 
 #define GS_UI_WIDTH 640
 #define GS_UI_HEIGHT 224
-#define GS_UI_ALT_STORAGE_WIDTH 768
-#define GS_UI_ALT_STORAGE_HEIGHT 448
+#define GS_UI_ALT_STORAGE_WIDTH 640
+#define GS_UI_ALT_STORAGE_HEIGHT 1080
+#define GS_UI_ALT_STORAGE_PSM GS_PSM_16
 #define GS_UI_FRAME_COUNT 2
 #define GS_UI_FONT_SLOT_W 8
 #define GS_UI_FONT_SLOT_H 16
@@ -55,30 +60,45 @@
 extern const u8 msx[];
 
 typedef struct {
+    video_mode_id_t id;
     int interlace;
     int graph_mode;
     int frame_mode;
     int flicker_filter;
     int screen_x;
     int screen_y;
-    unsigned int active_width;
-    unsigned int active_height;
-    unsigned int frame_width;
-    unsigned int frame_height;
-    unsigned int viewport_x;
-    unsigned int viewport_y;
-    unsigned int viewport_width;
-    unsigned int viewport_height;
     unsigned int psm;
     int filtered_presentation;
+    int explicit_display;
+    int crt_mode;
+    int display_x;
+    int display_y;
+    unsigned int magh;
+    unsigned int magv;
+    unsigned int display_width;
+    unsigned int display_height;
 } video_mode_spec_t;
 
 static const video_mode_spec_t video_specs[VIDEO_MODE_COUNT] = {
-    {GRAPH_MODE_INTERLACED, GRAPH_MODE_AUTO, GRAPH_MODE_FIELD, GRAPH_ENABLE,
-     0, 0, 640, 224, 640, 224, 0, 0, 640, 224, GS_PSM_32, 1},
-    {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P, GRAPH_MODE_FRAME,
-     GRAPH_DISABLE, 0, 0, 720, 448, 768, 448, 0, 0, 720, 448,
-     GS_PSM_32, 0}
+    {VIDEO_MODE_NATIVE,
+     GRAPH_MODE_INTERLACED, GRAPH_MODE_AUTO, GRAPH_MODE_FIELD, GRAPH_ENABLE,
+     0, 0, GS_PSM_32, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+    {VIDEO_MODE_480P,
+     GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 0, GS_PSM_32, 0, 0,
+     0x50, 232, 35, 1, 0, 1440, 448},
+    {VIDEO_MODE_576P,
+     GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_576P, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 0, GS_PSM_16, 0, 1,
+     0x53, 255, 44, 1, 0, 1440, 576},
+    {VIDEO_MODE_720P,
+     GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_720P, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 0, GS_PSM_16, 0, 1,
+     0x52, 306, 24, 1, 0, 1280, 720},
+    {VIDEO_MODE_1080I,
+     GRAPH_MODE_INTERLACED, GRAPH_MODE_HDTV_1080I, GRAPH_MODE_FRAME,
+     GRAPH_DISABLE, 0, 0, GS_PSM_16, 0, 1,
+     0x51, 236, 38, 2, 0, 1920, 1080}
 };
 
 typedef struct {
@@ -157,11 +177,12 @@ static void select_font_raster(void)
 
 static int apply_render_spec(const video_mode_spec_t *spec)
 {
+    const video_mode_geometry_t *geometry = video_mode_geometry(spec->id);
     int result = ui_layout_configure(
-        &render_layout, spec->active_width, spec->active_height,
-        spec->frame_width, spec->frame_height,
-        spec->viewport_x, spec->viewport_y,
-        spec->viewport_width, spec->viewport_height);
+        &render_layout, geometry->surface_width, geometry->surface_height,
+        geometry->frame_width, geometry->frame_height,
+        geometry->viewport_x, geometry->viewport_y,
+        geometry->viewport_width, geometry->viewport_height);
 
     if (result < 0)
         return result;
@@ -260,8 +281,9 @@ static qword_t *text_char(qword_t *q, float x, float y, unsigned char ch,
                         &cell_width, &cell_height);
     output_width = font_raster.width;
     output_height = font_raster.height;
-    if (active_font == UI_FONT_MSX && cell_height >= 16u)
-        output_height = 16u;
+    if (cell_height >= output_height &&
+        cell_height % output_height == 0u)
+        output_height = cell_height;
     if (output_width > cell_width)
         output_width = cell_width;
     if (output_height > cell_height)
@@ -384,29 +406,36 @@ static int allocate_frame_pair(framebuffer_t pair[GS_UI_FRAME_COUNT],
 static int video_specs_fit_reserved_vram(void)
 {
     const unsigned int reserved_words =
-        GS_UI_ALT_STORAGE_WIDTH * GS_UI_ALT_STORAGE_HEIGHT;
+        GS_UI_ALT_STORAGE_WIDTH * GS_UI_ALT_STORAGE_HEIGHT / 2u;
     unsigned int i;
 
     for (i = 0u; i < VIDEO_MODE_COUNT; i++) {
         const video_mode_spec_t *spec = &video_specs[i];
+        const video_mode_geometry_t *geometry =
+            video_mode_geometry((video_mode_id_t)i);
         ui_layout_t candidate;
         unsigned int words;
 
-        if ((spec->frame_width & 63u) != 0u ||
+        if (spec->id != (video_mode_id_t)i || geometry == NULL ||
+            (geometry->frame_width & 63u) != 0u ||
             ui_layout_configure(&candidate,
-                                spec->active_width, spec->active_height,
-                                spec->frame_width, spec->frame_height,
-                                spec->viewport_x, spec->viewport_y,
-                                spec->viewport_width,
-                                spec->viewport_height) < 0)
+                                geometry->surface_width,
+                                geometry->surface_height,
+                                geometry->frame_width,
+                                geometry->frame_height,
+                                geometry->viewport_x,
+                                geometry->viewport_y,
+                                geometry->viewport_width,
+                                geometry->viewport_height) < 0)
             return 0;
         if (i == 0u)
             continue;
         if (spec->psm == GS_PSM_32)
-            words = spec->frame_width * spec->frame_height;
+            words = geometry->frame_width * geometry->frame_height;
         else if (spec->psm == GS_PSM_16 &&
-                 (spec->frame_height & 1u) == 0u)
-            words = spec->frame_width * (spec->frame_height >> 1);
+                 (geometry->frame_height & 1u) == 0u)
+            words = geometry->frame_width *
+                    (geometry->frame_height >> 1);
         else
             return 0;
         if (words > reserved_words)
@@ -417,12 +446,14 @@ static int video_specs_fit_reserved_vram(void)
 
 static void configure_alternate_frames(const video_mode_spec_t *spec)
 {
+    const video_mode_geometry_t *geometry = video_mode_geometry(spec->id);
     unsigned int i;
 
-    /* The addresses describe the hardware-tested 768x448x32-bit 480p pair. */
+    /* Addresses reserve the largest per-frame layout. Each mode supplies its
+       own stride, height and pixel format without moving the second buffer. */
     for (i = 0; i < GS_UI_FRAME_COUNT; i++) {
-        alternate_frames[i].width = spec->frame_width;
-        alternate_frames[i].height = spec->frame_height;
+        alternate_frames[i].width = geometry->frame_width;
+        alternate_frames[i].height = geometry->frame_height;
         alternate_frames[i].psm = spec->psm;
         alternate_frames[i].mask = 0;
     }
@@ -463,15 +494,17 @@ static int setup_environment(void)
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
 
     /* Native frame zero remains at VRAM 0 for init_scr()/emergency libdebug
-       compatibility. The alternate pair is the exact hardware-tested 480p
-       backing layout. Four buffers plus the adaptive 128x128 font atlas use
-       about 3.78 MiB of GS VRAM and leave 224 KiB free. */
+       compatibility. The alternate pair reserves two 640x1080x16-bit regions.
+       That same storage also fits the proven 768x448x32-bit 480p layout. All
+       four buffers plus the adaptive atlas use about 3.80 MiB and retain more
+       than 200 KiB of GS VRAM. */
     graph_vram_clear();
     if (!video_specs_fit_reserved_vram() ||
         allocate_frame_pair(native_frames, GS_UI_WIDTH, GS_UI_HEIGHT,
                             GS_PSM_32, 1) < 0 ||
         allocate_frame_pair(alternate_frames, GS_UI_ALT_STORAGE_WIDTH,
-                            GS_UI_ALT_STORAGE_HEIGHT, GS_PSM_32, 0) < 0)
+                            GS_UI_ALT_STORAGE_HEIGHT,
+                            GS_UI_ALT_STORAGE_PSM, 0) < 0)
         return -1;
 
     texture_address = graph_vram_allocate(GS_UI_ATLAS_W, GS_UI_ATLAS_H,
@@ -608,6 +641,64 @@ static int wait_vsync_bounded(unsigned int timeout_ms)
     return 0;
 }
 
+static int rom_version_number(void)
+{
+    char romname[16];
+
+    memset(romname, 0, sizeof(romname));
+    GetRomName(romname);
+    return (int)strtol(romname, NULL, 10);
+}
+
+static int setup_legacy_576p(void)
+{
+    u64 gcont = ((u64)GetGsVParam() & 1u) << 25;
+
+    /* Older retail ROMs do not implement SetGsCrt(0x53); PS2SDK silently
+       substitutes PAL. The DVE parameters for 576p are identical to 480p, so
+       use the kernel's 480p setup and change only the established GS timing.
+       This deliberately avoids raw DVE/DEV9 bus access while HDD is active.
+       Timing values are adapted from Open PS2 Loader GSM under AFL-2.0; see
+       THIRD_PARTY_NOTICES.md. */
+    if (graph_set_mode(GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P,
+                       GRAPH_MODE_FRAME, GRAPH_DISABLE) < 0)
+        return -1;
+
+    *GS_REG_SMODE1 = 0x00000017404B0504ULL | gcont;
+    *GS_REG_SYNCH1 = 0x000402E02003C827ULL;
+    *GS_REG_SYNCH2 = 0x000000000019CA67ULL;
+    *GS_REG_SYNCV = 0x00A9000002700005ULL;
+    *GS_REG_SMODE2 = 0u;
+    *GS_REG_SRFSH = 4u;
+    *GS_REG_SMODE1 = 0x0000001740490504ULL | gcont;
+    __asm__ __volatile__("sync.l; sync.p");
+    return 0;
+}
+
+static void program_explicit_display(const video_mode_spec_t *spec)
+{
+    int dx = spec->display_x;
+    int dy = spec->display_y;
+
+    if (GetSyscallHandler(__NR__GetGsDxDyOffset) != NULL) {
+        int offset_x;
+        int offset_y;
+        int ignored_width;
+        int ignored_height;
+
+        _GetGsDxDyOffset(spec->crt_mode, &offset_x, &offset_y,
+                         &ignored_width, &ignored_height);
+        dx += offset_x;
+        dy += offset_y;
+    }
+    if (spec->id == VIDEO_MODE_1080I)
+        *GS_REG_SMODE2 = GS_SET_SMODE2(1, 1, 0);
+    *GS_REG_DISPLAY1 = GS_SET_DISPLAY(
+        dx, dy, spec->magh, spec->magv,
+        spec->display_width - 1u, spec->display_height - 1u);
+    *GS_REG_DISPLAY2 = *GS_REG_DISPLAY1;
+}
+
 static int restore_native_video(void);
 
 static qword_t *begin_frame(packet_t **packet_out)
@@ -654,6 +745,15 @@ static void end_frame(packet_t *packet, qword_t *q)
                             (int)(q - packet->data), 0, 0);
     draw_wait_finish();
     if (wait_vsync_bounded(GS_UI_VSYNC_TIMEOUT_MS) < 0) {
+        (void)restore_native_video();
+        console_dirty = 0;
+        return;
+    }
+    /* 1080i FRAME buffers contain both fields. Keep each completed buffer on
+       the read circuit for two VBlanks so odd and even fields are never taken
+       from different UI frames. */
+    if (video_mode == VIDEO_MODE_1080I &&
+        wait_vsync_bounded(GS_UI_VSYNC_TIMEOUT_MS) < 0) {
         (void)restore_native_video();
         console_dirty = 0;
         return;
@@ -790,6 +890,8 @@ static int restore_native_video(void)
 int gs_ui_video_mode_apply(video_mode_id_t mode)
 {
     const video_mode_spec_t *spec;
+    const video_mode_geometry_t *geometry;
+    int mode_result;
 
     if (!renderer_ready)
         return -1;
@@ -808,11 +910,23 @@ int gs_ui_video_mode_apply(video_mode_id_t mode)
     }
 
     spec = &video_specs[(unsigned int)mode];
+    geometry = video_mode_geometry(mode);
     graph_disable_output();
-    if (graph_set_mode(spec->interlace, spec->graph_mode,
-                       spec->frame_mode, spec->flicker_filter) < 0 ||
-        graph_set_screen(spec->screen_x, spec->screen_y,
-                         spec->active_width, spec->active_height) < 0) {
+    if (mode == VIDEO_MODE_576P && rom_version_number() < 220)
+        mode_result = setup_legacy_576p();
+    else
+        mode_result = graph_set_mode(spec->interlace, spec->graph_mode,
+                                     spec->frame_mode,
+                                     spec->flicker_filter);
+    if (mode_result < 0) {
+        (void)restore_native_video();
+        return -4;
+    }
+    if (spec->explicit_display) {
+        program_explicit_display(spec);
+    } else if (graph_set_screen(spec->screen_x, spec->screen_y,
+                                geometry->surface_width,
+                                geometry->surface_height) < 0) {
         (void)restore_native_video();
         return -4;
     }

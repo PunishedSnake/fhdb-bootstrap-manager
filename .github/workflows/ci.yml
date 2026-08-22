@@ -39,3 +39,4 @@ jobs:
             THIRD_PARTY_NOTICES.md
             PS2SDK_LICENSE.txt
             third_party/spleen/LICENSE
+            third_party/open-ps2-loader/NOTICE

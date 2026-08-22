@@ -14,6 +14,7 @@ int main(void)
         if (identifier == NULL || identifier[0] == '\0' ||
             strcmp(identifier, "unknown") == 0 ||
             video_mode_name((video_mode_id_t)i)[0] == '\0' ||
+            video_mode_geometry((video_mode_id_t)i) == NULL ||
             video_mode_from_identifier(identifier, &parsed) < 0 ||
             parsed != (video_mode_id_t)i) {
             fprintf(stderr, "Video-mode round trip failed at %u.\n", i);
@@ -22,8 +23,45 @@ int main(void)
     }
 
     {
+        const video_mode_geometry_t *mode;
+        const unsigned int alternate_reserved_bytes =
+            640u * 1080u * 2u;
+
+        for (i = 0; i < VIDEO_MODE_COUNT; i++) {
+            unsigned int frame_bytes;
+
+            mode = video_mode_geometry((video_mode_id_t)i);
+            frame_bytes = mode->frame_width * mode->frame_height *
+                          mode->bits_per_pixel / 8u;
+            if (mode->signal_width == 0u || mode->signal_height == 0u ||
+                mode->surface_width == 0u || mode->surface_height == 0u ||
+                mode->frame_width < mode->surface_width ||
+                mode->frame_height < mode->surface_height ||
+                (mode->frame_width & 63u) != 0u ||
+                mode->viewport_x + mode->viewport_width >
+                    mode->surface_width ||
+                mode->viewport_y + mode->viewport_height >
+                    mode->surface_height ||
+                (mode->bits_per_pixel != 16u &&
+                 mode->bits_per_pixel != 32u)) {
+                fprintf(stderr, "Invalid video geometry at %u.\n", i);
+                return 1;
+            }
+            if (i != VIDEO_MODE_NATIVE &&
+                frame_bytes > alternate_reserved_bytes) {
+                fprintf(stderr, "Video mode %u exceeds reserved VRAM.\n", i);
+                return 1;
+            }
+        }
+        if (video_mode_geometry((video_mode_id_t)VIDEO_MODE_COUNT) != NULL) {
+            fprintf(stderr, "Out-of-range video geometry was accepted.\n");
+            return 1;
+        }
+    }
+
+    {
         static const char *const legacy_modes[] = {
-            "ntsc-480i", "PAL-576I", "576p", "720P", "1080i"
+            "ntsc-480i", "PAL-576I"
         };
         video_mode_id_t parsed = VIDEO_MODE_NATIVE;
         unsigned int legacy;

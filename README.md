@@ -29,7 +29,7 @@ optimization. This lets the R5900 compiler optimize across module boundaries
 while the existing section garbage collection continues to remove unused code
 from the stripped release ELF.
 
-The current feature branch identifies itself as **0.5.0-dev — Kakehashi**. It
+The current feature branch identifies itself as **0.5.0-dev2 — Kakehashi**. It
 is based on the 0.4.2 display-safety hotfix and introduces a resolution-aware
 GS viewport plus selectable bitmap fonts. It remains a hardware-test build,
 not a stable release.
@@ -107,10 +107,12 @@ The physically validated display contract is intentionally conservative:
 
 Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
 
-The current 0.4.x branch exposes **System -> Video mode** with the two modes
-that passed physical testing: native and 480p. The experimental NTSC 480i, PAL
-576i, 576p, 720p and 1080i choices from 0.4.1 were removed in 0.4.2 after real
-hardware exposed incorrect geometry and a PAL 576i VBlank/fallback failure.
+The 0.4.2 hotfix exposes **System -> Video mode** with the two modes that passed
+physical testing: native and 480p. The 0.5 development renderer retains those
+unchanged backends and adds guarded 576p, 720p and 1080i test modes with full
+surfaces, explicit DISPLAY contracts and independent UI viewports. Explicit
+NTSC/PAL choices remain removed; `native` already provides the proven
+region-correct interlaced fallback without reviving the PAL VBlank failure.
 
 Because the PS2 remains admirably uninterested in negotiating modern display
 capabilities, every non-native choice must be confirmed with X within ten
@@ -119,8 +121,8 @@ native output. Confirmed choices can be stored in `HDDMAN.CFG`, but are guarded
 again at startup. A startup timeout restores native and rewrites the preference
 to `native`, preventing a persistent black-screen loop.
 
-The development renderer treats the signal, complete framebuffer, active
-output and logical UI viewport as separate geometry. The existing 640x224 UI
+The development renderer treats the signal, complete framebuffer, render
+surface and logical UI viewport as separate geometry. The existing 640x224 UI
 is transformed into the selected viewport with independently snapped edges,
 so fractional horizontal scales do not accumulate text or panel drift. Every
 frame clears the complete active output before drawing the viewport, providing
@@ -142,11 +144,12 @@ Themes can be changed live through **System -> UI theme**.
 Available fonts can be changed live through **System -> UI font**:
 
 - `msx` — the original PS2SDK 8x8 raster;
-- `spleen` — Spleen 5x8 in native output and 8x16 in 480p.
+- `spleen` — Spleen 5x8 in native output and 8x16 in scaled modes.
 
-Spleen is rendered at its native bitmap sizes with nearest-neighbour sampling.
-The logical 8-pixel text advance remains stable, so changing fonts does not
-reflow menus or diagnostics.
+Spleen uses its native bitmap size where the viewport permits it. The 1080i
+viewport applies an integer 2x vertical enlargement to the 8x16 raster rather
+than inventing fractional glyph pixels. The logical 8-pixel text advance
+remains stable, so changing fonts does not reflow menus or diagnostics.
 
 The stable config filename is:
 
@@ -162,10 +165,12 @@ video_mode=native
 font=spleen
 ```
 
-Supported `video_mode` values are `native` and `480p`, both using 32-bit true
-double buffering. A config created by 0.4.1 with `ntsc-480i`, `pal-576i`,
-`576p`, `720p`, or `1080i` is sanitized to `native` before any GS mode switch
-and rewritten when its storage is writable.
+The 0.5 development build accepts `native`, `480p`, `576p`, `720p` and `1080i`.
+Native and 480p retain their hardware-tested 32-bit double buffers. The three
+new HDTV modes use complete 16-bit double-buffered surfaces within a fixed VRAM
+reservation and remain guarded by confirmation on every startup. Old explicit
+`ntsc-480i` and `pal-576i` values are still sanitized to `native` and rewritten
+when storage is writable.
 
 An unknown `font` value falls back to `msx` and is rewritten when possible.
 Font selection is cosmetic and can never block application startup.

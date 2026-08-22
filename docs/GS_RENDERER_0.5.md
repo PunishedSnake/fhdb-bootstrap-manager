@@ -1,8 +1,8 @@
 # Scalable GS renderer and bitmap-font pipeline
 
 This document describes the 0.5 development renderer built on top of the 0.4.2
-display-safety hotfix. It is intentionally tested first in the two outputs
-already proven on physical hardware: native and 480p.
+display-safety hotfix. Native and 480p are physically proven. Development build
+2 adds isolated, guarded 576p, 720p and 1080i contracts for hardware testing.
 
 ## Geometry contract
 
@@ -48,6 +48,8 @@ The active atlas uses 8x16 slots in a 128x128 RGBA texture:
 |---|---:|---:|---:|
 | native | 8x8 | 5x8 centered | 8x8 |
 | 480p | 8x8 sampled to 8x16 | 8x16 | 9x16 |
+| 576p / 720p | 8x8 sampled to 8x16 | 8x16 | 8x16 |
+| 1080i | 8x8 sampled to 8x32 | 8x16 sampled to 8x32 | 8x32 |
 
 The logical text advance always remains eight pixels. Font changes therefore
 do not alter wrapping, menu density or diagnostic layout.
@@ -62,16 +64,34 @@ when an experimental signal never produces the expected VBlank state.
 
 ## VRAM budget
 
-The renderer retains separate native and 480p framebuffer pairs:
+The renderer retains a native pair and a fixed alternate reservation:
 
 - two 640x224x32-bit native buffers;
-- two 768x448x32-bit 480p backing buffers for a 720x448 active output;
+- two 640x1080x16-bit reserved regions, reinterpreted by each alternate mode;
 - one 128x128x32-bit adaptive font atlas.
 
-The fixed allocation uses approximately 3.78 MiB and leaves 224 KiB of GS VRAM.
-Future modes must provide an explicit budget and may require 16-bit buffers;
-they cannot borrow memory by describing only a partial UI band as a complete
-framebuffer.
+Each alternate region is large enough for the proven 768x448x32-bit 480p
+layout, 768x576x16-bit 576p, 640x720x16-bit 720p and 640x1080x16-bit 1080i.
+Page-aligned allocation plus the atlas uses approximately 3.80 MiB and leaves
+more than 200 KiB of GS VRAM. Buffer addresses never move during a mode switch.
+
+## Extended mode contracts
+
+| Mode | Render surface | Logical viewport | Read-circuit result |
+|---|---:|---:|---|
+| 576p | 768x576 stride, 720x576 visible, 16-bit | 640x448 at (40,64) | complete progressive 720x576 output |
+| 720p | 640x720, 16-bit | 640x448 at (0,136) | horizontal 2x magnification to 1280x720 |
+| 1080i | 640x1080, 16-bit FRAME | 640x896 at (0,92) | horizontal 3x magnification to 1920x1080 |
+
+1080i presents each completed framebuffer for two VBlanks. Its odd and even
+fields therefore come from the same UI frame rather than alternating between
+two independently rendered buffers.
+
+The 576p path detects the console ROM. ROM 2.20 and newer use the normal PS2SDK
+request. On older retail ROMs, PS2SDK would silently substitute PAL. The
+manager therefore asks the kernel for 480p first—576p uses the same DVE
+parameters—and then changes only the GS timing to the established 576p values.
+It never reconfigures the DVE through the active DEV9/HDD bus.
 
 ## Validation boundary
 
@@ -79,7 +99,7 @@ Portable tests prove layout geometry, font identifiers, ASCII source coverage
 and deterministic generation. The R5900 build proves PS2SDK API and linker
 compatibility. Neither replaces physical validation.
 
-Before release, both fonts must be checked in native and 480p for:
+Before release, both fonts must be checked in every exposed mode for:
 
 - complete glyph rows and columns;
 - stable menu/text alignment;
@@ -87,6 +107,7 @@ Before release, both fonts must be checked in native and 480p for:
 - mode switch, confirmation, timeout and native restoration;
 - repeated font changes before and after a video-mode change.
 
-576p, 720p and 1080i remain absent from the public mode list until their full
-signal, framebuffer, viewport, field/read-circuit and VRAM contracts pass their
-own hardware matrix.
+576p, 720p and 1080i are exposed only by the development build until their full
+signal, framebuffer, viewport, field/read-circuit and fallback contracts pass
+the hardware matrix. The stable release must not inherit them merely because
+the compiler accepts the register writes.
