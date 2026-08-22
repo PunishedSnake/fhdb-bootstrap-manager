@@ -54,7 +54,7 @@ If the answers point toward a general host tool, the feature belongs in DriveFor
 
 ## Status: released
 
-**0.4.0 released 2026-08-21.**
+**0.4.0 released 2026-08-21. 0.4.1 maintenance release published 2026-08-22.**
 
 The line is now **feature-frozen** except for defects and narrowly scoped validation hardening. Exceptional raw metadata repair remains explicitly experimental until broader independent hardware reports exist.
 

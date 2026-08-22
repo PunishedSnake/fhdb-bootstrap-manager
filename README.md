@@ -6,7 +6,7 @@ It began after a real console got trapped in a post-uninstall FHDB boot loop: FH
 
 ## Current release
 
-**0.4.0 — Michishirube (道標)** is the current stable release.
+**0.4.1 — Michishirube (道標)** is the current stable release.
 
 Michishirube expands the project into a modular PS2-side recovery toolkit while preserving the established normal bootstrap write contract from Torii. The release includes:
 
@@ -21,14 +21,14 @@ Michishirube expands the project into a modular PS2-side recovery toolkit while 
 - `HDDRAW`, `HDDMETA`, rescue, log and forensic evidence artifacts;
 - a large host regression laboratory and guarded physical-HDD fault injector.
 
-The 0.4.x optimization branch builds EE code with `-O2` plus link-time
+0.4.1 builds EE code with `-O2` plus link-time
 optimization. This lets the R5900 compiler optimize across module boundaries
 while the existing section garbage collection continues to remove unused code
 from the stripped release ELF.
 
 ## Important recovery disclaimer
 
-**Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.0.**
+**Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.1.**
 
 Experimental paths include:
 
@@ -407,8 +407,8 @@ make test-host
 GitHub Actions builds the stripped release ELF using `ps2dev/ps2dev:v2.0.0`, produces SHA-256, and publishes:
 
 ```text
-PS2_HDD_BOOTSTRAP_MANAGER-0.4.0.zip
-PS2_HDD_BOOTSTRAP_MANAGER-0.4.0.ELF
+PS2_HDD_BOOTSTRAP_MANAGER-0.4.1.zip
+PS2_HDD_BOOTSTRAP_MANAGER-0.4.1.ELF
 SHA256SUMS.txt
 HDDMAN.CFG
 ```
