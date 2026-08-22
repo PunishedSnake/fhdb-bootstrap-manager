@@ -2,16 +2,17 @@
 
 ## Current development contract
 
-Native and 480p are the hardware-validated baseline. Development build 2 adds
-three guarded candidates without changing either proven backend:
+Native and 480p are the hardware-validated baseline. Development build 3 keeps
+three guarded candidates available while correcting the dev2 framebuffer
+format, 1080i FRAME geometry and repeated-switch rollback path:
 
 | Config value | Backing surface | UI viewport | Color | Status |
 |---|---:|---:|---:|---|
 | `native` | 640x224 | 640x224 | 32-bit | hardware-proven default and fallback |
 | `480p` | 768x448 stride | 720x448 | 32-bit | hardware-tested |
-| `576p` | 768x576 stride | 640x448 at (40,64) | 16-bit | guarded hardware candidate |
-| `720p` | 640x720 | 640x448 at (0,136) | 16-bit | guarded hardware candidate |
-| `1080i` | 640x1080 FRAME | 640x896 at (0,92) | 16-bit | guarded hardware candidate |
+| `576p` | 768x576 stride | 640x448 at (40,64) | 32-bit, single buffer | guarded hardware candidate |
+| `720p` | 640x720 | 640x448 at (0,136) | 32-bit, single buffer | guarded hardware candidate |
+| `1080i` | 640x540 FRAME | 640x448 at (0,46) | 32-bit, double buffer | guarded hardware candidate |
 
 The signal timing, framebuffer, visible viewport and logical UI are different
 things. A PS2SDK constant proving that the GS can request a timing does not
@@ -91,9 +92,9 @@ only the UI band:
 
 | Timing | Framebuffer | UI viewport | Rationale |
 |---|---:|---:|---|
-| 576p | 768x576 stride, 16-bit, double buffered | 640x448 centered at (40,64) | complete 720x576 visible surface; integer 2x vertical UI |
-| 720p | 640x720, 16-bit, double buffered, read-circuit MAGH 2x | 640x448 centered at y=136 | full-height surface without storing 1280 pixels per row |
-| 1080i | 640x1080, 16-bit, double buffered, FRAME, read-circuit MAGH 3x | 640x896 centered at y=92 | complete frame geometry with integer 4x logical Y scale |
+| 576p | 768x576 stride, 32-bit, single buffered | 640x448 centered at (40,64) | complete 720x576 visible surface; integer 2x vertical UI |
+| 720p | 640x720, 32-bit, single buffered, read-circuit MAGH 2x | 640x448 centered at y=136 | full-height surface without storing 1280 pixels per row |
+| 1080i | 640x540, 32-bit, double buffered, FRAME, read-circuit MAGH 3x | 640x448 centered at y=46 | correct 540-line FRAME storage; two fields form 1080i |
 
 The mode descriptors include signal, surface, stride, viewport, color depth,
 interlace policy and exact DISPLAY magnification. Portable tests prove the
@@ -114,14 +115,15 @@ the historical raw DVE transactions through DEV9 while the HDD stack is live.
 
 ## Synchronization safety
 
-No mode-switch recovery path depends on an unbounded VBlank wait in the mode
-being tested. The implemented backend:
+No mode-switch recovery path depends on an unbounded VBlank, GIF DMA or GS
+FINISH wait in the mode being tested. The implemented backend:
 
 - clears/starts the VSYNC event explicitly;
 - polls `graph_check_vsync()` against `GetTimerSystemTime()`;
 - abandons the candidate after a bounded 250 ms setup/presentation interval;
-- restore the known-good native CRT/read-circuit state;
-- reinitialize GIF DMA and all GS draw state;
+- restores the captured known-good native CRT/read-circuit state;
+- resets only GIF PATH3 and rebuilds all GS draw state;
+- never repeats libdebug's global DMAC reset after startup;
 - require ten-second confirmation again at startup until the physical test
   matrix passes.
 
@@ -154,7 +156,7 @@ Implemented adaptive mapping:
 | native | 5x8 | centered inside the existing 8x8 glyph area; existing 8-pixel advance preserved |
 | 480p | 8x16 | rendered pixel-perfect inside the scaled 9x16 output cell |
 | 576p / 720p | 8x16 | rendered pixel-perfect inside the 8x16 output cell |
-| 1080i | 8x16 | integer 2x vertical sampling into the 8x32 output cell |
+| 1080i | 8x16 | pixel-perfect inside the corrected 8x16 output cell |
 
 Keeping the existing logical advance prevents menus, wrapping and status rows
 from changing when a font or video mode changes. Only the raster inside the

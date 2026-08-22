@@ -25,7 +25,7 @@ int main(void)
     {
         const video_mode_geometry_t *mode;
         const unsigned int alternate_reserved_bytes =
-            640u * 1080u * 2u;
+            2u * 640u * 1080u * 2u;
 
         for (i = 0; i < VIDEO_MODE_COUNT; i++) {
             unsigned int frame_bytes;
@@ -42,19 +42,40 @@ int main(void)
                     mode->surface_width ||
                 mode->viewport_y + mode->viewport_height >
                     mode->surface_height ||
+                mode->frame_count == 0u || mode->frame_count > 2u ||
                 (mode->bits_per_pixel != 16u &&
                  mode->bits_per_pixel != 32u)) {
                 fprintf(stderr, "Invalid video geometry at %u.\n", i);
                 return 1;
             }
             if (i != VIDEO_MODE_NATIVE &&
-                frame_bytes > alternate_reserved_bytes) {
+                frame_bytes >
+                    alternate_reserved_bytes / mode->frame_count) {
                 fprintf(stderr, "Video mode %u exceeds reserved VRAM.\n", i);
                 return 1;
             }
         }
         if (video_mode_geometry((video_mode_id_t)VIDEO_MODE_COUNT) != NULL) {
             fprintf(stderr, "Out-of-range video geometry was accepted.\n");
+            return 1;
+        }
+
+        mode = video_mode_geometry(VIDEO_MODE_576P);
+        if (mode->bits_per_pixel != 32u || mode->frame_count != 1u ||
+            mode->frame_width != 768u || mode->frame_height != 576u) {
+            fprintf(stderr, "576p regressed from its 32-bit single surface.\n");
+            return 1;
+        }
+        mode = video_mode_geometry(VIDEO_MODE_720P);
+        if (mode->bits_per_pixel != 32u || mode->frame_count != 1u ||
+            mode->frame_width != 640u || mode->frame_height != 720u) {
+            fprintf(stderr, "720p regressed from its 32-bit single surface.\n");
+            return 1;
+        }
+        mode = video_mode_geometry(VIDEO_MODE_1080I);
+        if (mode->bits_per_pixel != 32u || mode->frame_count != 2u ||
+            mode->frame_width != 640u || mode->frame_height != 540u) {
+            fprintf(stderr, "1080i FRAME storage is not 640x540x32x2.\n");
             return 1;
         }
     }

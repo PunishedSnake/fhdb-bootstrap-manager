@@ -29,7 +29,7 @@ optimization. This lets the R5900 compiler optimize across module boundaries
 while the existing section garbage collection continues to remove unused code
 from the stripped release ELF.
 
-The current feature branch identifies itself as **0.5.0-dev2 — Kakehashi**. It
+The current feature branch identifies itself as **0.5.0-dev3 — Kakehashi**. It
 is based on the 0.4.2 display-safety hotfix and introduces a resolution-aware
 GS viewport plus selectable bitmap fonts. It remains a hardware-test build,
 not a stable release.
@@ -100,8 +100,8 @@ The physically validated display contract is intentionally conservative:
 - `gs_ui_ps2` renders normal application pixels through libdraw/GIF DMA;
 - the active bitmap font is generated into a reusable RGBA texture atlas;
 - menu cards, outlines, locked rows, progress bars and status panels are GS primitives;
-- complete frames are drawn off-screen and swapped on VBlank through two
-  framebuffers;
+- double-buffered modes swap complete frames on VBlank; full 32-bit 576p and
+  720p use one VBlank-paced surface to stay inside the GS's 4 MiB VRAM;
 - remaining source-level `scr_clear()` / `scr_printf()` compatibility screens are intercepted and rendered through the same GS frontend;
 - real libdebug drawing is retained only as a renderer-initialization emergency fallback.
 
@@ -166,9 +166,11 @@ font=spleen
 ```
 
 The 0.5 development build accepts `native`, `480p`, `576p`, `720p` and `1080i`.
-Native and 480p retain their hardware-tested 32-bit double buffers. The three
-new HDTV modes use complete 16-bit double-buffered surfaces within a fixed VRAM
-reservation and remain guarded by confirmation on every startup. Old explicit
+Native and 480p retain their hardware-tested 32-bit double buffers. Following
+physical dev2 testing, 576p and 720p now use complete single-buffered 32-bit
+surfaces, while 1080i FRAME uses two 640x540x32 buffers. This avoids the failed
+16-bit scanout path without exceeding the same fixed VRAM reservation. Every
+alternate mode remains guarded by confirmation on every startup. Old explicit
 `ntsc-480i` and `pal-576i` values are still sanitized to `native` and rewritten
 when storage is writable.
 

@@ -27,6 +27,7 @@ typedef struct {
     unsigned int viewport_width;
     unsigned int viewport_height;
     unsigned int bits_per_pixel;
+    unsigned int frame_count;
     int interlaced;
     int hardware_validated;
 } video_mode_geometry_t;
