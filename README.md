@@ -99,11 +99,10 @@ The physically validated display contract is intentionally conservative:
 
 Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
 
-The current 0.4.x branch also exposes **System -> Video mode** with native,
-NTSC 480i, PAL 576i, 480p, 576p, 720p and 1080i output. Native and 480p switching
-have been exercised on physical hardware; the remaining alternate modes are
-experimental. The 576p item is disabled on ROM versions older than 2.20 rather
-than accepting PS2SDK's silent PAL fallback.
+The current 0.4.x branch exposes **System -> Video mode** with the two modes
+that passed physical testing: native and 480p. The experimental NTSC 480i, PAL
+576i, 576p, 720p and 1080i choices from 0.4.1 were removed in 0.4.2 after real
+hardware exposed incorrect geometry and a PAL 576i VBlank/fallback failure.
 
 Because the PS2 remains admirably uninterested in negotiating modern display
 capabilities, every non-native choice must be confirmed with X within ten
@@ -136,10 +135,10 @@ theme=aqua
 video_mode=native
 ```
 
-Supported `video_mode` values are `native`, `ntsc-480i`, `pal-576i`, `480p`,
-`576p`, `720p`, and `1080i`. The two widest modes use 16-bit framebuffers so
-the 4 MiB GS can retain true double buffering; native through 576p use 32-bit
-framebuffers.
+Supported `video_mode` values are `native` and `480p`, both using 32-bit true
+double buffering. A config created by 0.4.1 with `ntsc-480i`, `pal-576i`,
+`576p`, `720p`, or `1080i` is sanitized to `native` before any GS mode switch
+and rewritten when its storage is writable.
 
 When the launcher provides a usable `argv[0]`, the manager reads/writes the file beside the ELF. Otherwise it falls back to the selected report/backup storage root. Missing or unwritable config never blocks the manager. 0.4.x retains read-only compatibility with the development-only legacy name `MICHISHIRUBE.CFG`, but official assets and saves use only `HDDMAN.CFG`.
 

@@ -9,12 +9,11 @@ typedef struct {
 
 static const video_mode_identity_t identities[VIDEO_MODE_COUNT] = {
     {"native", "Native automatic (640x224 field)"},
-    {"ntsc-480i", "NTSC 480i frame (640x448)"},
-    {"pal-576i", "PAL 576i frame (640x512)"},
-    {"480p", "480p progressive (720x448)"},
-    {"576p", "576p progressive (656x512)"},
-    {"720p", "720p progressive (1280x448 UI)"},
-    {"1080i", "1080i interlaced (960x448 UI)"}
+    {"480p", "480p progressive (720x448)"}
+};
+
+static const char *const unsafe_041_identifiers[] = {
+    "ntsc-480i", "pal-576i", "576p", "720p", "1080i"
 };
 
 static int ascii_equal_nocase(char left, char right)
@@ -62,6 +61,13 @@ int video_mode_from_identifier(const char *identifier,
         if (identifier_equal(identifier, identities[i].identifier)) {
             *mode_out = (video_mode_id_t)i;
             return 0;
+        }
+    }
+    for (i = 0; i < sizeof(unsafe_041_identifiers) /
+                         sizeof(unsafe_041_identifiers[0]); i++) {
+        if (identifier_equal(identifier, unsafe_041_identifiers[i])) {
+            *mode_out = VIDEO_MODE_NATIVE;
+            return VIDEO_MODE_MIGRATED;
         }
     }
     return -2;

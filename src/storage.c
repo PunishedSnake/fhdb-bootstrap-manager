@@ -425,6 +425,7 @@ static int parse_app_config(const char *buffer)
     video_mode_id_t parsed_video;
     char value[64];
     int found = 0;
+    int migrated = 0;
 
     if (config_value(buffer, "theme", value, sizeof(value))) {
         found = 1;
@@ -432,12 +433,17 @@ static int parse_app_config(const char *buffer)
             goto invalid;
     }
     if (config_value(buffer, "video_mode", value, sizeof(value))) {
+        int video_result;
+
         found = 1;
-        if (video_mode_from_identifier(value, &parsed_video) < 0)
+        video_result = video_mode_from_identifier(value, &parsed_video);
+        if (video_result < 0)
             goto invalid;
+        if (video_result == VIDEO_MODE_MIGRATED)
+            migrated = 1;
         preferred_video_mode = parsed_video;
     }
-    return found ? 0 : -2;
+    return found ? migrated : -2;
 
 invalid:
     current_theme = original_theme;
@@ -456,8 +462,16 @@ int app_config_load(void)
         return -1;
 
     result = read_text_file(path, buffer, sizeof(buffer));
-    if (result >= 0)
-        return parse_app_config(buffer);
+    if (result >= 0) {
+        result = parse_app_config(buffer);
+        /* v0.4.1 exposed five modes which failed physical display testing.
+           Sanitize them before any GS switch and rewrite the preference when
+           possible. Failure to rewrite is non-fatal: this session still uses
+           native output and will never apply the unsafe identifier. */
+        if (result == VIDEO_MODE_MIGRATED)
+            (void)app_config_save();
+        return result;
+    }
 
     /* A present HDDMAN.CFG is authoritative. Do not hide a malformed or
        unreadable current config behind an older development filename. */
@@ -470,9 +484,10 @@ int app_config_load(void)
     if (read_text_file(legacy_path, buffer, sizeof(buffer)) < 0)
         return result;
 
-    /* Migration is deliberately read-only: do not rewrite/delete the old file
-       during startup. The next explicit save always creates HDDMAN.CFG. */
-    return parse_app_config(buffer);
+    result = parse_app_config(buffer);
+    if (result == VIDEO_MODE_MIGRATED)
+        (void)app_config_save();
+    return result;
 }
 
 int app_config_save(void)
