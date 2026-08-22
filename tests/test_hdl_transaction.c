@@ -16,6 +16,9 @@ static hdl_transaction_t planned_transaction(void)
     transaction.partition_count = 1;
     strcpy(transaction.target, "PP.SLUS-12345.HDL.TEST");
     strcpy(transaction.startup, "SLUS_123.45");
+    strcpy(transaction.source_path, "mass:/TEST.ISO");
+    strcpy(transaction.game_title, "Test Game");
+    transaction.disc_type = 0x14;
     for (i = 0; i < sizeof(transaction.source_fingerprint); i++)
         transaction.source_fingerprint[i] = (unsigned char)i;
     return transaction;
@@ -36,6 +39,9 @@ static void test_record_round_trip_and_corruption(void)
     assert(decoded.partition_count == 1);
     assert(strcmp(decoded.target, transaction.target) == 0);
     assert(strcmp(decoded.startup, transaction.startup) == 0);
+    assert(strcmp(decoded.source_path, transaction.source_path) == 0);
+    assert(strcmp(decoded.game_title, transaction.game_title) == 0);
+    assert(decoded.disc_type == 0x14);
     assert(memcmp(decoded.source_fingerprint,
                   transaction.source_fingerprint, 32) == 0);
 

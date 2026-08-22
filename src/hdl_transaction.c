@@ -7,7 +7,7 @@
 #include "hdl_transaction.h"
 #include "sha256.h"
 
-#define HDL_TRANSACTION_VERSION 1u
+#define HDL_TRANSACTION_VERSION 2u
 #define HDL_TRANSACTION_HASH_OFFSET 480u
 
 static const unsigned char transaction_magic[8] = {
@@ -61,7 +61,12 @@ static int transaction_valid(const hdl_transaction_t *transaction)
         transaction->partition_count == 0 || transaction->partition_count > 65 ||
         !terminated(transaction->target, sizeof(transaction->target)) ||
         !terminated(transaction->startup, sizeof(transaction->startup)) ||
-        transaction->target[0] == '\0' || transaction->startup[0] == '\0')
+        !terminated(transaction->source_path, sizeof(transaction->source_path)) ||
+        !terminated(transaction->game_title, sizeof(transaction->game_title)) ||
+        transaction->target[0] == '\0' || transaction->startup[0] == '\0' ||
+        transaction->source_path[0] == '\0' ||
+        transaction->game_title[0] == '\0' ||
+        (transaction->disc_type != 0x12u && transaction->disc_type != 0x14u))
         return 0;
     if (transaction->stage == HDL_TRANSACTION_STAGE_PLANNED ||
         transaction->stage == HDL_TRANSACTION_STAGE_PARTITIONS_CREATED)
@@ -135,6 +140,18 @@ int hdl_transaction_encode(const hdl_transaction_t *transaction,
            bounded_length(transaction->target, sizeof(transaction->target)));
     memcpy(record + 116, transaction->startup,
            bounded_length(transaction->startup, sizeof(transaction->startup)));
+    memcpy(record + 176, transaction->source_path,
+           bounded_length(transaction->source_path,
+                          sizeof(transaction->source_path)));
+    memcpy(record + 336, transaction->game_title,
+           bounded_length(transaction->game_title,
+                          sizeof(transaction->game_title)));
+    write_le32(record + 464, transaction->disc_type);
+    write_le32(record + 468, transaction->layer1_start);
+    record[472] = transaction->hdl_compat_flags;
+    record[473] = transaction->opl_compat_flags;
+    record[474] = transaction->dma_type;
+    record[475] = transaction->dma_mode;
     sha256_buffer(record, HDL_TRANSACTION_HASH_OFFSET, digest);
     memcpy(record + HDL_TRANSACTION_HASH_OFFSET, digest, sizeof(digest));
     return 0;
@@ -165,6 +182,16 @@ int hdl_transaction_decode(const unsigned char record[HDL_TRANSACTION_RECORD_SIZ
     memcpy(decoded.source_fingerprint, record + 48, 32);
     memcpy(decoded.target, record + 80, sizeof(decoded.target) - 1);
     memcpy(decoded.startup, record + 116, sizeof(decoded.startup) - 1);
+    memcpy(decoded.source_path, record + 176,
+           sizeof(decoded.source_path) - 1);
+    memcpy(decoded.game_title, record + 336,
+           sizeof(decoded.game_title) - 1);
+    decoded.disc_type = read_le32(record + 464);
+    decoded.layer1_start = read_le32(record + 468);
+    decoded.hdl_compat_flags = record[472];
+    decoded.opl_compat_flags = record[473];
+    decoded.dma_type = record[474];
+    decoded.dma_mode = record[475];
     if (!transaction_valid(&decoded))
         return HDL_TRANSACTION_INVALID_RECORD;
     *transaction = decoded;

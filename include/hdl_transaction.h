@@ -6,6 +6,8 @@
 #define HDL_TRANSACTION_RECORD_SIZE 512u
 #define HDL_TRANSACTION_TARGET_MAX 33u
 #define HDL_TRANSACTION_STARTUP_MAX 60u
+#define HDL_TRANSACTION_SOURCE_PATH_MAX 160u
+#define HDL_TRANSACTION_GAME_TITLE_MAX 128u
 
 enum {
     HDL_TRANSACTION_INVALID_ARGUMENT = -540,
@@ -35,6 +37,14 @@ typedef struct {
     unsigned char source_fingerprint[32];
     char target[HDL_TRANSACTION_TARGET_MAX];
     char startup[HDL_TRANSACTION_STARTUP_MAX];
+    char source_path[HDL_TRANSACTION_SOURCE_PATH_MAX];
+    char game_title[HDL_TRANSACTION_GAME_TITLE_MAX];
+    uint32_t disc_type;
+    uint32_t layer1_start;
+    uint8_t hdl_compat_flags;
+    uint8_t opl_compat_flags;
+    uint8_t dma_type;
+    uint8_t dma_mode;
 } hdl_transaction_t;
 
 int hdl_transaction_transition_allowed(hdl_transaction_stage_t from,

@@ -12,6 +12,7 @@
 #include "diagnostics_controller_ps2.h"
 #include "forensic_controller_ps2.h"
 #include "gs_ui_ps2.h"
+#include "hdl_installer_ps2.h"
 #include "manager_menu_ps2.h"
 #include "platform.h"
 #include "repair_controller_ps2.h"
@@ -476,6 +477,7 @@ void manager_menu_run(unsigned char header[APA_HEADER_SIZE],
         {"Bootstrap", "Install, disable, restore and bootstrap backup", 1},
         {"Diagnostics", "Boot-chain evidence and reports", 1},
         {"Recovery", "Deterministic repair and forensic APA workspace", 1},
+        {"HDL Games", "Install a PS2 ISO from mass: with full verification", 1},
         {"Backup & Storage", "Rescue backup destination and storage selection", 1},
         {"System", "Controller, theme, font, video mode, restart and power", 1}
     };
@@ -489,7 +491,7 @@ void manager_menu_run(unsigned char header[APA_HEADER_SIZE],
 
         build_dashboard_status(status, sizeof(status), header, boot_chain);
         choice = app_ui_menu_select("Manager dashboard", status,
-                                    root_items, 5, &selected);
+                                    root_items, 6, &selected);
         if (choice < 0) {
             app_ui_power_menu();
             continue;
@@ -505,9 +507,12 @@ void manager_menu_run(unsigned char header[APA_HEADER_SIZE],
                 recovery_menu(header, boot_chain);
                 break;
             case 3:
-                backup_storage_menu(header, boot_chain);
+                hdl_installer_menu();
                 break;
             case 4:
+                backup_storage_menu(header, boot_chain);
+                break;
+            case 5:
                 system_menu();
                 break;
             default:

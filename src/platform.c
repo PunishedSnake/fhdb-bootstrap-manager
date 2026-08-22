@@ -69,6 +69,8 @@ extern unsigned char ps2atad_irx[];
 extern unsigned int size_ps2atad_irx;
 extern unsigned char ps2hdd_irx[];
 extern unsigned int size_ps2hdd_irx;
+extern unsigned char hdl_stream_irx[];
+extern unsigned int size_hdl_stream_irx;
 extern unsigned char ps2fs_irx[];
 extern unsigned int size_ps2fs_irx;
 
@@ -113,7 +115,8 @@ int load_modules(void)
     if (exec_irx(ps2dev9_irx, size_ps2dev9_irx) < 0) return -14;
     if (exec_irx(ps2atad_irx, size_ps2atad_irx) < 0) return -15;
     if (exec_irx(ps2hdd_irx, size_ps2hdd_irx) < 0) return -16;
-    if (exec_irx(ps2fs_irx, size_ps2fs_irx) < 0) return -17;
+    if (exec_irx(hdl_stream_irx, size_hdl_stream_irx) < 0) return -17;
+    if (exec_irx(ps2fs_irx, size_ps2fs_irx) < 0) return -18;
     return 0;
 }
 
@@ -199,6 +202,11 @@ static int poll_pad_press(u32 *pressed)
         }
     }
     return 0;
+}
+
+int poll_for_press(u32 *pressed)
+{
+    return poll_pad_press(pressed);
 }
 
 void pad_activity_begin(void)

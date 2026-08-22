@@ -1,5 +1,5 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
-EE_OBJS = main.o manager_menu_ps2.o app_ui_ps2.o disk_status_ps2.o gs_ui_ps2.o gs_debug_compat_ps2.o app_error.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o forensic_controller_ps2.o platform.o storage.o video_mode.o ui_layout.o ui_font.o spleen_font_data.o header_backup.o repair_snapshot.o forensic_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o apa_forensic.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o hdd_forensic_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o hdl_iso.o hdl_partition.o hdl_transaction.o
+EE_OBJS = main.o manager_menu_ps2.o app_ui_ps2.o disk_status_ps2.o gs_ui_ps2.o gs_debug_compat_ps2.o app_error.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o forensic_controller_ps2.o platform.o storage.o video_mode.o ui_layout.o ui_font.o spleen_font_data.o header_backup.o repair_snapshot.o forensic_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o apa_forensic.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o hdd_forensic_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o hdl_iso.o hdl_partition.o hdl_transaction.o hdl_installer_ps2.o
 EE_LIBS = -ldebug -ldraw -lgraph -lpacket -ldma -lm -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
 # LTO lets the R5900 compiler optimize across the deliberately small modules
 # while section GC still removes unused recovery/UI helpers from the final ELF.
@@ -295,6 +295,9 @@ hdl_partition.o: src/hdl_partition.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 hdl_transaction.o: src/hdl_transaction.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+hdl_installer_ps2.o: src/hdl_installer_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 %_irx.c:
