@@ -21,7 +21,10 @@ The monitor shows:
 
 Physical testing found visible screen tearing during a large forensic scan because status frames were being submitted much faster than the display refresh.
 
-0.4.0 now synchronizes actual status-frame submission with `graph_wait_vsync()`.
+0.4.0 synchronized status-frame submission with `graph_wait_vsync()`. The
+0.4.x renderer now goes one step further: every complete application frame is
+drawn into an off-screen native buffer, then the visible framebuffer is swapped
+on VBlank.
 
 It deliberately does **not** wait for one VBlank after every raw disk read. The healthy large-disk release test performed 14,905 grid reads; serializing every read to 50/60 Hz would turn UI synchronization into the dominant scan cost.
 
@@ -29,12 +32,18 @@ Instead:
 
 - high-rate `DISK_STATUS_READ` telemetry is coalesced and the newest state is presented every 32 ordinary read events;
 - WRITE / VERIFY / FLUSH / POINTER UPDATE and semantic phase changes remain immediate;
-- every actual status-frame submission begins on VBlank;
+- every complete frame becomes visible through a VBlank framebuffer swap;
 - disk I/O is therefore not artificially limited to the display frame rate.
 
 Physical retesting confirmed that this removed the visible forensic-scan tearing. The status panel refreshes less frequently during rapid reads, as intended, while remaining responsive for write-sensitive transitions.
 
-If a future display/adapter combination still shows tearing, the next architectural step is true GS double buffering with a VBlank framebuffer swap, not increasingly aggressive I/O throttling.
+The renderer keeps a dedicated 640x224 pair for native output and two fixed
+alternate backing ranges large enough for 480i, 576i, 480p, 576p, 720p and
+1080i views. Each selected view retains a separate draw/display framebuffer.
+The widest modes reinterpret the alternate ranges as 16-bit buffers; the
+others remain 32-bit. The 3.875 MiB allocation, including the font atlas,
+removes the tearing race without weakening I/O throughput and leaves 128 KiB
+free.
 
 ## Current status coverage
 
@@ -102,5 +111,9 @@ The 0.4.0 UI/status path has been exercised on physical PS2 hardware for:
 - VBlank synchronization with no observed scan-time tearing;
 - diagnostics/backup/source-load status;
 - contextual negative-path error presentation.
+
+Post-release physical testing also confirmed stable native <-> 480p switching.
+The additional NTSC/PAL/576p/720p/1080i outputs remain experimental and are
+protected by timed confirmation plus automatic native fallback.
 
 Exceptional raw repair statuses are instrumented but remain part of the release's experimental destructive-recovery surface until broader independent tests exist.

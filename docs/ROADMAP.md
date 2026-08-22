@@ -69,7 +69,7 @@ The line is now **feature-frozen** except for defects and narrowly scoped valida
 - [x] application-wide GS frontend;
 - [x] contextual errors;
 - [x] live operation/LBA telemetry;
-- [x] stable `HDDMAN.CFG` theme configuration;
+- [x] stable `HDDMAN.CFG` theme and guarded video-mode configuration;
 - [x] guarded host physical-HDD fault injector;
 - [x] lean startup with heavy diagnostics deferred until requested.
 
@@ -98,6 +98,8 @@ The line is now **feature-frozen** except for defects and narrowly scoped valida
 - [x] explicit full-row `LOCKED` states;
 - [x] native 640x224 GS rendering and native 8x8 font raster;
 - [x] `aqua`, `amber`, `sakura`, `mono` themes;
+- [x] hardware-tested native/480p switching plus guarded experimental NTSC,
+      PAL, 576p, 720p and 1080i outputs;
 - [x] VBlank-synchronized status rendering;
 - [x] coalesced high-rate raw READ presentation without throttling disk I/O to one operation per frame;
 - [x] symbolic/stage-aware error explanations;

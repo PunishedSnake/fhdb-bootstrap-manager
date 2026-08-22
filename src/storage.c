@@ -3,7 +3,7 @@
  *
  * This module contains no APA or rescue policy. It owns generic fileXio
  * primitives, launch-device/directory selection and the tiny application-local
- * UI theme preference that may live beside the launched ELF.
+ * application preferences that may live beside the launched ELF.
  */
 
 #define NEWLIB_PORT_AWARE
@@ -15,10 +15,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app_config.h"
+#include "boot_chain.h"
 #include "storage.h"
 #include "ui_theme_ps2.h"
 
-#define UI_THEME_CONFIG_BYTES 256u
+#define APP_CONFIG_BYTES 512u
 
 const storage_target_t storage_targets[STORAGE_TARGET_COUNT] = {
     {"mc0", "mc0:", 0},
@@ -62,6 +64,7 @@ static const ui_theme_palette_t palettes[UI_THEME_COUNT] = {
 };
 
 static ui_theme_id_t current_theme = UI_THEME_AQUA;
+static video_mode_id_t preferred_video_mode = VIDEO_MODE_NATIVE;
 
 unsigned int storage_selected(void)
 {
@@ -409,65 +412,52 @@ int ui_theme_set_by_identifier(const char *identifier)
     return -1;
 }
 
-int ui_theme_config_path(char *destination, unsigned int capacity)
+int app_config_path(char *destination, unsigned int capacity)
 {
     return storage_launch_file_path(destination, capacity,
-                                    UI_THEME_CONFIG_FILENAME);
+                                    APP_CONFIG_FILENAME);
 }
 
-static int parse_theme_config(char *buffer)
+static int parse_app_config(const char *buffer)
 {
-    char *line;
+    ui_theme_id_t original_theme = current_theme;
+    video_mode_id_t original_video = preferred_video_mode;
+    video_mode_id_t parsed_video;
+    char value[64];
+    int found = 0;
 
-    line = strtok(buffer, "\r\n");
-    while (line != NULL) {
-        char *equals;
-
-        while (*line == ' ' || *line == '\t')
-            line++;
-        if (*line == '#' || *line == ';' || *line == '\0') {
-            line = strtok(NULL, "\r\n");
-            continue;
-        }
-        equals = strchr(line, '=');
-        if (equals != NULL) {
-            char *key_end;
-            char *value;
-            char *value_end;
-
-            *equals = '\0';
-            key_end = equals - 1;
-            while (key_end >= line && (*key_end == ' ' || *key_end == '\t'))
-                *key_end-- = '\0';
-            value = equals + 1;
-            while (*value == ' ' || *value == '\t')
-                value++;
-            value_end = value + strlen(value);
-            while (value_end > value &&
-                   (value_end[-1] == ' ' || value_end[-1] == '\t'))
-                *--value_end = '\0';
-
-            if (identifier_equal(line, "theme"))
-                return ui_theme_set_by_identifier(value);
-        }
-        line = strtok(NULL, "\r\n");
+    if (config_value(buffer, "theme", value, sizeof(value))) {
+        found = 1;
+        if (ui_theme_set_by_identifier(value) < 0)
+            goto invalid;
     }
-    return -2;
+    if (config_value(buffer, "video_mode", value, sizeof(value))) {
+        found = 1;
+        if (video_mode_from_identifier(value, &parsed_video) < 0)
+            goto invalid;
+        preferred_video_mode = parsed_video;
+    }
+    return found ? 0 : -2;
+
+invalid:
+    current_theme = original_theme;
+    preferred_video_mode = original_video;
+    return -3;
 }
 
-int ui_theme_load_config(void)
+int app_config_load(void)
 {
     char path[STORAGE_LAUNCH_PATH_SIZE];
     char legacy_path[STORAGE_LAUNCH_PATH_SIZE];
-    char buffer[UI_THEME_CONFIG_BYTES];
+    char buffer[APP_CONFIG_BYTES];
     int result;
 
-    if (ui_theme_config_path(path, sizeof(path)) < 0)
+    if (app_config_path(path, sizeof(path)) < 0)
         return -1;
 
     result = read_text_file(path, buffer, sizeof(buffer));
     if (result >= 0)
-        return parse_theme_config(buffer);
+        return parse_app_config(buffer);
 
     /* A present HDDMAN.CFG is authoritative. Do not hide a malformed or
        unreadable current config behind an older development filename. */
@@ -475,29 +465,44 @@ int ui_theme_load_config(void)
         return result;
 
     if (storage_launch_file_path(legacy_path, sizeof(legacy_path),
-                                 UI_THEME_LEGACY_CONFIG_FILENAME) < 0)
+                                 APP_CONFIG_LEGACY_FILENAME) < 0)
         return result;
     if (read_text_file(legacy_path, buffer, sizeof(buffer)) < 0)
         return result;
 
     /* Migration is deliberately read-only: do not rewrite/delete the old file
        during startup. The next explicit save always creates HDDMAN.CFG. */
-    return parse_theme_config(buffer);
+    return parse_app_config(buffer);
 }
 
-int ui_theme_save_config(void)
+int app_config_save(void)
 {
     char path[STORAGE_LAUNCH_PATH_SIZE];
-    char buffer[128];
+    char buffer[192];
     int length;
 
-    if (ui_theme_config_path(path, sizeof(path)) < 0)
+    if (app_config_path(path, sizeof(path)) < 0)
         return -1;
     length = snprintf(buffer, sizeof(buffer),
-                      "# PS2 HDD Bootstrap Manager UI\n"
-                      "theme=%s\n",
-                      ui_theme_identifier(current_theme));
+                      "# PS2 HDD Bootstrap Manager UI and video\n"
+                      "theme=%s\n"
+                      "video_mode=%s\n",
+                      ui_theme_identifier(current_theme),
+                      video_mode_identifier(preferred_video_mode));
     if (length < 0 || (unsigned int)length >= sizeof(buffer))
         return -2;
     return write_whole_file(path, buffer, length);
+}
+
+video_mode_id_t app_config_video_mode(void)
+{
+    return preferred_video_mode;
+}
+
+int app_config_set_video_mode(video_mode_id_t mode)
+{
+    if ((unsigned int)mode >= VIDEO_MODE_COUNT)
+        return -1;
+    preferred_video_mode = mode;
+    return 0;
 }

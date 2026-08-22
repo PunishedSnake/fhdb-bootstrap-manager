@@ -16,7 +16,39 @@
 
 The built-in PS2SDK MSX glyph data is converted once into a 128x64 RGBA atlas and uploaded once to VRAM. Every glyph is rendered **8x8 source -> 8x8 destination** with nearest-neighbour sampling and integer native field coordinates. There is no 448->224 scaling stage.
 
-Panels, cards, selection/disabled rows, outlines, status areas and progress bars are ordinary GS primitives. Frames are submitted through GIF DMA with alternating EE packet buffers.
+Panels, cards, selection/disabled rows, outlines, status areas and progress bars
+are ordinary GS primitives. Frames are submitted through GIF DMA into two GS
+framebuffers. Because presentation waits for GS FINISH before the VBlank swap,
+one reusable 256 KiB EE packet replaces the previously redundant pair. Stable
+GS environment registers are emitted once and refreshed only after a video-mode
+reset; each ordinary frame changes only its draw framebuffer.
+
+## Application video modes
+
+**System -> Video mode** switches only the manager's own GS output:
+
+| Config value | Visible UI | Color | Status |
+|---|---:|---:|---|
+| `native` | 640x224 FIELD | 32-bit | hardware-proven default |
+| `ntsc-480i` | 640x448 FRAME | 32-bit | experimental |
+| `pal-576i` | 640x512 FRAME | 32-bit | experimental |
+| `480p` | 720x448 progressive | 32-bit | hardware-tested |
+| `576p` | 656x512 progressive | 32-bit | experimental; ROM 2.20+ |
+| `720p` | 1280x448 progressive | 16-bit | experimental, letterboxed |
+| `1080i` | 960x448 interlaced | 16-bit | experimental, centered |
+
+Layout coordinates remain the proven 640x224 design. 480p expands them by the
+exact 720/640 = 9/8 horizontal ratio and an integer factor of two vertically;
+720p uses exact 2x scaling. The 720p and 1080i views deliberately use 16-bit
+framebuffers so both retain true VBlank-swapped buffers inside 4 MiB of VRAM.
+The fixed allocation consumes 3.875 MiB including the font atlas and leaves
+128 KiB free.
+
+Every alternate mode requires a ten-second confirmation. X keeps and saves the
+choice; TRIANGLE, no confirmation, an unsupported ROM, or an internal setup
+failure restores the hardware-proven `init_scr()` output. A persisted alternate
+mode is guarded again at startup. Startup failure/timeout also saves `native`,
+so a display mismatch cannot become an eternal black-screen preference.
 
 Linker wrappers for `scr_printf`, `scr_vprintf`, and `scr_clear` route older incremental text screens through `gs_debug_compat_ps2` and therefore through the same GS renderer. The real libdebug renderer remains reachable only as a last-resort GS-initialization failure display.
 
@@ -53,7 +85,11 @@ with the small format:
 
 ```text
 theme=aqua
+video_mode=native
 ```
+
+Video identifiers are `native`, `ntsc-480i`, `pal-576i`, `480p`, `576p`,
+`720p`, and `1080i`.
 
 When `argv[0]` exposes a usable launch path, the manager reads/writes the config beside the ELF. Otherwise the selected backup/report storage root is used as a deterministic fallback. Missing/unwritable config is non-fatal. 0.4.x retains read-only compatibility with the development-only legacy `MICHISHIRUBE.CFG`, but official assets and new saves use `HDDMAN.CFG` only.
 
@@ -77,14 +113,22 @@ Low-level transports publish exact LBA information; higher layers publish the hu
 
 A large healthy-disk forensic scan performs thousands of raw reads. Waiting for one VBlank per read would serialize disk I/O to 50/60 operations per second, so 0.4.0 separates telemetry production from frame presentation.
 
-- actual status-frame submission waits for VBlank using PS2SDK `graph_wait_vsync()`;
+- complete frames are rendered into an off-screen native buffer and swapped on
+  VBlank using PS2SDK `graph_wait_vsync()`; native interlaced output updates the
+  filtered framebuffer pair, while progressive output updates read circuit 2
+  directly without the filtered helper's one-row offset;
 - high-rate ordinary READ events are coalesced and the newest state is presented every 32 reads;
 - WRITE / VERIFY / FLUSH / POINTER and semantic phase changes remain immediate;
 - disk I/O itself is not limited to the display frame rate.
 
 Physical retesting confirmed that visible forensic-scan screen tearing disappeared. The screen updates less frequently during rapid reads, which is intentional.
 
-If a future display combination still shows tearing, the next architectural step is true GS double buffering with VBlank framebuffer swap rather than increasingly aggressive read-event throttling.
+Native output owns two 640x224 buffers. Two 704x512x32-bit-sized alternate
+reservations cover every other mode: 480p views them as 768x448x32, while 720p
+and 1080i use wider 16-bit layouts. Widths stay aligned for GS `FBW`. Together
+with the font atlas, the four buffers use 3.875 MiB of the GS's 4 MiB and leave
+128 KiB free. Separate pairs also let the timed fallback return to a clean
+native-stride frame instead of briefly reinterpreting alternate rows as native.
 
 ## Physical validation result
 
@@ -98,5 +142,9 @@ Observed on real PS2 hardware before 0.4.0 release:
 - theme/config behavior — **PASS**;
 - live status outside forensic-only workflows — **PASS**;
 - VBlank-synchronized forensic status with no observed screen tearing — **PASS**.
+
+Post-release maintainer testing on 2026-08-22 additionally reported native <->
+480p switching and continued UI operation — **PASS**. The other alternate video
+modes remain explicitly experimental pending their own display-path coverage.
 
 The remaining release disclaimer applies to exceptional destructive HDD recovery, not to the normal GS frontend.

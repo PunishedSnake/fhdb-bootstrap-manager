@@ -21,6 +21,11 @@ Michishirube expands the project into a modular PS2-side recovery toolkit while 
 - `HDDRAW`, `HDDMETA`, rescue, log and forensic evidence artifacts;
 - a large host regression laboratory and guarded physical-HDD fault injector.
 
+The 0.4.x optimization branch builds EE code with `-O2` plus link-time
+optimization. This lets the R5900 compiler optimize across module boundaries
+while the existing section garbage collection continues to remove unused code
+from the stripped release ELF.
+
 ## Important recovery disclaimer
 
 **Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.0.**
@@ -87,10 +92,25 @@ The physically validated display contract is intentionally conservative:
 - `gs_ui_ps2` renders normal application pixels through libdraw/GIF DMA;
 - the PS2SDK MSX font is uploaded once as a texture atlas and rendered native 8x8 -> 8x8;
 - menu cards, outlines, locked rows, progress bars and status panels are GS primitives;
+- complete frames are drawn off-screen and swapped on VBlank through two
+  framebuffers;
 - remaining source-level `scr_clear()` / `scr_printf()` compatibility screens are intercepted and rendered through the same GS frontend;
 - real libdebug drawing is retained only as a renderer-initialization emergency fallback.
 
 Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
+
+The current 0.4.x branch also exposes **System -> Video mode** with native,
+NTSC 480i, PAL 576i, 480p, 576p, 720p and 1080i output. Native and 480p switching
+have been exercised on physical hardware; the remaining alternate modes are
+experimental. The 576p item is disabled on ROM versions older than 2.20 rather
+than accepting PS2SDK's silent PAL fallback.
+
+Because the PS2 remains admirably uninterested in negotiating modern display
+capabilities, every non-native choice must be confirmed with X within ten
+seconds. TRIANGLE, no input, or an internal setup failure restores the proven
+native output. Confirmed choices can be stored in `HDDMAN.CFG`, but are guarded
+again at startup. A startup timeout restores native and rewrites the preference
+to `native`, preventing a persistent black-screen loop.
 
 ### Themes and configuration
 
@@ -113,7 +133,13 @@ Typical contents:
 
 ```text
 theme=aqua
+video_mode=native
 ```
+
+Supported `video_mode` values are `native`, `ntsc-480i`, `pal-576i`, `480p`,
+`576p`, `720p`, and `1080i`. The two widest modes use 16-bit framebuffers so
+the 4 MiB GS can retain true double buffering; native through 576p use 32-bit
+framebuffers.
 
 When the launcher provides a usable `argv[0]`, the manager reads/writes the file beside the ELF. Otherwise it falls back to the selected report/backup storage root. Missing or unwritable config never blocks the manager. 0.4.x retains read-only compatibility with the development-only legacy name `MICHISHIRUBE.CFG`, but official assets and saves use only `HDDMAN.CFG`.
 
@@ -132,7 +158,7 @@ SECTOR      exact physical LBA/range when a raw HDD command exists
 
 Instrumentation covers startup admission, diagnostics, backup, disable, legacy/full restore, MBR source validation, MagicGate signing, install, payload reads/writes, pointer changes, deterministic health assessment, `HDDRAW`, exceptional master repair, `HDDMETA`, and forensic multi-header repair.
 
-Presentation is synchronized to VBlank. High-rate raw `READ` telemetry is coalesced so the UI shows the newest state without turning every disk access into a mandatory 50/60 Hz wait. WRITE/VERIFY/FLUSH/pointer and phase changes remain immediate and VBlank-synchronized. This removed visible forensic-scan tearing on the release test console.
+Presentation uses a complete off-screen framebuffer and a VBlank swap. High-rate raw `READ` telemetry is coalesced so the UI shows the newest state without turning every disk access into a mandatory 50/60 Hz wait. WRITE/VERIFY/FLUSH/pointer and phase changes remain immediate. This preserves the release fix for visible forensic-scan tearing while removing the remaining draw-versus-scan race for every screen.
 
 ## Contextual errors
 
@@ -406,6 +432,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md) — physical validation record.
 - [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded corruption/restore procedure.
 - [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — GS frontend and display-validation history.
+- [`docs/PERFORMANCE_0.4X.md`](docs/PERFORMANCE_0.4X.md) — measured EE/GS optimization record and validation boundary.
 - [`docs/STATUS_AND_ERRORS.md`](docs/STATUS_AND_ERRORS.md) — live telemetry and contextual error presentation.
 
 ## Credits

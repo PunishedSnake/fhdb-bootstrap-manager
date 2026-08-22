@@ -179,6 +179,22 @@ The final 0.4.0 display contract is:
 
 The VSync build was physically retested: screen tearing during forensic scanning disappeared. The visible status refresh rate is lower by design, while disk I/O itself is not forced to wait for one VBlank per raw read because high-rate read telemetry is coalesced.
 
+### Post-release GS optimization physical result
+
+The 0.4.x optimization branch adds true two-framebuffer VBlank swapping and an
+application-owned 480p mode backed by a 720x448 visible / 768x448-stride pair.
+The maintainer's 2026-08-22 physical retest reported successful switching in
+both directions and correct operation after the change. This validates the
+native <-> 480p transition on the tested console/display path, including the
+full GS-state restoration that follows each mode reset.
+
+The same backend now exposes guarded NTSC 480i, PAL 576i, 576p, 720p and 1080i
+choices. Those additional signals are not covered by this physical result and
+remain experimental. Every alternate mode has a ten-second confirmation and
+automatic native fallback. A confirmed mode may be saved in `HDDMAN.CFG`, but
+is guarded again at startup; failure or timeout persists `native` to avoid a
+black-screen boot loop. 576p is disabled on ROM versions older than 2.20.
+
 ## Large-HDD forensic finding #1 — old node-cap truncation
 
 The first healthy large-HDL forensic scan hit the old 512-node capacity. The partial forward map still looked extremely coherent, but the visible tail was not the physical tail. The old evaluator therefore inferred two fake endpoint changes.

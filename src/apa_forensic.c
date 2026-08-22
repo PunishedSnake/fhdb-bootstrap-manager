@@ -13,6 +13,24 @@
 #include <stddef.h>
 #include <string.h>
 
+#define NODE_SET_BYTES ((APA_FORENSIC_MAX_NODES + 7u) / 8u)
+
+typedef struct {
+    apa_forensic_result_t *result;
+    unsigned short by_lba[APA_FORENSIC_MAX_NODES];
+    unsigned int count;
+} forensic_index_t;
+
+static int node_set_contains(const unsigned char *set, unsigned int index)
+{
+    return (set[index >> 3] & (1u << (index & 7u))) != 0;
+}
+
+static void node_set_add(unsigned char *set, unsigned int index)
+{
+    set[index >> 3] |= (unsigned char)(1u << (index & 7u));
+}
+
 static void write_le32_forensic(unsigned char *destination, uint32_t value)
 {
     destination[0] = (unsigned char)value;
@@ -65,7 +83,8 @@ static unsigned int clamp_confidence(int value)
 static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
                                    uint32_t lba, uint32_t total_sectors,
                                    uint32_t source_evidence,
-                                   uint32_t *evidence_out)
+                                   uint32_t *evidence_out,
+                                   uint32_t *checksum_out)
 {
     const uint32_t semantic_anchor_mask =
         APA_FORENSIC_EVIDENCE_MAGIC |
@@ -82,6 +101,8 @@ static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
     uint64_t end = (uint64_t)start + (uint64_t)length;
     int score = 0;
 
+    *checksum_out = 0;
+
     if (memcmp(header + APA_MAGIC_OFFSET, "APA\0", 4) == 0) {
         evidence |= APA_FORENSIC_EVIDENCE_MAGIC;
         score += 25;
@@ -90,9 +111,26 @@ static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
         evidence |= APA_FORENSIC_EVIDENCE_SELF_START;
         score += 20;
     }
-    if (read_le32(header) == apa_checksum(header)) {
-        evidence |= APA_FORENSIC_EVIDENCE_CHECKSUM;
-        score += 20;
+
+    /* Direct-grid candidates without APA magic or a self-consistent start are
+     * rejected below regardless of every weaker field. Reject them before the
+     * 256-word checksum walk: on a large HDD almost every sampled sector is
+     * ordinary data, so checksumming all of them only burns EE cycles without
+     * producing evidence that can ever be admitted. Referenced headers retain
+     * the full degraded inspection path. */
+    if ((source_evidence & APA_FORENSIC_EVIDENCE_REFERENCED) == 0 &&
+        (evidence & direct_grid_anchor_mask) == 0) {
+        *evidence_out = evidence;
+        return 0;
+    }
+    {
+        uint32_t checksum = apa_checksum(header);
+
+        *checksum_out = checksum;
+        if (read_le32(header) == checksum) {
+            evidence |= APA_FORENSIC_EVIDENCE_CHECKSUM;
+            score += 20;
+        }
     }
     if (length != 0 && start < total_sectors && end <= total_sectors) {
         evidence |= APA_FORENSIC_EVIDENCE_LENGTH;
@@ -124,32 +162,66 @@ static unsigned int inspect_header(const unsigned char header[APA_HEADER_SIZE],
      * those two primary anchors. A header reached through a surviving graph
      * reference may still be retained with weaker anchors so damaged magic/start
      * fields remain inspectable in degraded read-only recovery. */
-    if ((source_evidence & APA_FORENSIC_EVIDENCE_REFERENCED) == 0 &&
-        (evidence & direct_grid_anchor_mask) == 0)
-        score = 0;
-
     *evidence_out = evidence;
     return clamp_confidence(score);
 }
 
-static int find_node(const apa_forensic_result_t *result, uint32_t lba)
+static int find_node(const forensic_index_t *index, uint32_t lba)
 {
-    unsigned int i;
+    unsigned int low = 0;
+    unsigned int high = index->count;
 
-    for (i = 0; i < result->node_count; i++) {
-        if (result->nodes[i].lba == lba)
-            return (int)i;
+    while (low < high) {
+        unsigned int middle = low + ((high - low) >> 1);
+        unsigned int node_index = index->by_lba[middle];
+        uint32_t candidate = index->result->nodes[node_index].lba;
+
+        if (candidate < lba)
+            low = middle + 1u;
+        else
+            high = middle;
+    }
+    if (low < index->count) {
+        unsigned int node_index = index->by_lba[low];
+        if (index->result->nodes[node_index].lba == lba)
+            return (int)node_index;
     }
     return -1;
 }
 
-static int add_candidate(apa_forensic_read_fn reader, void *reader_context,
-                         uint32_t lba, uint32_t total_sectors,
-                         uint32_t source_evidence,
-                         apa_forensic_result_t *result)
+static void index_node(forensic_index_t *index, unsigned int node_index)
 {
+    unsigned int low = 0;
+    unsigned int high = index->count;
+    uint32_t lba = index->result->nodes[node_index].lba;
+
+    while (low < high) {
+        unsigned int middle = low + ((high - low) >> 1);
+        uint32_t candidate =
+            index->result->nodes[index->by_lba[middle]].lba;
+
+        if (candidate < lba)
+            low = middle + 1u;
+        else
+            high = middle;
+    }
+    if (low < index->count) {
+        memmove(&index->by_lba[low + 1u], &index->by_lba[low],
+                (index->count - low) * sizeof(index->by_lba[0]));
+    }
+    index->by_lba[low] = (unsigned short)node_index;
+    index->count++;
+}
+
+static int add_candidate(forensic_index_t *index,
+                         apa_forensic_read_fn reader, void *reader_context,
+                         uint32_t lba, uint32_t total_sectors,
+                         uint32_t source_evidence)
+{
+    apa_forensic_result_t *result = index->result;
     unsigned char header[APA_HEADER_SIZE];
     uint32_t evidence;
+    uint32_t calculated_checksum;
     unsigned int confidence;
     int existing;
     int read_result;
@@ -158,7 +230,7 @@ static int add_candidate(apa_forensic_read_fn reader, void *reader_context,
     if (lba >= total_sectors || total_sectors - lba < 2)
         return 0;
 
-    existing = find_node(result, lba);
+    existing = find_node(index, lba);
     if (existing >= 0) {
         result->nodes[existing].evidence |= source_evidence;
         return 0;
@@ -171,7 +243,8 @@ static int add_candidate(apa_forensic_read_fn reader, void *reader_context,
     }
 
     confidence = inspect_header(header, lba, total_sectors,
-                                source_evidence, &evidence);
+                                source_evidence, &evidence,
+                                &calculated_checksum);
     if (confidence < 30 && !(lba == 0 && confidence >= 20))
         return 0;
 
@@ -184,7 +257,7 @@ static int add_candidate(apa_forensic_read_fn reader, void *reader_context,
     memset(node, 0, sizeof(*node));
     node->lba = lba;
     node->stored_checksum = read_le32(header);
-    node->calculated_checksum = apa_checksum(header);
+    node->calculated_checksum = calculated_checksum;
     node->next = read_le32(header + APA_NEXT_OFFSET);
     node->prev = read_le32(header + APA_PREV_OFFSET);
     node->start = read_le32(header + APA_START_OFFSET);
@@ -199,6 +272,7 @@ static int add_candidate(apa_forensic_read_fn reader, void *reader_context,
     memcpy(node->header, header, APA_HEADER_SIZE);
     memcpy(node->id, header + APA_ID_OFFSET, APA_ID_SIZE);
     node->id[APA_ID_SIZE] = '\0';
+    index_node(index, result->node_count - 1u);
     return 1;
 }
 
@@ -211,7 +285,8 @@ static int referenced_node_candidate(const apa_forensic_node_t *node)
            (node->evidence & required) == required;
 }
 
-static void follow_reference(apa_forensic_read_fn reader, void *reader_context,
+static void follow_reference(forensic_index_t *index,
+                             apa_forensic_read_fn reader, void *reader_context,
                              uint32_t lba, uint32_t total_sectors,
                              apa_forensic_result_t *result)
 {
@@ -219,17 +294,18 @@ static void follow_reference(apa_forensic_read_fn reader, void *reader_context,
 
     if (lba == 0 || lba >= total_sectors)
         return;
-    before = find_node(result, lba);
+    before = find_node(index, lba);
     if (before >= 0) {
         result->nodes[before].evidence |= APA_FORENSIC_EVIDENCE_REFERENCED;
         return;
     }
     result->reference_reads++;
-    (void)add_candidate(reader, reader_context, lba, total_sectors,
-                        APA_FORENSIC_EVIDENCE_REFERENCED, result);
+    (void)add_candidate(index, reader, reader_context, lba, total_sectors,
+                        APA_FORENSIC_EVIDENCE_REFERENCED);
 }
 
-static void chase_references(apa_forensic_read_fn reader, void *reader_context,
+static void chase_references(forensic_index_t *index,
+                             apa_forensic_read_fn reader, void *reader_context,
                              uint32_t total_sectors,
                              apa_forensic_result_t *result)
 {
@@ -242,11 +318,11 @@ static void chase_references(apa_forensic_read_fn reader, void *reader_context,
         if (!referenced_node_candidate(node))
             continue;
 
-        follow_reference(reader, reader_context, node->next, total_sectors,
+        follow_reference(index, reader, reader_context, node->next, total_sectors,
                          result);
-        follow_reference(reader, reader_context, node->prev, total_sectors,
+        follow_reference(index, reader, reader_context, node->prev, total_sectors,
                          result);
-        follow_reference(reader, reader_context, node->main, total_sectors,
+        follow_reference(index, reader, reader_context, node->main, total_sectors,
                          result);
 
         if (node->nsub <= APA_MAX_SUBS && node->confidence >= 60) {
@@ -254,28 +330,18 @@ static void chase_references(apa_forensic_read_fn reader, void *reader_context,
                 uint32_t sub_start = read_le32(
                     node->header + APA_SUBS_OFFSET +
                     (i * APA_SUB_ENTRY_SIZE));
-                follow_reference(reader, reader_context, sub_start,
+                follow_reference(index, reader, reader_context, sub_start,
                                  total_sectors, result);
             }
         }
     }
 }
 
-static int map_contains(const apa_forensic_map_t *map, unsigned int index)
-{
-    unsigned int i;
-
-    for (i = 0; i < map->node_count; i++) {
-        if (map->order[i] == index)
-            return 1;
-    }
-    return 0;
-}
-
-static int unique_link_candidate(const apa_forensic_result_t *result,
-                                 const apa_forensic_map_t *map,
+static int unique_link_candidate(const forensic_index_t *index,
+                                 const unsigned char *excluded,
                                  uint32_t current_lba, int match_prev)
 {
+    const apa_forensic_result_t *result = index->result;
     int found = -1;
     unsigned int i;
 
@@ -283,7 +349,7 @@ static int unique_link_candidate(const apa_forensic_result_t *result,
         const apa_forensic_node_t *node = &result->nodes[i];
         uint32_t link = match_prev ? node->prev : node->next;
 
-        if (map_contains(map, i) || node->confidence < 55)
+        if (node_set_contains(excluded, i) || node->confidence < 55)
             continue;
         if (link != current_lba)
             continue;
@@ -294,36 +360,41 @@ static int unique_link_candidate(const apa_forensic_result_t *result,
     return found;
 }
 
-static void build_forward_map(const apa_forensic_result_t *result,
+static void build_forward_map(const forensic_index_t *index,
                               apa_forensic_map_t *map)
 {
-    int master = find_node(result, 0);
+    const apa_forensic_result_t *result = index->result;
+    unsigned char in_map[NODE_SET_BYTES];
+    int master = find_node(index, 0);
     int current;
 
     memset(map, 0, sizeof(*map));
+    memset(in_map, 0, sizeof(in_map));
     map->kind = APA_FORENSIC_MAP_FORWARD;
     if (master < 0)
         return;
 
     map->order[map->node_count++] = (unsigned short)master;
+    node_set_add(in_map, (unsigned int)master);
     current = master;
     while (map->node_count < APA_FORENSIC_MAX_NODES) {
         uint32_t next_lba = result->nodes[current].next;
-        int next = next_lba != 0 ? find_node(result, next_lba) : -1;
+        int next = next_lba != 0 ? find_node(index, next_lba) : -1;
 
         if (next_lba == 0) {
             if (current == master)
-                next = unique_link_candidate(result, map, 0, 1);
+                next = unique_link_candidate(index, in_map, 0, 1);
             else
                 break;
         }
-        if (next < 0 || map_contains(map, (unsigned int)next)) {
-            next = unique_link_candidate(result, map,
+        if (next < 0 || node_set_contains(in_map, (unsigned int)next)) {
+            next = unique_link_candidate(index, in_map,
                                          result->nodes[current].lba, 1);
         }
-        if (next < 0 || map_contains(map, (unsigned int)next))
+        if (next < 0 || node_set_contains(in_map, (unsigned int)next))
             break;
         map->order[map->node_count++] = (unsigned short)next;
+        node_set_add(in_map, (unsigned int)next);
         current = next;
     }
 }
@@ -346,8 +417,12 @@ static int canonical_empty_node(const apa_forensic_node_t *node)
 static void classify_dormant_free_remnants(apa_forensic_result_t *result,
                                            const apa_forensic_map_t *forward)
 {
+    unsigned char in_forward[NODE_SET_BYTES];
     unsigned int i;
 
+    memset(in_forward, 0, sizeof(in_forward));
+    for (i = 0; i < forward->node_count; i++)
+        node_set_add(in_forward, forward->order[i]);
     result->dormant_free_nodes = 0;
     for (i = 0; i < result->node_count; i++)
         result->nodes[i].evidence &= ~APA_FORENSIC_EVIDENCE_DORMANT_FREE;
@@ -367,7 +442,7 @@ static void classify_dormant_free_remnants(apa_forensic_result_t *result,
         uint64_t node_end;
         unsigned int j;
 
-        if (map_contains(forward, i) || !canonical_empty_node(node))
+        if (node_set_contains(in_forward, i) || !canonical_empty_node(node))
             continue;
         node_end = (uint64_t)node->start + (uint64_t)node->length;
         for (j = 0; j < forward->node_count; j++) {
@@ -400,57 +475,42 @@ static void reverse_indices(unsigned short *values, unsigned int count)
     }
 }
 
-static int index_in_values(const unsigned short *values, unsigned int count,
-                           unsigned short value)
-{
-    unsigned int i;
-
-    for (i = 0; i < count; i++) {
-        if (values[i] == value)
-            return 1;
-    }
-    return 0;
-}
-
-static void build_reverse_map(const apa_forensic_result_t *result,
+static void build_reverse_map(const forensic_index_t *index,
                               apa_forensic_map_t *map)
 {
+    const apa_forensic_result_t *result = index->result;
     unsigned short reverse_order[APA_FORENSIC_MAX_NODES];
+    unsigned char seen[NODE_SET_BYTES];
     unsigned int reverse_count = 0;
-    int master = find_node(result, 0);
+    int master = find_node(index, 0);
     int current;
 
     memset(map, 0, sizeof(*map));
+    memset(seen, 0, sizeof(seen));
     map->kind = APA_FORENSIC_MAP_REVERSE;
     if (master < 0)
         return;
 
     current = result->nodes[master].prev != 0
-                  ? find_node(result, result->nodes[master].prev) : -1;
+                  ? find_node(index, result->nodes[master].prev) : -1;
     if (current < 0)
-        current = unique_link_candidate(result, map, 0, 0);
+        current = unique_link_candidate(index, seen, 0, 0);
 
     while (current >= 0 && reverse_count < APA_FORENSIC_MAX_NODES - 1) {
         uint32_t prev_lba;
         int prev;
-        unsigned int i;
-
-        if (index_in_values(reverse_order, reverse_count,
-                            (unsigned short)current))
+        if (node_set_contains(seen, (unsigned int)current))
             break;
 
         reverse_order[reverse_count++] = (unsigned short)current;
+        node_set_add(seen, (unsigned int)current);
         prev_lba = result->nodes[current].prev;
         if (prev_lba == 0)
             break;
-        prev = find_node(result, prev_lba);
-        if (prev < 0) {
-            apa_forensic_map_t temporary = *map;
-            for (i = 0; i < reverse_count; i++)
-                temporary.order[temporary.node_count++] = reverse_order[i];
-            prev = unique_link_candidate(result, &temporary,
+        prev = find_node(index, prev_lba);
+        if (prev < 0)
+            prev = unique_link_candidate(index, seen,
                                          result->nodes[current].lba, 0);
-        }
         current = prev;
     }
 
@@ -519,9 +579,10 @@ static int maps_equal(const apa_forensic_map_t *a,
     return 1;
 }
 
-static void evaluate_map(const apa_forensic_result_t *result,
+static void evaluate_map(const forensic_index_t *index,
                          apa_forensic_map_t *map)
 {
+    const apa_forensic_result_t *result = index->result;
     unsigned int high_nodes = 0;
     unsigned int weak_nodes = 0;
     unsigned int i;
@@ -560,13 +621,13 @@ static void evaluate_map(const apa_forensic_result_t *result,
         }
 
         if (node->prev != desired_prev) {
-            int target = node->prev != 0 ? find_node(result, node->prev) : -1;
+            int target = node->prev != 0 ? find_node(index, node->prev) : -1;
             map->inferred_links++;
             if (target >= 0 && node->prev != desired_prev)
                 map->conflicts++;
         }
         if (node->next != desired_next) {
-            int target = node->next != 0 ? find_node(result, node->next) : -1;
+            int target = node->next != 0 ? find_node(index, node->next) : -1;
             map->inferred_links++;
             if (target >= 0 && node->next != desired_next)
                 map->conflicts++;
@@ -638,17 +699,20 @@ int apa_forensic_scan(apa_forensic_read_fn reader, void *reader_context,
 {
     uint32_t lba;
     apa_forensic_map_t candidate;
+    forensic_index_t index;
 
     if (reader == NULL || result == NULL || total_sectors < 2)
         return -1;
 
     memset(result, 0, sizeof(*result));
+    memset(&index, 0, sizeof(index));
+    index.result = result;
     result->total_sectors = total_sectors;
     result->grid_step = APA_FORENSIC_SCAN_STEP;
 
     result->grid_reads++;
-    (void)add_candidate(reader, reader_context, 0, total_sectors,
-                        APA_FORENSIC_EVIDENCE_GRID, result);
+    (void)add_candidate(&index, reader, reader_context, 0, total_sectors,
+                        APA_FORENSIC_EVIDENCE_GRID);
     if (progress != NULL)
         progress(progress_context, 0, total_sectors, result->node_count);
 
@@ -656,8 +720,8 @@ int apa_forensic_scan(apa_forensic_read_fn reader, void *reader_context,
          lba < total_sectors && !result->truncated;
          lba += APA_FORENSIC_SCAN_STEP) {
         result->grid_reads++;
-        (void)add_candidate(reader, reader_context, lba, total_sectors,
-                            APA_FORENSIC_EVIDENCE_GRID, result);
+        (void)add_candidate(&index, reader, reader_context, lba, total_sectors,
+                            APA_FORENSIC_EVIDENCE_GRID);
         if (progress != NULL &&
             ((result->grid_reads & 31u) == 0u ||
              total_sectors - lba <= APA_FORENSIC_SCAN_STEP))
@@ -667,19 +731,19 @@ int apa_forensic_scan(apa_forensic_read_fn reader, void *reader_context,
             break;
     }
 
-    chase_references(reader, reader_context, total_sectors, result);
+    chase_references(&index, reader, reader_context, total_sectors, result);
 
-    build_forward_map(result, &candidate);
+    build_forward_map(&index, &candidate);
     classify_dormant_free_remnants(result, &candidate);
-    evaluate_map(result, &candidate);
+    evaluate_map(&index, &candidate);
     add_map_if_unique(result, &candidate);
 
-    build_reverse_map(result, &candidate);
-    evaluate_map(result, &candidate);
+    build_reverse_map(&index, &candidate);
+    evaluate_map(&index, &candidate);
     add_map_if_unique(result, &candidate);
 
     build_geometry_map(result, &candidate);
-    evaluate_map(result, &candidate);
+    evaluate_map(&index, &candidate);
     add_map_if_unique(result, &candidate);
 
     if (progress != NULL)

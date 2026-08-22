@@ -3,6 +3,8 @@
 
 #include <stdarg.h>
 
+#include "video_mode.h"
+
 typedef enum {
     GS_UI_TONE_INFO = 0,
     GS_UI_TONE_SUCCESS,
@@ -20,6 +22,14 @@ typedef enum {
  */
 int gs_ui_initialize(void);
 int gs_ui_is_ready(void);
+
+/* Video-mode changes affect this application only. Native mode reuses the
+ * hardware-proven init_scr() bootstrap. Every alternate output is guarded by
+ * a timed confirmation in the manager; unsupported 576p is rejected before
+ * PS2SDK can silently substitute PAL on pre-2.20 ROMs. */
+video_mode_id_t gs_ui_video_mode_current(void);
+int gs_ui_video_mode_supported(video_mode_id_t mode);
+int gs_ui_video_mode_apply(video_mode_id_t mode);
 
 void gs_ui_render_menu(const char *title,
                        const char *status,
@@ -41,6 +51,10 @@ void gs_ui_console_clear(void);
 void gs_ui_console_printf(const char *format, ...)
     __attribute__((format(printf, 1, 2)));
 void gs_ui_console_vprintf(const char *format, va_list arguments);
+/* Present one complete compatibility-console screen. Historical controller
+ * code often emits a screen through several scr_printf() calls; batching those
+ * calls avoids rebuilding and submitting the same frame after every line. */
+void gs_ui_console_present(void);
 
 void gs_ui_render_disk_status(const char *operation,
                               const char *phase,

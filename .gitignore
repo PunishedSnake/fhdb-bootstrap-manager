@@ -6,6 +6,8 @@
 /tests/test_formats
 /tests/test_apa_repair
 /tests/test_apa_forensic
+/tests/test_apa_forensic_dormant_free
+/tests/test_video_mode
 /tests/test_forensic_fixtures
 /tests/test_boot_chain
 /tests/test_boot_payload

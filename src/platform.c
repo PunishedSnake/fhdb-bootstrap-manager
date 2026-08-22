@@ -16,9 +16,11 @@
 #include <libpad.h>
 
 #include "platform.h"
+#include "gs_ui_ps2.h"
 
 /* Controller DMA memory must remain aligned and alive for padPortOpen(). */
 static unsigned char pad_buffer[256] __attribute__((aligned(64)));
+static u32 previous_pad_buttons;
 
 /* The ANALOG lamp is physically tied to the controller's main mode command.
  * We therefore use steady OFF/ON transitions at operation boundaries rather
@@ -147,6 +149,7 @@ int init_pad(void)
     activity_supported = 0;
     activity_mode_control_engaged = 0;
     activity_depth = 0;
+    previous_pad_buttons = 0;
     padInit(0);
     if (!padPortOpen(0, 0, pad_buffer))
         return -1;
@@ -166,6 +169,34 @@ int init_pad(void)
     if (set_pad_main_mode(PAD_MMODE_DIGITAL, PAD_MMODE_LOCK) == 0) {
         activity_supported = 1;
         activity_mode_control_engaged = 1;
+    }
+    return 0;
+}
+
+/* Read one controller edge without blocking. Keeping the previous state in the
+ * platform layer lets normal and timed input share identical edge semantics. */
+static int poll_pad_press(u32 *pressed)
+{
+    struct padButtonStatus buttons;
+    int state = padGetState(0, 0);
+
+    if (pressed == NULL)
+        return 0;
+    *pressed = 0;
+    if (state != PAD_STATE_STABLE && state != PAD_STATE_FINDCTP1)
+        return 0;
+    if (padRead(0, 0, &buttons) == 0)
+        return 0;
+
+    {
+        u32 current = 0xffffu ^ buttons.btns;
+        u32 edge = current & ~previous_pad_buttons;
+
+        previous_pad_buttons = current;
+        if (edge != 0u) {
+            *pressed = edge;
+            return 1;
+        }
     }
     return 0;
 }
@@ -215,19 +246,35 @@ int pad_activity_is_supported(void)
 /* Block until a new button edge is observed, avoiding repeated menu actions. */
 u32 wait_for_press(void)
 {
-    struct padButtonStatus buttons;
-    static u32 previous = 0;
+    u32 pressed;
 
+    /* Compatibility screens are assembled through several scr_printf() calls.
+       Submit the completed frame once, immediately before it becomes interactive. */
+    gs_ui_console_present();
     for (;;) {
-        if (wait_pad_ready() == 0 && padRead(0, 0, &buttons) != 0) {
-            u32 current = 0xffffu ^ buttons.btns;
-            u32 pressed = current & ~previous;
-            previous = current;
-            if (pressed)
-                return pressed;
-        }
+        if (poll_pad_press(&pressed))
+            return pressed;
         DelayThread(16000);
     }
+}
+
+/* Wait for a fresh button edge, but never let a missing controller prevent a
+ * video-mode safety timeout from restoring the known-good display mode. */
+int wait_for_press_timeout(unsigned int milliseconds, u32 *pressed)
+{
+    unsigned int elapsed = 0;
+
+    if (pressed == NULL)
+        return 0;
+    gs_ui_console_present();
+    while (elapsed < milliseconds) {
+        if (poll_pad_press(pressed))
+            return 1;
+        DelayThread(16000);
+        elapsed += 16u;
+    }
+    *pressed = 0;
+    return 0;
 }
 
 /* Require a multi-button hold; TRIANGLE always cancels safely. */
@@ -235,6 +282,7 @@ int wait_for_chord(u32 chord)
 {
     struct padButtonStatus buttons;
 
+    gs_ui_console_present();
     for (;;) {
         if (wait_pad_ready() == 0 && padRead(0, 0, &buttons) != 0) {
             u32 held = 0xffffu ^ buttons.btns;

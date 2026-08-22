@@ -15,6 +15,7 @@ void reset_iop(void);
 int load_modules(void);
 int init_pad(void);
 u32 wait_for_press(void);
+int wait_for_press_timeout(unsigned int milliseconds, u32 *pressed);
 int wait_for_chord(u32 chord);
 
 /*

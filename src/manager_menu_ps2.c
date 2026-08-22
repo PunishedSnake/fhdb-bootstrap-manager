@@ -1,20 +1,24 @@
 /* Hierarchical post-0.4 UI controller: categories replace button exhaustion. */
 
 #include <debug.h>
+#include <libpad.h>
 
 #include <stdio.h>
 
+#include "app_config.h"
 #include "app_ui_ps2.h"
 #include "bootstrap_controller_ps2.h"
 #include "boot_report_session.h"
 #include "diagnostics_controller_ps2.h"
 #include "forensic_controller_ps2.h"
+#include "gs_ui_ps2.h"
 #include "manager_menu_ps2.h"
 #include "platform.h"
 #include "repair_controller_ps2.h"
 #include "session_log.h"
 #include "storage.h"
 #include "ui_theme_ps2.h"
+#include "video_mode.h"
 
 static void build_dashboard_status(char *buffer, unsigned int capacity,
                                    const unsigned char header[APA_HEADER_SIZE],
@@ -205,8 +209,8 @@ static void ui_theme_menu(void)
         return;
 
     ui_theme_set((ui_theme_id_t)choice);
-    save_result = ui_theme_save_config();
-    ui_theme_config_path(config_path, sizeof(config_path));
+    save_result = app_config_save();
+    app_config_path(config_path, sizeof(config_path));
     session_log_line("UI theme changed to %s; config=%s; save=%d",
                      ui_theme_name(ui_theme_current_id()),
                      config_path, save_result);
@@ -223,17 +227,176 @@ static void ui_theme_menu(void)
     app_ui_wait_to_return();
 }
 
+static const char *const video_mode_hints[VIDEO_MODE_COUNT] = {
+    "Hardware-proven automatic 640x224 FIELD output",
+    "Experimental filtered 640x448 NTSC frame output",
+    "Experimental filtered 640x512 PAL frame output",
+    "Hardware-proven 720x448 progressive output in 32-bit color",
+    "Experimental 656x512 progressive output; requires BIOS 2.20+",
+    "Experimental 1280x448 letterboxed UI in 16-bit color",
+    "Experimental centered 960x448 UI in 16-bit color"
+};
+
+static int confirm_video_mode(video_mode_id_t mode, int startup)
+{
+    unsigned int remaining;
+    char title[96];
+    char body[320];
+
+    snprintf(title, sizeof(title), "Confirm %s", video_mode_identifier(mode));
+    for (remaining = 10u; remaining != 0u; remaining--) {
+        u32 pressed = 0;
+
+        snprintf(body, sizeof(body),
+                 "%s is active.\n\n"
+                 "Press X to keep this output%s.\n"
+                 "Press TRIANGLE to restore native output.\n\n"
+                 "Automatic restore in %u second%s.",
+                 video_mode_name(mode),
+                 startup ? " as the startup preference" : " and save it",
+                 remaining, remaining == 1u ? "" : "s");
+        gs_ui_render_message(title, body,
+                             "No confirmation means no permanent black screen.",
+                             GS_UI_TONE_WARNING);
+        if (wait_for_press_timeout(1000u, &pressed)) {
+            if (pressed & PAD_CROSS)
+                return 1;
+            if (pressed & PAD_TRIANGLE)
+                return 0;
+        }
+    }
+    return 0;
+}
+
+static int save_video_preference(video_mode_id_t mode)
+{
+    video_mode_id_t previous = app_config_video_mode();
+    int result;
+
+    if (app_config_set_video_mode(mode) < 0)
+        return -1;
+    result = app_config_save();
+    if (result < 0)
+        (void)app_config_set_video_mode(previous);
+    return result;
+}
+
+static void show_video_preference_result(video_mode_id_t mode, int save_result)
+{
+    char config_path[STORAGE_LAUNCH_PATH_SIZE];
+
+    app_config_path(config_path, sizeof(config_path));
+    scr_clear();
+    scr_printf("Video mode: %s\n\n", video_mode_name(mode));
+    scr_printf("Config: %s\n", config_path);
+    if (save_result == 0)
+        scr_printf("Preference saved beside the ELF.\n");
+    else
+        scr_printf("Mode is active for this session; config save code: %d\n",
+                   save_result);
+    scr_printf("\nEvery non-native startup still requires confirmation.\n");
+    app_ui_wait_to_return();
+}
+
+static void video_mode_menu(void)
+{
+    app_ui_menu_item_t items[VIDEO_MODE_COUNT];
+    unsigned int selected = (unsigned int)gs_ui_video_mode_current();
+    unsigned int i;
+    char status[128];
+    int choice;
+    int result;
+    int save_result;
+
+    for (i = 0; i < VIDEO_MODE_COUNT; i++) {
+        items[i].label = video_mode_name((video_mode_id_t)i);
+        items[i].hint = video_mode_hints[i];
+        items[i].enabled = gs_ui_video_mode_supported((video_mode_id_t)i);
+    }
+    snprintf(status, sizeof(status), "Current: %s | startup: %s",
+             video_mode_identifier(gs_ui_video_mode_current()),
+             video_mode_identifier(app_config_video_mode()));
+    choice = app_ui_menu_select("Video mode", status, items,
+                                VIDEO_MODE_COUNT, &selected);
+    if (choice < 0)
+        return;
+    if ((video_mode_id_t)choice == gs_ui_video_mode_current() &&
+        (video_mode_id_t)choice == app_config_video_mode())
+        return;
+
+    result = gs_ui_video_mode_apply((video_mode_id_t)choice);
+    session_log_line("Video mode request: %s; result=%d",
+                     video_mode_name((video_mode_id_t)choice), result);
+    if (result < 0) {
+        scr_clear();
+        scr_printf("Video mode switch failed (code %d).\n\n", result);
+        scr_printf("The native display mode has been restored.\n");
+        app_ui_wait_to_return();
+        return;
+    }
+
+    if (choice == VIDEO_MODE_NATIVE) {
+        save_result = save_video_preference(VIDEO_MODE_NATIVE);
+        session_log_line("Native video preference save=%d", save_result);
+        show_video_preference_result(VIDEO_MODE_NATIVE, save_result);
+        return;
+    }
+
+    if (confirm_video_mode((video_mode_id_t)choice, 0)) {
+        save_result = save_video_preference((video_mode_id_t)choice);
+        session_log_line("Video mode confirmed: %s; config save=%d",
+                         video_mode_name((video_mode_id_t)choice), save_result);
+        show_video_preference_result((video_mode_id_t)choice, save_result);
+        return;
+    }
+
+    (void)gs_ui_video_mode_apply(VIDEO_MODE_NATIVE);
+    session_log_line("Video mode %s was not confirmed; native restored",
+                     video_mode_name((video_mode_id_t)choice));
+}
+
+static void apply_startup_video_preference(void)
+{
+    video_mode_id_t mode = app_config_video_mode();
+    int result;
+    int save_result;
+
+    if (mode == VIDEO_MODE_NATIVE)
+        return;
+    if (!gs_ui_video_mode_supported(mode)) {
+        save_result = save_video_preference(VIDEO_MODE_NATIVE);
+        session_log_line("Startup video mode %s unsupported; native saved=%d",
+                         video_mode_name(mode), save_result);
+        return;
+    }
+
+    result = gs_ui_video_mode_apply(mode);
+    session_log_line("Startup video mode request: %s; result=%d",
+                     video_mode_name(mode), result);
+    if (result == 0 && confirm_video_mode(mode, 1)) {
+        session_log_line("Startup video mode confirmed: %s",
+                         video_mode_name(mode));
+        return;
+    }
+
+    (void)gs_ui_video_mode_apply(VIDEO_MODE_NATIVE);
+    save_result = save_video_preference(VIDEO_MODE_NATIVE);
+    session_log_line("Startup video mode rejected; native restored and saved=%d",
+                     save_result);
+}
+
 static void system_menu(void)
 {
     static const app_ui_menu_item_t items[] = {
         {"Controller / activity indicator", "Inspect ANALOG-lamp capability and behavior", 1},
         {"UI theme", "Choose Aqua, Amber, Sakura or Monochrome", 1},
+        {"Video mode", "Guarded NTSC, PAL, 480p, 576p, 720p and 1080i output", 1},
         {"Power / restart", "Restart to Browser or shut down", 1}
     };
     unsigned int selected = 0;
 
     for (;;) {
-        int choice = app_ui_menu_select("System", NULL, items, 3, &selected);
+        int choice = app_ui_menu_select("System", NULL, items, 4, &selected);
         if (choice < 0)
             return;
         if (choice == 0)
@@ -241,6 +404,8 @@ static void system_menu(void)
         if (choice == 1)
             ui_theme_menu();
         if (choice == 2)
+            video_mode_menu();
+        if (choice == 3)
             app_ui_power_menu();
     }
 }
@@ -253,10 +418,12 @@ void manager_menu_run(unsigned char header[APA_HEADER_SIZE],
         {"Diagnostics", "Boot-chain evidence and reports", 1},
         {"Recovery", "Deterministic repair and forensic APA workspace", 1},
         {"Backup & Storage", "Rescue backup destination and storage selection", 1},
-        {"System", "Controller, UI theme, restart and power", 1}
+        {"System", "Controller, UI theme, video mode, restart and power", 1}
     };
     unsigned int selected = 0;
     char status[192];
+
+    apply_startup_video_preference();
 
     for (;;) {
         int choice;
