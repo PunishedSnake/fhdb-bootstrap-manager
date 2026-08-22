@@ -2,8 +2,8 @@
 
 This document describes the 0.5 development renderer built on top of the 0.4.2
 display-safety hotfix. Native and 480p are physically proven. Development build
-3 keeps guarded 576p, 720p and 1080i available while replacing the dev2 color,
-interlace and rollback paths rejected by physical testing.
+4 keeps guarded 576p, 720p and 1080i available while correcting the first-mode
+transaction and native rollback regression observed in dev3.
 
 ## Geometry contract
 
@@ -43,7 +43,7 @@ the unmodified license in `third_party/spleen`.
 tables. `make test-host` regenerates the tables and compares them byte-for-byte
 with the committed result.
 
-The active atlas uses 8x16 slots in a 128x128 RGBA texture:
+The two resident atlases use 8x16 slots in 128x128 RGBA textures:
 
 | Output | MSX raster | Spleen raster | Output cell |
 |---|---:|---:|---:|
@@ -71,13 +71,13 @@ The renderer retains a native pair and a fixed alternate reservation:
 
 - two 640x224x32-bit native buffers;
 - two 640x1080x16-bit reserved regions, reinterpreted by each alternate mode;
-- one 128x128x32-bit adaptive font atlas.
+- two 128x128x32-bit font atlases, one native and one scaled.
 
 The combined alternate reservation holds either the proven pair of
 768x448x32-bit 480p buffers, one 768x576x32 576p buffer, one 640x720x32 720p
-buffer, or two 640x540x32 1080i FRAME buffers. Page-aligned allocation plus the
-atlas uses approximately 3.80 MiB and leaves more than 200 KiB of GS VRAM.
-Buffer addresses never move during a mode switch.
+buffer, or two 640x540x32 1080i FRAME buffers. Page-aligned allocation plus both
+atlases uses approximately 3.86 MiB and leaves 144 KiB of GS VRAM. Buffer and
+atlas addresses never move during a mode switch.
 
 ## Extended mode contracts
 
@@ -124,6 +124,23 @@ a bound for GIF idle and GS FINISH before reaching its bounded VBlank check.
 Development build 3 corrects all four conditions while keeping every candidate
 available from the menu.
 
+## Development build 3 physical result and dev4 transaction
+
+On the target SCPH-50000, dev3 changed the requested signal timing but every
+alternate mode remained black. Returning to native changed the detected timing
+again without restoring a visible framebuffer. The fault therefore preceded
+the planned twenty-cycle stress test and was common to the mode transaction,
+not to any one HDTV geometry.
+
+Development build 4 restores the known-good dev2 ordering with three bounded
+changes. A healthy alternate-to-native return calls `SetGsCrt()` without
+resetting the GS or GIF, then atomically restores the complete captured native
+read circuit including `DISPFB1/2`, `DISPLAY1/2`, `SMODE2`, `BGCOLOR` and
+`PMODE`. A hard GIF/GS reset is reserved for an actual timeout. Finally, native
+and scaled font atlases remain at fixed VRAM addresses and are uploaded only at
+startup or when the user changes font, so a video transaction performs no heap
+allocation and no texture transfer.
+
 ## Validation boundary
 
 Portable tests prove layout geometry, font identifiers, ASCII source coverage
@@ -138,7 +155,7 @@ Before release, both fonts must be checked in every exposed mode for:
 - mode switch, confirmation, timeout and native restoration;
 - repeated font changes before and after a video-mode change.
 
-The dev3 transition stress test additionally requires at least twenty complete
+The dev4 transition stress test additionally requires at least twenty complete
 `native -> candidate -> native` cycles in one uninterrupted menu session.
 
 576p, 720p and 1080i are exposed only by the development build until their full

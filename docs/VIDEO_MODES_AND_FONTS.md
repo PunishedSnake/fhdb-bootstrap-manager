@@ -139,7 +139,7 @@ The renderer provides two selectable fonts:
 - PS2SDK's 8x8 `msx` font under `AFL-2.0`;
 - Spleen under `BSD-2-Clause`, using 5x8 in native output and 8x16 in scaled modes.
 
-It builds the selected raster into a 128x128 RGBA atlas, uses nearest-neighbor
+It builds the selected native and scaled rasters into two 128x128 RGBA atlases, uses nearest-neighbor
 sampling and supports the application's printable ASCII UI. See
 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
@@ -167,7 +167,8 @@ cell changes.
 1. `ui_font` owns stable identifiers and names.
 2. `tools/generate_spleen_font.py` converts pinned BDF glyphs into compact C
    tables and records the exact upstream revision plus SPDX identifier.
-3. Only the active atlas is uploaded; changing font or video mode rebuilds it.
+3. Both font variants are uploaded at startup or when the font changes; a
+   video-mode transition only selects an existing VRAM address.
 4. Text keeps an 8x8 logical cell while the renderer selects a mode-appropriate
    output raster and centers it in the pixel-snapped cell.
 5. `font=msx` and `font=spleen` are supported in `HDDMAN.CFG`; unknown values
