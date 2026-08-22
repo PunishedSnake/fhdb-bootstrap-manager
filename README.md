@@ -1,6 +1,9 @@
 # PS2 HDD Bootstrap Manager
 
-PS2 HDD Bootstrap Manager is a standalone PlayStation 2 ELF for inspecting, backing up, disabling, restoring, installing, diagnosing, and recovering the HDD OSD bootstrap and APA metadata without formatting the disk.
+PS2 HDD Bootstrap Manager is a standalone PlayStation 2 HDD bootstrap,
+diagnostic, forensic-backup and guarded-recovery toolkit. It manages the HDD
+OSD boot chain and APA metadata without formatting the disk or treating
+"delete everything" as a particularly inspired recovery algorithm.
 
 It began after a real console got trapped in a post-uninstall FHDB boot loop: FHDB was gone, but the bootstrap pointer was still enabled, so the machine faithfully rebooted into software that no longer existed. Apparently uninstalling a program and persuading the console to stop launching it were separate premium features.
 
@@ -99,11 +102,10 @@ The physically validated display contract is intentionally conservative:
 
 Physical testing found and fixed the earlier mixed-renderer lower-right displacement, a standalone GS black screen, fractional-Y glyph corruption, and scan-time screen tearing.
 
-The current 0.4.x branch also exposes **System -> Video mode** with native,
-NTSC 480i, PAL 576i, 480p, 576p, 720p and 1080i output. Native and 480p switching
-have been exercised on physical hardware; the remaining alternate modes are
-experimental. The 576p item is disabled on ROM versions older than 2.20 rather
-than accepting PS2SDK's silent PAL fallback.
+The current 0.4.x branch exposes **System -> Video mode** with the two modes
+that passed physical testing: native and 480p. The experimental NTSC 480i, PAL
+576i, 576p, 720p and 1080i choices from 0.4.1 were removed in 0.4.2 after real
+hardware exposed incorrect geometry and a PAL 576i VBlank/fallback failure.
 
 Because the PS2 remains admirably uninterested in negotiating modern display
 capabilities, every non-native choice must be confirmed with X within ten
@@ -136,10 +138,10 @@ theme=aqua
 video_mode=native
 ```
 
-Supported `video_mode` values are `native`, `ntsc-480i`, `pal-576i`, `480p`,
-`576p`, `720p`, and `1080i`. The two widest modes use 16-bit framebuffers so
-the 4 MiB GS can retain true double buffering; native through 576p use 32-bit
-framebuffers.
+Supported `video_mode` values are `native` and `480p`, both using 32-bit true
+double buffering. A config created by 0.4.1 with `ntsc-480i`, `pal-576i`,
+`576p`, `720p`, or `1080i` is sanitized to `native` before any GS mode switch
+and rewritten when its storage is writable.
 
 When the launcher provides a usable `argv[0]`, the manager reads/writes the file beside the ELF. Otherwise it falls back to the selected report/backup storage root. Missing or unwritable config never blocks the manager. 0.4.x retains read-only compatibility with the development-only legacy name `MICHISHIRUBE.CFG`, but official assets and saves use only `HDDMAN.CFG`.
 
@@ -413,7 +415,10 @@ SHA256SUMS.txt
 HDDMAN.CFG
 ```
 
-The ZIP is the recommended download and contains the ELF, `HDDMAN.CFG`, and `SHA256SUMS.txt` together. Individual assets remain available for targeted downloads.
+The ZIP is the recommended download and contains the ELF, `HDDMAN.CFG`,
+`SHA256SUMS.txt`, the MIT project license, PS2SDK's AFL-2.0 license and the
+third-party notices together. Individual runtime assets remain available for
+targeted downloads.
 
 ## Roadmap
 
@@ -432,6 +437,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [`docs/HARDWARE_VALIDATION_0.4.md`](docs/HARDWARE_VALIDATION_0.4.md) — physical validation record.
 - [`docs/HARDWARE_FAULT_INJECTION.md`](docs/HARDWARE_FAULT_INJECTION.md) — guarded corruption/restore procedure.
 - [`docs/GS_UI_0.4.md`](docs/GS_UI_0.4.md) — GS frontend and display-validation history.
+- [`docs/VIDEO_MODES_AND_FONTS.md`](docs/VIDEO_MODES_AND_FONTS.md) — GS timing, viewport, scaling, font and licensing design.
 - [`docs/PERFORMANCE_0.4X.md`](docs/PERFORMANCE_0.4X.md) — measured EE/GS optimization record and validation boundary.
 - [`docs/STATUS_AND_ERRORS.md`](docs/STATUS_AND_ERRORS.md) — live telemetry and contextual error presentation.
 
@@ -439,5 +445,17 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 - **Hifu Himejima** — project author / hardware validation
 - **OpenAI Codex / ChatGPT** — implementation assistance
+
+## License and third-party components
+
+Original project source is licensed under the [MIT License](LICENSE), copyright
+2026 Hifu Himejima (PunishedSnake).
+
+PS2SDK libraries, embedded modules and the current `msx` bitmap font retain the
+PS2SDK Academic Free License 2.0 and their original notices. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and
+[`PS2SDK_LICENSE.txt`](PS2SDK_LICENSE.txt). Future font assets must carry their
+own redistribution/embedding license; a convenient download link and good
+intentions are not substitutes for permission.
 - **PS2DEV / PS2SDK contributors** — EE/IOP toolchain and libraries
 - reverse-engineering references and historical PS2 HDD tooling are credited in the source and project history where applicable

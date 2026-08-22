@@ -188,12 +188,12 @@ both directions and correct operation after the change. This validates the
 native <-> 480p transition on the tested console/display path, including the
 full GS-state restoration that follows each mode reset.
 
-The same backend now exposes guarded NTSC 480i, PAL 576i, 576p, 720p and 1080i
-choices. Those additional signals are not covered by this physical result and
-remain experimental. Every alternate mode has a ten-second confirmation and
-automatic native fallback. A confirmed mode may be saved in `HDDMAN.CFG`, but
-is guarded again at startup; failure or timeout persists `native` to avoid a
-black-screen boot loop. 576p is disabled on ROM versions older than 2.20.
+Follow-up physical testing of 0.4.1 rejected every additional signal: NTSC
+480i, 576p, 720p and 1080i displayed incorrect geometry, while PAL 576i also
+failed to return through the confirmation timeout because presentation could
+stall waiting for VBlank. 0.4.2 therefore retains only native and 480p. Legacy
+0.4.1 configuration identifiers are mapped to native before the GS is touched,
+so the failing 576i path cannot be entered during startup.
 
 ## Large-HDD forensic finding #1 — old node-cap truncation
 

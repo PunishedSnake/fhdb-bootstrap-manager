@@ -20,11 +20,9 @@
 #include <graph.h>
 #include <gs_psm.h>
 #include <packet.h>
-#include <rom0_info.h>
 
 #include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "app_identity.h"
@@ -34,8 +32,8 @@
 
 #define GS_UI_WIDTH 640
 #define GS_UI_HEIGHT 224
-#define GS_UI_ALT_STORAGE_WIDTH 704
-#define GS_UI_ALT_STORAGE_HEIGHT 512
+#define GS_UI_ALT_STORAGE_WIDTH 768
+#define GS_UI_ALT_STORAGE_HEIGHT 448
 #define GS_UI_FRAME_COUNT 2
 #define GS_UI_FONT_SRC_W 8
 #define GS_UI_FONT_SRC_H 8
@@ -74,24 +72,9 @@ static const video_mode_spec_t video_specs[VIDEO_MODE_COUNT] = {
     {GRAPH_MODE_INTERLACED, GRAPH_MODE_AUTO, GRAPH_MODE_FIELD, GRAPH_ENABLE,
      0, 0, 640, 224, 640, 224, GS_PSM_32,
      1.0f, 1.0f, 0.0f, 0.0f, 1},
-    {GRAPH_MODE_INTERLACED, GRAPH_MODE_NTSC, GRAPH_MODE_FRAME, GRAPH_ENABLE,
-     0, 0, 640, 448, 640, 448, GS_PSM_32,
-     1.0f, 2.0f, 0.0f, 0.0f, 1},
-    {GRAPH_MODE_INTERLACED, GRAPH_MODE_PAL, GRAPH_MODE_FRAME, GRAPH_ENABLE,
-     0, 0, 640, 512, 640, 512, GS_PSM_32,
-     1.0f, 2.0f, 0.0f, 32.0f, 1},
     {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_480P, GRAPH_MODE_FRAME,
      GRAPH_DISABLE, 0, 0, 720, 448, 768, 448, GS_PSM_32,
-     1.125f, 2.0f, 0.0f, 0.0f, 0},
-    {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_576P, GRAPH_MODE_FRAME,
-     GRAPH_DISABLE, 0, 32, 656, 512, 704, 512, GS_PSM_32,
-     1.0f, 2.0f, 8.0f, 32.0f, 0},
-    {GRAPH_MODE_NONINTERLACED, GRAPH_MODE_HDTV_720P, GRAPH_MODE_FRAME,
-     GRAPH_DISABLE, 0, 136, 1280, 448, 1280, 448, GS_PSM_16,
-     2.0f, 2.0f, 0.0f, 0.0f, 0},
-    {GRAPH_MODE_INTERLACED, GRAPH_MODE_HDTV_1080I, GRAPH_MODE_FRAME,
-     GRAPH_ENABLE, 0, 46, 960, 448, 960, 448, GS_PSM_16,
-     1.5f, 2.0f, 0.0f, 0.0f, 1}
+     1.125f, 2.0f, 0.0f, 0.0f, 0}
 };
 
 static framebuffer_t native_frames[GS_UI_FRAME_COUNT];
@@ -365,8 +348,7 @@ static void configure_alternate_frames(const video_mode_spec_t *spec)
 {
     unsigned int i;
 
-    /* The addresses describe two fixed 704x512x32-bit reservations. Only the
-       view placed over each reservation changes between alternate modes. */
+    /* The addresses describe the hardware-tested 768x448x32-bit 480p pair. */
     for (i = 0; i < GS_UI_FRAME_COUNT; i++) {
         alternate_frames[i].width = spec->frame_width;
         alternate_frames[i].height = spec->frame_height;
@@ -410,10 +392,9 @@ static int setup_environment(void)
     dma_channel_fast_waits(DMA_CHANNEL_GIF);
 
     /* Native frame zero remains at VRAM 0 for init_scr()/emergency libdebug
-       compatibility. The alternate pair reserves the largest 32-bit layout:
-       704x512. The same byte ranges also cover 768x448 at 32-bit and the wider
-       720p/1080i layouts at 16-bit. Four buffers plus the font atlas use 3.875
-       MiB of GS VRAM and leave 128 KiB free. */
+       compatibility. The alternate pair is the exact hardware-tested 480p
+       backing layout. Four buffers plus the font atlas use 3.75 MiB of GS
+       VRAM and leave 256 KiB free. */
     graph_vram_clear();
     if (!video_specs_fit_reserved_vram() ||
         allocate_frame_pair(native_frames, GS_UI_WIDTH, GS_UI_HEIGHT,
@@ -651,18 +632,7 @@ video_mode_id_t gs_ui_video_mode_current(void)
 
 int gs_ui_video_mode_supported(video_mode_id_t mode)
 {
-    char romname[15] = {0};
-
-    if ((unsigned int)mode >= VIDEO_MODE_COUNT)
-        return 0;
-    if (mode != VIDEO_MODE_576P)
-        return 1;
-
-    /* PS2SDK otherwise silently substitutes PAL for 576p on old ROMs. A
-       rejected menu item is safer than displaying a mode different from the
-       one the user was asked to confirm. */
-    GetRomName(romname);
-    return strtol(romname, NULL, 10) >= 220;
+    return (unsigned int)mode < VIDEO_MODE_COUNT;
 }
 
 static void restore_native_video(void)

@@ -229,12 +229,7 @@ static void ui_theme_menu(void)
 
 static const char *const video_mode_hints[VIDEO_MODE_COUNT] = {
     "Hardware-proven automatic 640x224 FIELD output",
-    "Experimental filtered 640x448 NTSC frame output",
-    "Experimental filtered 640x512 PAL frame output",
-    "Hardware-proven 720x448 progressive output in 32-bit color",
-    "Experimental 656x512 progressive output; requires BIOS 2.20+",
-    "Experimental 1280x448 letterboxed UI in 16-bit color",
-    "Experimental centered 960x448 UI in 16-bit color"
+    "Hardware-proven 720x448 progressive output in 32-bit color"
 };
 
 static int confirm_video_mode(video_mode_id_t mode, int startup)
@@ -390,7 +385,7 @@ static void system_menu(void)
     static const app_ui_menu_item_t items[] = {
         {"Controller / activity indicator", "Inspect ANALOG-lamp capability and behavior", 1},
         {"UI theme", "Choose Aqua, Amber, Sakura or Monochrome", 1},
-        {"Video mode", "Guarded NTSC, PAL, 480p, 576p, 720p and 1080i output", 1},
+        {"Video mode", "Hardware-tested native or guarded 480p output", 1},
         {"Power / restart", "Restart to Browser or shut down", 1}
     };
     unsigned int selected = 0;

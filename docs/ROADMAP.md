@@ -98,8 +98,8 @@ The line is now **feature-frozen** except for defects and narrowly scoped valida
 - [x] explicit full-row `LOCKED` states;
 - [x] native 640x224 GS rendering and native 8x8 font raster;
 - [x] `aqua`, `amber`, `sakura`, `mono` themes;
-- [x] hardware-tested native/480p switching plus guarded experimental NTSC,
-      PAL, 576p, 720p and 1080i outputs;
+- [x] hardware-tested native/480p switching; removed the failed experimental
+      0.4.1 modes and added safe config migration in 0.4.2;
 - [x] VBlank-synchronized status rendering;
 - [x] coalesced high-rate raw READ presentation without throttling disk I/O to one operation per frame;
 - [x] symbolic/stage-aware error explanations;

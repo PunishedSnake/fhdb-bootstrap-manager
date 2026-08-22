@@ -22,14 +22,28 @@ int main(void)
     }
 
     {
+        static const char *const legacy_modes[] = {
+            "ntsc-480i", "PAL-576I", "576p", "720P", "1080i"
+        };
         video_mode_id_t parsed = VIDEO_MODE_NATIVE;
+        unsigned int legacy;
 
-        if (video_mode_from_identifier("PAL-576I", &parsed) < 0 ||
-            parsed != VIDEO_MODE_PAL_576I ||
-            video_mode_from_identifier("not-a-mode", &parsed) >= 0 ||
+        for (legacy = 0;
+             legacy < sizeof(legacy_modes) / sizeof(legacy_modes[0]);
+             legacy++) {
+            parsed = VIDEO_MODE_480P;
+            if (video_mode_from_identifier(legacy_modes[legacy], &parsed) !=
+                    VIDEO_MODE_MIGRATED ||
+                parsed != VIDEO_MODE_NATIVE) {
+                fprintf(stderr, "Legacy mode was not migrated: %s.\n",
+                        legacy_modes[legacy]);
+                return 1;
+            }
+        }
+        if (video_mode_from_identifier("not-a-mode", &parsed) >= 0 ||
             video_mode_from_identifier(NULL, &parsed) >= 0 ||
             video_mode_from_identifier("native", NULL) >= 0) {
-            fprintf(stderr, "Video-mode parser rejection failed.\n");
+            fprintf(stderr, "Video-mode migration/rejection failed.\n");
             return 1;
         }
     }

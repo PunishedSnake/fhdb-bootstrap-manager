@@ -30,19 +30,17 @@ reset; each ordinary frame changes only its draw framebuffer.
 | Config value | Visible UI | Color | Status |
 |---|---:|---:|---|
 | `native` | 640x224 FIELD | 32-bit | hardware-proven default |
-| `ntsc-480i` | 640x448 FRAME | 32-bit | experimental |
-| `pal-576i` | 640x512 FRAME | 32-bit | experimental |
 | `480p` | 720x448 progressive | 32-bit | hardware-tested |
-| `576p` | 656x512 progressive | 32-bit | experimental; ROM 2.20+ |
-| `720p` | 1280x448 progressive | 16-bit | experimental, letterboxed |
-| `1080i` | 960x448 interlaced | 16-bit | experimental, centered |
 
 Layout coordinates remain the proven 640x224 design. 480p expands them by the
-exact 720/640 = 9/8 horizontal ratio and an integer factor of two vertically;
-720p uses exact 2x scaling. The 720p and 1080i views deliberately use 16-bit
-framebuffers so both retain true VBlank-swapped buffers inside 4 MiB of VRAM.
-The fixed allocation consumes 3.875 MiB including the font atlas and leaves
-128 KiB free.
+exact 720/640 = 9/8 horizontal ratio and an integer factor of two vertically.
+The fixed allocation consumes 3.75 MiB including the font atlas and leaves
+256 KiB free.
+
+0.4.1 briefly exposed NTSC 480i, PAL 576i, 576p, 720p and 1080i. Physical
+testing found incorrect geometry in those modes and a PAL 576i path which could
+stall on VBlank before the confirmation timeout. 0.4.2 removes all five. Old
+config identifiers are converted to `native` before any GS mode change.
 
 Every alternate mode requires a ten-second confirmation. X keeps and saves the
 choice; TRIANGLE, no confirmation, an unsupported ROM, or an internal setup
@@ -88,8 +86,7 @@ theme=aqua
 video_mode=native
 ```
 
-Video identifiers are `native`, `ntsc-480i`, `pal-576i`, `480p`, `576p`,
-`720p`, and `1080i`.
+Video identifiers are `native` and `480p`.
 
 When `argv[0]` exposes a usable launch path, the manager reads/writes the config beside the ELF. Otherwise the selected backup/report storage root is used as a deterministic fallback. Missing/unwritable config is non-fatal. 0.4.x retains read-only compatibility with the development-only legacy `MICHISHIRUBE.CFG`, but official assets and new saves use `HDDMAN.CFG` only.
 
@@ -123,11 +120,10 @@ A large healthy-disk forensic scan performs thousands of raw reads. Waiting for 
 
 Physical retesting confirmed that visible forensic-scan screen tearing disappeared. The screen updates less frequently during rapid reads, which is intentional.
 
-Native output owns two 640x224 buffers. Two 704x512x32-bit-sized alternate
-reservations cover every other mode: 480p views them as 768x448x32, while 720p
-and 1080i use wider 16-bit layouts. Widths stay aligned for GS `FBW`. Together
-with the font atlas, the four buffers use 3.875 MiB of the GS's 4 MiB and leave
-128 KiB free. Separate pairs also let the timed fallback return to a clean
+Native output owns two 640x224 buffers. Two 768x448x32-bit alternate buffers
+hold the validated 480p view. Widths stay aligned for GS `FBW`. Together with
+the font atlas, the four buffers use 3.75 MiB of the GS's 4 MiB and leave
+256 KiB free. Separate pairs also let the timed fallback return to a clean
 native-stride frame instead of briefly reinterpreting alternate rows as native.
 
 ## Physical validation result

@@ -67,16 +67,15 @@ than stable 0.4.0 while retaining LTO and the algorithmic EE improvements.
 - blend state and per-string glyph color setup are cached;
 - dedicated native 640x224 and alternate framebuffer pairs are swapped on
   VBlank, eliminating writes into the buffer currently scanned by the display;
-  fixed 704x512x32-bit alternate reservations safely cover 480i, 576i, 480p,
-  576p and the wider 16-bit 720p/1080i layouts;
+  the alternate pair is the hardware-tested 768x448x32-bit 480p layout;
 - stable GS environment registers are not resent on every frame and are
   refreshed only after a display-mode reset;
 - one reusable GIF packet replaces a redundant pair because `end_frame()` waits
   for GS FINISH before returning, releasing 256 KiB of EE heap;
 - hardware-tested 480p renders the existing 640x224 layout into 720x448
   through exact 9/8 horizontal and 2x vertical expansion;
-- experimental NTSC 480i, PAL 576i, 576p, 720p and 1080i choices share the
-  same timed confirmation and automatic native fallback;
+- unvalidated 0.4.1 modes were removed after physical tests exposed bad
+  geometry and a PAL 576i VBlank/fallback stall;
 - `HDDMAN.CFG` can persist a confirmed mode, while startup confirmation and a
   fail-back-to-`native` rewrite prevent a persistent display mismatch.
 

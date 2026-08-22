@@ -1,6 +1,49 @@
-# PS2 HDD Bootstrap Manager 0.4.1 — Michishirube
+# PS2 HDD Bootstrap Manager 0.4.2 — Michishirube
 
-0.4.1 is the performance and display maintenance release for Michishirube. It keeps the 0.4.0 recovery policy intact, makes the forensic hot paths substantially cheaper on the EE, and gives the manager enough video modes to remind us that the PS2 was designed before displays learned to introduce themselves politely.
+0.4.2 is an emergency display-safety hotfix. Physical testing of 0.4.1 showed
+that only native output and 480p have correct geometry; PAL 576i could also
+stall before the confirmation timeout ran. The five unvalidated modes have
+therefore been removed rather than promoted from “experimental” to “creative
+interpretation of a rectangle.”
+
+## Video-mode safety fix
+
+- **System -> Video mode** now exposes only hardware-proven `native` and
+  hardware-tested `480p`.
+- Removed NTSC 480i, PAL 576i, 576p, 720p and 1080i from the GS backend, menu
+  and supported configuration values.
+- Existing v0.4.1 configs using any removed identifier are mapped to `native`
+  before the GS is touched and rewritten safely when storage is writable.
+- Kept the physically validated 480p geometry unchanged: 720x448 visible,
+  768x448 stride, 32-bit color and true double buffering.
+- Reduced the fixed GS allocation from 3.875 MiB to 3.75 MiB, restoring 256 KiB
+  of free VRAM.
+
+The APA recovery policy, disk-write authorization and bootstrap transaction
+logic are unchanged.
+
+## Supported configuration
+
+```text
+theme=aqua
+video_mode=native
+```
+
+Valid `video_mode` values are now `native` and `480p`.
+
+## Licensing and release archive
+
+The project remains MIT-licensed. The release ZIP now also carries the project
+license, the PS2SDK AFL-2.0 license and explicit third-party notices covering
+the statically linked SDK components, embedded IOP modules and current PS2SDK
+`msx` font. Apparently licenses also work better when they are included in the
+package rather than communicated telepathically.
+
+---
+
+## Historical 0.4.1 release notes
+
+0.4.1 was the performance and display maintenance release for Michishirube. It kept the 0.4.0 recovery policy intact, made the forensic hot paths substantially cheaper on the EE, and gave the manager enough video modes to remind us that the PS2 was designed before displays learned to introduce themselves politely.
 
 ## Highlights since 0.4.0
 
