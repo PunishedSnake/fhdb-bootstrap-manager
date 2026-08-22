@@ -78,6 +78,13 @@ uses a 527-line viewport starting at frame line 13 while DISPLAY moves nine
 lines down; those changes cancel at the top edge and extend the lower UI using
 the remaining safe portion of the 1125-line raster.
 
+Dev10 uses the third screenshot set for a sub-pixel-scale finishing pass. The
+576p viewport grows from 472 to 480 lines. The 720p viewport uses its complete
+720-line surface while DISPLAY returns from line 26 to line 24, expanding the
+UI around its observed center instead of moving it down. The 1080i geometry is
+unchanged: its 1080-line DISPLAY window already ends on raster line 1124, so a
+further downward adjustment would enter vertical blanking.
+
 ## Required PCSX2 record
 
 Every emulator result must record:

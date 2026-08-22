@@ -82,7 +82,7 @@ int main(void)
             mode->frame_width != 768u || mode->frame_height != 576u ||
             mode->viewport_x != 40u || mode->viewport_y != 0u ||
             mode->viewport_width != 640u ||
-            mode->viewport_height != 472u) {
+            mode->viewport_height != 480u) {
             fprintf(stderr, "576p regressed from its 32-bit single surface.\n");
             return 1;
         }
@@ -91,7 +91,7 @@ int main(void)
             mode->frame_width != 640u || mode->frame_height != 720u ||
             mode->viewport_x != 0u || mode->viewport_y != 0u ||
             mode->viewport_width != 640u ||
-            mode->viewport_height != 712u) {
+            mode->viewport_height != 720u) {
             fprintf(stderr, "720p regressed from its 32-bit single surface.\n");
             return 1;
         }

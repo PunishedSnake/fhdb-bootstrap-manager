@@ -34,11 +34,11 @@ static void test_576p_letterbox(void)
     ui_layout_t layout;
 
     assert(ui_layout_configure(&layout, 720, 576, 768, 576,
-                               40, 0, 640, 472) == 0);
+                               40, 0, 640, 480) == 0);
     assert(ui_layout_snap_x(&layout, 0.0f) == 40.0f);
     assert(ui_layout_snap_x(&layout, 640.0f) == 680.0f);
     assert(ui_layout_snap_y(&layout, 0.0f) == 0.0f);
-    assert(ui_layout_snap_y(&layout, 224.0f) == 472.0f);
+    assert(ui_layout_snap_y(&layout, 224.0f) == 480.0f);
 }
 
 static void test_720p_magnified_surface(void)
@@ -46,10 +46,10 @@ static void test_720p_magnified_surface(void)
     ui_layout_t layout;
 
     assert(ui_layout_configure(&layout, 640, 720, 640, 720,
-                               0, 0, 640, 712) == 0);
+                               0, 0, 640, 720) == 0);
     assert(ui_layout_snap_x(&layout, 640.0f) == 640.0f);
     assert(ui_layout_snap_y(&layout, 0.0f) == 0.0f);
-    assert(ui_layout_snap_y(&layout, 224.0f) == 712.0f);
+    assert(ui_layout_snap_y(&layout, 224.0f) == 720.0f);
 }
 
 static void test_1080i_frame_field_surface(void)

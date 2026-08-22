@@ -29,7 +29,7 @@ optimization. This lets the R5900 compiler optimize across module boundaries
 while the existing section garbage collection continues to remove unused code
 from the stripped release ELF.
 
-The current feature branch identifies itself as **0.5.0-dev9 — Kakehashi**. It
+The current feature branch identifies itself as **0.5.0-dev10 — Kakehashi**. It
 is based on the 0.4.2 display-safety hotfix and introduces a resolution-aware
 GS viewport plus selectable bitmap fonts. It remains a hardware-test build,
 not a stable release.
@@ -121,8 +121,10 @@ produced visible output in every mode with matching emulator and console
 results. Dev8 calibrated the three new viewports against captured native
 output. Dev9 applies the final per-mode alignment pass: 576p no longer clips
 its footer, 720p is nudged down by a few output pixels, and 1080i uses the last
-safe timing lines to extend its lower UI without moving the top edge. New modes
-still require a final repeated-switch pass before release.
+safe timing lines to extend its lower UI without moving the top edge. Dev10
+uses the final screenshot set to remove the small remaining vertical
+compression in 576p and 720p. New modes still require a final repeated-switch
+pass before release.
 
 The 0.4.2 hotfix exposes **System -> Video mode** with the two modes that passed
 physical testing: native and 480p. The 0.5 development renderer retains those
