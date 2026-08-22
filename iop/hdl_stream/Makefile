@@ -1,19 +1,18 @@
 IOP_BIN ?= hdl_stream.irx
-PS2SDKSRC ?= $(PS2SDK)
+IOP_OBJS = hdl_stream.o imports.o
 
 IOP_CFLAGS += -DIOMANX_OLD_NAME_COMPATIBILITY=0 \
 	-DIOMANX_OLD_NAME_ADDDELDRV=0
-
-IOP_IMPORT_INCS += \
-	system/iomanx \
-	system/loadcore \
-	system/sysclib \
-	system/sysmem
-
+IOP_WARNFLAGS = -Wall -Wextra -Werror
 IOP_INCS += -I../../include
-IOP_OBJS = hdl_stream.o imports.o
 
-include $(PS2SDKSRC)/Defs.make
-include $(PS2SDKSRC)/iop/Rules.bin.make
-include $(PS2SDKSRC)/iop/Rules.make
-include $(PS2SDKSRC)/iop/Rules.release
+all: $(IOP_BIN)
+
+clean:
+	rm -f -r $(IOP_OBJS_DIR) $(IOP_BIN) \
+		$(IOP_BIN:.irx=.notiopmod.elf) \
+		$(IOP_BIN:.irx=.notiopmod.stripped.elf)
+
+include $(PS2SDK)/Defs.make
+include $(PS2SDK)/samples/Makefile.pref
+include $(PS2SDK)/samples/Makefile.iopglobal
