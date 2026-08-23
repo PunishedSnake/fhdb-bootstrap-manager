@@ -68,6 +68,23 @@ static int make_hdd_path(const char *name, char destination[38])
     return 0;
 }
 
+/*
+ * Several ps2hdd ioctl2 commands return a raw u32 through the signed int
+ * return channel. On disks whose APA partition starts have bit 31 set, a
+ * perfectly valid LBA therefore looks like a huge negative number to C code.
+ * Small negative values are real errno results; everything else is the
+ * driver's u32 payload and must be preserved bit-for-bit.
+ */
+static int ioctl_u32_result(int raw, uint32_t *value)
+{
+    if (value == NULL)
+        return -EINVAL;
+    if (raw < 0 && raw > -4096)
+        return raw;
+    *value = (uint32_t)raw;
+    return 0;
+}
+
 static int stream_open(iomanX_iop_file_t *file, const char *name,
                        int flags, int mode)
 {
@@ -104,20 +121,30 @@ static int stream_open(iomanX_iop_file_t *file, const char *name,
     for (i = 0; i < stream->count; i++) {
         uint32_t index = i;
         uint32_t skip = i == 0 ? HDL_STREAM_MAIN_SKIP : HDL_STREAM_SUB_SKIP;
-        int length = iomanX_ioctl2(stream->hdd_fd, HIOCGETSIZE,
-                                   &index, sizeof(index), NULL, 0);
-        int start = iomanX_ioctl2(stream->hdd_fd, HIOCGETPARTSTART,
-                                  &index, sizeof(index), NULL, 0);
+        uint32_t length;
+        uint32_t start;
+        int raw_length = iomanX_ioctl2(stream->hdd_fd, HIOCGETSIZE,
+                                       &index, sizeof(index), NULL, 0);
+        int raw_start = iomanX_ioctl2(stream->hdd_fd, HIOCGETPARTSTART,
+                                      &index, sizeof(index), NULL, 0);
 
-        if (length < 0 || start < 0 || (uint32_t)length <= skip) {
-            result = length < 0 ? length : (start < 0 ? start : -EINVAL);
+        result = ioctl_u32_result(raw_length, &length);
+        if (result < 0) {
             iomanX_close(stream->hdd_fd);
             FreeSysMemory(stream);
             return result;
         }
-        stream->lengths[i] = (uint32_t)length;
-        stream->starts[i] = (uint32_t)start;
-        stream->capacity_bytes += ((uint64_t)(uint32_t)length - skip) * 512u;
+        result = ioctl_u32_result(raw_start, &start);
+        if (result < 0 || length <= skip) {
+            if (result >= 0)
+                result = -EINVAL;
+            iomanX_close(stream->hdd_fd);
+            FreeSysMemory(stream);
+            return result;
+        }
+        stream->lengths[i] = length;
+        stream->starts[i] = start;
+        stream->capacity_bytes += ((uint64_t)length - skip) * 512u;
     }
     file->privdata = stream;
     return 0;
