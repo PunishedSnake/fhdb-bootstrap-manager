@@ -20,8 +20,6 @@ static const char *phase_stack[STATUS_STACK_DEPTH];
 static const char *location_stack[STATUS_STACK_DEPTH];
 static unsigned char write_intent_stack[STATUS_STACK_DEPTH];
 static unsigned int status_depth;
-static uint32_t cached_total_sectors;
-static int total_sectors_known;
 static unsigned int read_events_since_render;
 
 static const char *kind_name(disk_status_kind_t kind)
@@ -34,20 +32,6 @@ static const char *kind_name(disk_status_kind_t kind)
         case DISK_STATUS_POINTER: return "POINTER UPDATE";
         case DISK_STATUS_SCAN: return "SCAN";
         default: return "HDD I/O";
-    }
-}
-
-static void ensure_total_sectors(void)
-{
-    int value;
-
-    if (total_sectors_known)
-        return;
-    value = fileXioDevctl("hdd0:", HDIOC_TOTALSECTOR,
-                          NULL, 0, NULL, 0);
-    if (!(value < 0 && value > -4096) && (uint32_t)value >= 2u) {
-        cached_total_sectors = (uint32_t)value;
-        total_sectors_known = 1;
     }
 }
 
@@ -89,11 +73,10 @@ static void render(disk_status_kind_t kind, unsigned int lba,
     unsigned int percent = 0;
     int write_sensitive;
 
-    ensure_total_sectors();
-    if (progress_total == 0 && total_sectors_known && sectors != 0u) {
-        progress_current = lba;
-        progress_total = cached_total_sectors;
-    }
+    /* current/total are semantic task progress supplied by the caller. Never
+     * substitute a physical LBA divided by HDD size: APA is a linked list, not
+     * a sequential workload, so the last valid node can live at 66% (or any
+     * other position) of the disk while the operation is actually complete. */
     if (progress_total != 0) {
         uint64_t scaled = (uint64_t)progress_current * 100u;
         percent = (unsigned int)(scaled / progress_total);
@@ -189,6 +172,12 @@ void disk_status_io(disk_status_kind_t kind, unsigned int lba,
                     unsigned int sectors, unsigned int current,
                     unsigned int total)
 {
+    /* A bare raw read with no semantic progress used to overwrite useful UI
+     * with a fake HDD-position percentage. Leave the caller's activity page on
+     * screen instead. Scoped operations still get full LBA telemetry. */
+    if (status_depth == 0 && current == 0u && total == 0u)
+        return;
+
     if (kind == DISK_STATUS_READ) {
         read_events_since_render++;
         if (read_events_since_render < STATUS_READ_RENDER_DIVISOR)
