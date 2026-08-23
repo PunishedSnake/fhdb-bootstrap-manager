@@ -1,3 +1,18 @@
+static void hdl_status_wait(const char *title, const char *body,
+                            gs_ui_tone_t tone)
+{
+    /* Do not route HDL status/error pages through the compatibility console.
+     * A stale/cleared console buffer can otherwise replace the real message
+     * with a bare return prompt when wait_for_press() presents it. */
+    gs_ui_console_discard();
+    gs_ui_render_message(title, body, "X Return", tone);
+    for (;;) {
+        if (wait_for_press() & PAD_CROSS)
+            break;
+    }
+    gs_ui_console_discard();
+}
+
 static int choose_media_type(uint32_t suggested)
 {
     static const app_ui_menu_item_t items[] = {
@@ -15,26 +30,36 @@ static int choose_media_type(uint32_t suggested)
 
 static void show_result(const hdl_transaction_t *transaction, int result)
 {
-    scr_clear();
+    char body[640];
+    gs_ui_tone_t tone;
+
     if (result == 0) {
-        scr_printf("HDL installation complete.\n\n");
-        scr_printf("Game  : %s\n", transaction->game_title);
-        scr_printf("Disc  : %s\n", transaction->startup);
-        scr_printf("Target: %s\n\n", transaction->target);
-        scr_printf("Payload and metadata were read back successfully.\n");
-    } else if (result == HDL_INSTALL_CANCELLED) {
-        scr_printf("HDL installation paused.\n\n");
-        scr_printf("Progress: %llu / %llu ISO sectors\n",
-                   (unsigned long long)transaction->completed_sectors,
-                   (unsigned long long)transaction->total_sectors);
-        scr_printf("Use Resume incomplete install to continue.\n");
-    } else {
-        scr_printf("HDL installation stopped (code %d).\n\n", result);
-        scr_printf("No game metadata was exposed unless the journal reached\n");
-        scr_printf("METADATA_COMMITTED. The journal was preserved for review\n");
-        scr_printf("or a guarded resume.\n");
+        snprintf(body, sizeof(body),
+                 "Game: %s\nDisc: %s\nTarget: %s\n\n"
+                 "Payload and metadata were read back successfully.",
+                 transaction->game_title, transaction->startup,
+                 transaction->target);
+        tone = GS_UI_TONE_SUCCESS;
+        hdl_status_wait("HDL installation complete", body, tone);
+        return;
     }
-    app_ui_wait_to_return();
+    if (result == HDL_INSTALL_CANCELLED) {
+        snprintf(body, sizeof(body),
+                 "Progress: %llu / %llu ISO sectors\n\n"
+                 "Use Resume incomplete install to continue.",
+                 (unsigned long long)transaction->completed_sectors,
+                 (unsigned long long)transaction->total_sectors);
+        hdl_status_wait("HDL installation paused", body, GS_UI_TONE_WARNING);
+        return;
+    }
+
+    snprintf(body, sizeof(body),
+             "Operation stopped with code %d.\n\n"
+             "No game metadata is exposed unless the journal reaches "
+             "METADATA_COMMITTED. The journal is preserved for review or "
+             "a guarded resume.",
+             result);
+    hdl_status_wait("HDL installation stopped", body, GS_UI_TONE_DANGER);
 }
 
 static void begin_new_install(void)
@@ -53,10 +78,24 @@ static void begin_new_install(void)
 
     result = scan_mass_images(&images, &count);
     if (result < 0) {
-        scr_clear();
-        scr_printf("No usable .ISO files were found in mass:/.\n");
-        scr_printf("Scan code: %d\n", result);
-        app_ui_wait_to_return();
+        char body[384];
+
+        if (result == HDL_INSTALL_NO_IMAGES) {
+            snprintf(body, sizeof(body),
+                     "No .ISO files were found in the root of mass:/.\n\n"
+                     "Only plain ISO files in the USB root are supported "
+                     "right now. Subdirectories and split ISO sets are not "
+                     "scanned yet.\n\nScan code: %d",
+                     result);
+        } else {
+            snprintf(body, sizeof(body),
+                     "The USB root could not be enumerated as mass:/.\n\n"
+                     "Check that the USB device is mounted and readable, then "
+                     "open Install ISO from USB again.\n\nScan code: %d",
+                     result);
+        }
+        session_log_line("HDL ISO catalogue failed result=%d", result);
+        hdl_status_wait("HDL ISO catalogue", body, GS_UI_TONE_WARNING);
         return;
     }
     selection = select_image(images, count);
@@ -76,19 +115,29 @@ static void begin_new_install(void)
     iso_source.image_bytes = source.bytes;
     result = hdl_iso_probe(&iso_source, &info);
     if (result < 0) {
+        char body[384];
+
         fileXioClose(source.fd);
+        snprintf(body, sizeof(body),
+                 "The selected file was found, but its PS2 ISO9660 / "
+                 "SYSTEM.CNF identity could not be validated.\n\n"
+                 "Probe code: %d",
+                 result);
+        session_log_line("HDL ISO probe failed path=%s result=%d",
+                         images[selection].path, result);
         free(images);
-        show_result(&(hdl_transaction_t){0}, result);
+        hdl_status_wait("Invalid PS2 ISO", body, GS_UI_TONE_DANGER);
         return;
     }
     if (info.requires_layer_break) {
         fileXioClose(source.fd);
         free(images);
-        scr_clear();
-        scr_printf("DVD9 installation is not enabled yet.\n\n");
-        scr_printf("The image is valid, but its layer break has not been\n");
-        scr_printf("proven. Guessing would create plausible-looking garbage.\n");
-        app_ui_wait_to_return();
+        hdl_status_wait(
+            "DVD9 installation blocked",
+            "The image is valid, but its layer break has not been proven. "
+            "DVD9 remains disabled rather than writing plausible-looking "
+            "garbage to the HDD.",
+            GS_UI_TONE_WARNING);
         return;
     }
 
@@ -202,12 +251,12 @@ static void incomplete_menu(hdl_transaction_t *transaction)
 
 static void show_corrupt_journal(void)
 {
-    scr_clear();
-    scr_printf("The HDL transaction journal is corrupt.\n\n");
-    scr_printf("No HDD target can be trusted from this record, so the\n");
-    scr_printf("manager will not delete or modify any partition.\n\n");
-    scr_printf("Remove HDLINSTALL.TXN/NEW manually after inspection.\n");
-    app_ui_wait_to_return();
+    hdl_status_wait(
+        "Corrupt HDL transaction journal",
+        "No HDD target can be trusted from this record, so the manager will "
+        "not delete or modify any partition.\n\nRemove HDLINSTALL.TXN/NEW "
+        "manually after inspection.",
+        GS_UI_TONE_DANGER);
 }
 
 static void open_new_install(void)
@@ -241,8 +290,8 @@ static void open_incomplete_transaction(void)
         show_corrupt_journal();
         return;
     }
-    scr_clear();
-    scr_printf("No incomplete HDL transaction was found.\n\n");
-    scr_printf("There is currently nothing to resume or clean up.\n");
-    app_ui_wait_to_return();
+    hdl_status_wait("Incomplete HDL transaction",
+                    "No incomplete HDL transaction was found. There is "
+                    "currently nothing to resume or clean up.",
+                    GS_UI_TONE_INFO);
 }
