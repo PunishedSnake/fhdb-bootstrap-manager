@@ -18,6 +18,7 @@
 static const char *operation_stack[STATUS_STACK_DEPTH];
 static const char *phase_stack[STATUS_STACK_DEPTH];
 static const char *location_stack[STATUS_STACK_DEPTH];
+static unsigned char write_intent_stack[STATUS_STACK_DEPTH];
 static unsigned int status_depth;
 static uint32_t cached_total_sectors;
 static int total_sectors_known;
@@ -79,6 +80,9 @@ static void render(disk_status_kind_t kind, unsigned int lba,
     const char *location = status_depth != 0
                                ? location_stack[status_depth - 1u]
                                : NULL;
+    int write_intent = status_depth != 0 &&
+                       write_intent_stack[status_depth - 1u] != 0u;
+    const char *io_label = kind_name(kind);
     char automatic[96];
     uint32_t progress_current = current;
     uint32_t progress_total = total;
@@ -100,7 +104,12 @@ static void render(disk_status_kind_t kind, unsigned int lba,
     if (location == NULL || location[0] == '\0')
         location = automatic_location(lba, sectors, automatic);
 
-    write_sensitive = kind == DISK_STATUS_WRITE ||
+    if (write_intent && kind == DISK_STATUS_READ)
+        io_label = "READ / WRITE PREFLIGHT";
+    else if (write_intent && kind == DISK_STATUS_SCAN)
+        io_label = "WRITE PREP";
+
+    write_sensitive = write_intent || kind == DISK_STATUS_WRITE ||
                       kind == DISK_STATUS_FLUSH ||
                       kind == DISK_STATUS_POINTER;
 
@@ -112,7 +121,7 @@ static void render(disk_status_kind_t kind, unsigned int lba,
                              phase != NULL && phase[0] != '\0'
                                  ? phase : kind_name(kind),
                              location,
-                             kind_name(kind), percent,
+                             io_label, percent,
                              (unsigned int)progress_current,
                              (unsigned int)progress_total,
                              lba, sectors, write_sensitive);
@@ -129,6 +138,7 @@ void disk_status_begin_at(const char *operation, const char *phase,
     operation_stack[slot] = operation;
     phase_stack[slot] = phase;
     location_stack[slot] = location;
+    write_intent_stack[slot] = 0u;
     read_events_since_render = 0;
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
@@ -166,6 +176,15 @@ void disk_status_phase_at(const char *phase, const char *location)
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
+void disk_status_set_write_intent(int armed)
+{
+    if (status_depth == 0)
+        return;
+    write_intent_stack[status_depth - 1u] = armed ? 1u : 0u;
+    read_events_since_render = 0;
+    render(DISK_STATUS_SCAN, 0, 0, 0, 0);
+}
+
 void disk_status_io(disk_status_kind_t kind, unsigned int lba,
                     unsigned int sectors, unsigned int current,
                     unsigned int total)
@@ -184,6 +203,8 @@ void disk_status_io(disk_status_kind_t kind, unsigned int lba,
 void disk_status_end(void)
 {
     read_events_since_render = 0;
-    if (status_depth != 0)
+    if (status_depth != 0) {
+        write_intent_stack[status_depth - 1u] = 0u;
         status_depth--;
+    }
 }
