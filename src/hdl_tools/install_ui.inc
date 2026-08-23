@@ -187,18 +187,31 @@ static void begin_new_install(void)
         return;
     }
 
-    scr_clear();
-    scr_printf("Install PS2 ISO as an HDL game\n\n");
-    scr_printf("Game       : %s\n", transaction.game_title);
-    scr_printf("Startup    : %s\n", transaction.startup);
-    scr_printf("Source     : %llu MiB\n",
-               (unsigned long long)(transaction.source_bytes / 1024u / 1024u));
-    scr_printf("Allocation : %llu MiB in %u partition%s\n",
-               (unsigned long long)(plan.allocation_bytes / 1024u / 1024u),
-               plan.count, plan.count == 1 ? "" : "s");
-    scr_printf("Target     : %s\n\n", transaction.target);
-    scr_printf("Hold L1+R1 and press X to allocate and install.\n");
-    scr_printf("TRIANGLE cancels without changing the HDD.\n");
+    {
+        char body[640];
+
+        snprintf(body, sizeof(body),
+                 "Game       : %s\n"
+                 "Startup    : %s\n"
+                 "Source     : %llu MiB\n"
+                 "Allocation : %llu MiB in %u partition%s\n"
+                 "Target     : %s\n\n"
+                 "No HDD write has happened yet.",
+                 transaction.game_title,
+                 transaction.startup,
+                 (unsigned long long)(transaction.source_bytes /
+                                      1024u / 1024u),
+                 (unsigned long long)(plan.allocation_bytes /
+                                      1024u / 1024u),
+                 plan.count, plan.count == 1 ? "" : "s",
+                 transaction.target);
+        gs_ui_console_discard();
+        gs_ui_render_message(
+            "Install PS2 ISO as an HDL game",
+            body,
+            "Hold L1+R1 and press X to install | TRIANGLE Cancel",
+            GS_UI_TONE_WARNING);
+    }
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_CROSS))
         return;
     result = journal_save(&transaction);
@@ -233,11 +246,19 @@ static void incomplete_menu(hdl_transaction_t *transaction)
         show_result(transaction, result);
     }
     if (choice == 1) {
-        scr_clear();
-        scr_printf("Remove incomplete HDL allocation\n\n");
-        scr_printf("Target: %s\n\n", transaction->target);
-        scr_printf("A valid installed game will be refused.\n");
-        scr_printf("Hold L1+R1 and press SQUARE to remove.\n");
+        char body[384];
+
+        snprintf(body, sizeof(body),
+                 "Target: %s\n\n"
+                 "A valid installed game will be refused.\n"
+                 "Only the journal-confirmed incomplete allocation can be removed.",
+                 transaction->target);
+        gs_ui_console_discard();
+        gs_ui_render_message(
+            "Remove incomplete HDL allocation",
+            body,
+            "Hold L1+R1 and press SQUARE to remove | TRIANGLE Cancel",
+            GS_UI_TONE_DANGER);
         if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_SQUARE))
             return;
         result = remove_incomplete_target(transaction->target);
