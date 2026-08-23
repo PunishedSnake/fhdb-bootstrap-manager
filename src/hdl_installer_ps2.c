@@ -142,11 +142,14 @@ static int hdl_cached_target_exists(const char *target)
         return 1;
     }
     found = hdl_pending_target_exists;
-    app_ui_activity_message(
-        "HDL target check",
-        found
-            ? "The completed APA planning pass found an existing partition with this name."
-            : "The completed APA planning pass found no target-name collision; no second HDD scan is needed.");
+    session_log_line("HDL cached target lookup target=%s collision=%d",
+                     target, found);
+
+    /* This is now a pure cached lookup with no physical I/O. Do not render a
+     * fake activity page here: on real hardware that direct GS frame could
+     * remain visible while the following legacy scr_printf confirmation was
+     * already waiting for L1+R1+X, making TRIANGLE appear to be the only input.
+     * The actual confirmation is rendered explicitly by install_ui.inc. */
     hdl_pending_target_result_valid = 0;
     hdl_pending_target[0] = '\0';
     return found;
