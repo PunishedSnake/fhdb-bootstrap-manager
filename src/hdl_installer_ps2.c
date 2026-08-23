@@ -57,51 +57,28 @@ static unsigned int game_page_move_selection(unsigned int selected,
 #undef HDL_BROWSER_PAGE_SIZE
 #define HDL_BROWSER_PAGE_SIZE 8u
 
-/*
- * Checking a name that does not exist through hdd0:fileXioGetStat() makes the
- * stock APA driver walk the complete partition chain internally. On a nearly
- * full multi-terabyte disk that recreates the exact multi-minute behaviour the
- * raw catalogue was introduced to avoid. Reuse the validated raw walker for
- * the install-time collision test. No metadata reads are needed here.
- */
-static int hdl_raw_target_exists(const char *target)
+/* A new install used to run the complete raw APA walker in recheck_disk() and
+ * then immediately run it a second time solely to answer "does this generated
+ * target name already exist?". The second back-to-back traversal stalls on the
+ * real 2 TB test disk. Cache the generated target before planning so the one
+ * required admission walk can answer free-space and collision questions at
+ * the same time. */
+static char hdl_pending_target[HDL_PARTITION_ID_MAX];
+static int hdl_pending_target_result_valid;
+static int hdl_pending_target_exists;
+
+static int hdl_install_partition_id(const char *disc_id, const char *title,
+                                    char destination[HDL_PARTITION_ID_MAX])
 {
-    hdl_catalog_t catalog;
-    unsigned int i;
-    int result;
-    int found = 0;
+    int result = hdl_partition_id(disc_id, title, destination);
 
-    /* Keep the legacy helper linked for other code-review/build configurations;
-     * the new-install path below intentionally bypasses it on large disks. */
-    (void)target_exists;
-
-    if (target == NULL || target[0] == '\0')
-        return 1;
-
-    app_ui_activity_message("HDL target check",
-                            "Checking the generated partition name with the fast raw APA walker.");
-    result = scan_apa_catalog(&catalog, 1);
-    if (result == HDL_INSTALL_NO_GAMES) {
-        catalog_free(&catalog);
-        return 0;
-    }
-    if (result < 0) {
-        catalog_free(&catalog);
-        session_log_line("HDL raw target lookup failed target=%s result=%d",
-                         target, result);
-        /* The caller only has a boolean collision interface. Fail closed: a
-         * changing or unreadable chain must never authorize allocation. */
-        return 1;
-    }
-
-    for (i = 0; i < catalog.count; i++) {
-        if (strcmp(catalog.games[i].id, target) == 0) {
-            found = 1;
-            break;
-        }
-    }
-    catalog_free(&catalog);
-    return found;
+    hdl_pending_target[0] = '\0';
+    hdl_pending_target_result_valid = 0;
+    hdl_pending_target_exists = 1;
+    if (result == 0)
+        snprintf(hdl_pending_target, sizeof(hdl_pending_target), "%s",
+                 destination);
+    return result;
 }
 
 /* Keep the currently silent source-validation stages visible on real hardware.
@@ -126,9 +103,53 @@ static int hdl_install_source_fingerprint(hdl_file_source_t *source,
 static int hdl_install_recheck_disk(uint32_t *max_partition_sectors,
                                     uint32_t *free_sectors)
 {
-    app_ui_activity_message("HDL HDD planning",
-                            "Validating the APA chain and calculating available allocation space.");
-    return recheck_disk(max_partition_sectors, free_sectors);
+    int result;
+    int found = 0;
+
+    app_ui_activity_message(
+        "HDL HDD planning",
+        hdl_pending_target[0] != '\0'
+            ? "Validating APA, free space and the generated target in one raw pass."
+            : "Validating the APA chain and calculating available allocation space.");
+    if (hdl_pending_target[0] == '\0')
+        return recheck_disk(max_partition_sectors, free_sectors);
+
+    result = recheck_disk_target(hdl_pending_target, &found,
+                                 max_partition_sectors, free_sectors);
+    if (result == 0) {
+        hdl_pending_target_exists = found;
+        hdl_pending_target_result_valid = 1;
+        session_log_line("HDL combined planning target=%s collision=%d",
+                         hdl_pending_target, found);
+    }
+    return result;
+}
+
+static int hdl_cached_target_exists(const char *target)
+{
+    int found;
+
+    /* Keep the historical helper referenced for builds where this fragment is
+     * compiled with aggressive -Werror unused-function checking. The install
+     * path deliberately does not call it because that would invoke the stock
+     * APA name lookup we are replacing. */
+    (void)target_exists;
+
+    if (target == NULL || !hdl_pending_target_result_valid ||
+        strcmp(target, hdl_pending_target) != 0) {
+        session_log_line("HDL cached target lookup unavailable target=%s",
+                         target != NULL ? target : "(null)");
+        return 1;
+    }
+    found = hdl_pending_target_exists;
+    app_ui_activity_message(
+        "HDL target check",
+        found
+            ? "The completed APA planning pass found an existing partition with this name."
+            : "The completed APA planning pass found no target-name collision; no second HDD scan is needed.");
+    hdl_pending_target_result_valid = 0;
+    hdl_pending_target[0] = '\0';
+    return found;
 }
 
 /*
@@ -200,11 +221,13 @@ static int hdl_status_fileXioRemove(const char *path)
  * transaction.source_fingerprint while still intercepting the calls. */
 #define hdl_iso_probe(...) hdl_install_iso_probe(__VA_ARGS__)
 #define source_fingerprint(...) hdl_install_source_fingerprint(__VA_ARGS__)
+#define hdl_partition_id(...) hdl_install_partition_id(__VA_ARGS__)
 #define recheck_disk(...) hdl_install_recheck_disk(__VA_ARGS__)
-#define target_exists(...) hdl_raw_target_exists(__VA_ARGS__)
+#define target_exists(...) hdl_cached_target_exists(__VA_ARGS__)
 #include "hdl_tools/install_ui.inc"
 #undef target_exists
 #undef recheck_disk
+#undef hdl_partition_id
 #undef source_fingerprint
 #undef hdl_iso_probe
 
