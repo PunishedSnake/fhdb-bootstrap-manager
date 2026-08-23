@@ -24,6 +24,19 @@ static uint64_t apa_main_allocation(const unsigned char header[APA_HEADER_SIZE])
     return sectors * 512u;
 }
 
+static int apa_id_matches(const unsigned char header[APA_HEADER_SIZE],
+                          const char *target)
+{
+    char id[HDL_PARTITION_ID_MAX];
+
+    if (target == NULL || target[0] == '\0')
+        return 0;
+    memset(id, 0, sizeof(id));
+    memcpy(id, header + APA_ID_OFFSET,
+           APA_ID_SIZE < sizeof(id) - 1u ? APA_ID_SIZE : sizeof(id) - 1u);
+    return strcmp(id, target) == 0;
+}
+
 static int catalog_grow(hdl_catalog_t *catalog)
 {
     unsigned int next = catalog->capacity == 0 ? 64u : catalog->capacity * 2u;
@@ -41,7 +54,10 @@ static int catalog_grow(hdl_catalog_t *catalog)
     return 0;
 }
 
-static int scan_apa_catalog(hdl_catalog_t *catalog, int collect_games)
+static int scan_apa_catalog_for_target(hdl_catalog_t *catalog,
+                                       int collect_games,
+                                       const char *target,
+                                       int *target_found)
 {
     unsigned char header[APA_HEADER_SIZE] __attribute__((aligned(64)));
     uint32_t total_sectors;
@@ -52,6 +68,8 @@ static int scan_apa_catalog(hdl_catalog_t *catalog, int collect_games)
     int result;
 
     memset(catalog, 0, sizeof(*catalog));
+    if (target_found != NULL)
+        *target_found = 0;
     result = hdd_read_raw_sectors(0, 2, admission_header);
     if (result < 0 || !is_standard_apa_header(admission_header) ||
         is_hybrid_gpt(admission_header))
@@ -93,6 +111,8 @@ static int scan_apa_catalog(hdl_catalog_t *catalog, int collect_games)
             if (catalog->used_sectors > UINT64_MAX - length)
                 return HDL_INSTALL_CHAIN_INVALID;
             catalog->used_sectors += length;
+            if (target_found != NULL && apa_id_matches(header, target))
+                *target_found = 1;
         }
         flags = read_le16(header + APA_FLAGS_OFFSET);
         if (type == HDL_APA_TYPE) {
@@ -129,6 +149,11 @@ static int scan_apa_catalog(hdl_catalog_t *catalog, int collect_games)
         catalog->used_sectors + catalog->free_sectors > total_sectors)
         return HDL_INSTALL_CHAIN_INVALID;
     return collect_games && catalog->count == 0 ? HDL_INSTALL_NO_GAMES : 0;
+}
+
+static int scan_apa_catalog(hdl_catalog_t *catalog, int collect_games)
+{
+    return scan_apa_catalog_for_target(catalog, collect_games, NULL, NULL);
 }
 
 static void catalog_free(hdl_catalog_t *catalog)
@@ -270,27 +295,46 @@ static int select_installed_game(hdl_catalog_t *catalog)
     }
 }
 
-static int recheck_disk(uint32_t *max_partition_sectors,
-                        uint32_t *free_sectors)
+static int recheck_disk_target(const char *target, int *target_found,
+                               uint32_t *max_partition_sectors,
+                               uint32_t *free_sectors)
 {
     hdl_catalog_t catalog;
     uint64_t free64;
+    int found = 0;
     int status = fileXioDevctl("hdd0:", HDIOC_STATUS,
                                NULL, 0, NULL, 0);
     int maximum;
     int result;
 
+    if (target_found != NULL)
+        *target_found = 0;
     if (status != 0)
         return HDL_INSTALL_DISK_UNSAFE;
-    result = scan_apa_catalog(&catalog, 0);
-    if (result < 0)
+    result = scan_apa_catalog_for_target(&catalog, 0, target,
+                                         target_found != NULL ? &found : NULL);
+    if (result < 0) {
+        catalog_free(&catalog);
         return result;
+    }
     maximum = fileXioDevctl("hdd0:", HDIOC_MAXSECTOR,
                             NULL, 0, NULL, 0);
-    if (maximum <= 0)
+    if (maximum <= 0) {
+        catalog_free(&catalog);
         return HDL_INSTALL_DISK_UNSAFE;
+    }
     free64 = catalog.free_sectors;
     *max_partition_sectors = (uint32_t)maximum;
     *free_sectors = free64 > UINT32_MAX ? UINT32_MAX : (uint32_t)free64;
+    if (target_found != NULL)
+        *target_found = found;
+    catalog_free(&catalog);
     return 0;
+}
+
+static int recheck_disk(uint32_t *max_partition_sectors,
+                        uint32_t *free_sectors)
+{
+    return recheck_disk_target(NULL, NULL,
+                               max_partition_sectors, free_sectors);
 }
