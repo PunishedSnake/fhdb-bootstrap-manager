@@ -9,13 +9,21 @@
 static unsigned int read_le32(const unsigned char *source)
 {
     return (unsigned int)source[0] | ((unsigned int)source[1] << 8) |
-           ((unsigned int)source[2] << 16) |
-           ((unsigned int)source[3] << 24);
+           ((unsigned int)source[2] << 16) | ((unsigned int)source[3] << 24);
 }
 
 static unsigned int read_le16(const unsigned char *source)
 {
     return (unsigned int)source[0] | ((unsigned int)source[1] << 8);
+}
+
+static void test_physical_metadata_offset(void)
+{
+    /* OPL's file view starts after the 4 KiB APA partition-information area.
+     * Its 1 MiB HDL metadata offset is therefore physical sector 0x808. */
+    assert(HDL_METADATA_PHYSICAL_SECTOR_OFFSET == 0x0808u);
+    assert(HDL_METADATA_PHYSICAL_SECTOR_OFFSET * 512u ==
+           4096u + 1024u * 1024u);
 }
 
 static void test_small_image_uses_one_main(void)
@@ -196,6 +204,7 @@ static void test_partition_id_is_sanitized_and_bounded(void)
 
 int main(void)
 {
+    test_physical_metadata_offset();
     test_small_image_uses_one_main();
     test_large_image_is_split_without_gaps();
     test_subpartition_reserves_one_megabyte();
