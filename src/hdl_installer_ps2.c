@@ -59,13 +59,48 @@ static unsigned int game_page_move_selection(unsigned int selected,
 
 /* A new install used to run the complete raw APA walker in recheck_disk() and
  * then immediately run it a second time solely to answer "does this generated
- * target name already exist?". The second back-to-back traversal stalls on the
- * real 2 TB test disk. Cache the generated target before planning so the one
- * required admission walk can answer free-space and collision questions at
- * the same time. */
+ * target name already exist?". Cache the generated target before planning so
+ * the one required admission walk can answer free-space and collision
+ * questions at the same time. */
 static char hdl_pending_target[HDL_PARTITION_ID_MAX];
 static int hdl_pending_target_result_valid;
 static int hdl_pending_target_exists;
+
+/* New-install source path is remembered only long enough to turn useless ISO
+ * volume labels such as SLUS_21678 into a human title from the filename. This
+ * does not affect source identity, which remains SYSTEM.CNF + fingerprint. */
+static char hdl_selected_iso_path[HDL_TRANSACTION_SOURCE_PATH_MAX];
+
+/* The destructive transaction performs a second admission check after the
+ * confirmation chord. For a brand-new install that pass must prove the exact
+ * generated target is still absent. Once it has done so, the immediately
+ * following legacy fileXioOpen(hdd0:<target>, O_RDONLY) check is redundant and
+ * particularly expensive on very large APA chains, so it is satisfied from
+ * this raw-walker result instead of traversing the chain a third time. */
+static char hdl_transaction_guard_target[HDL_PARTITION_ID_MAX];
+static int hdl_transaction_guard_active;
+static int hdl_transaction_guard_checked;
+static int hdl_transaction_guard_found;
+static int hdl_transaction_guard_lookup_consumed;
+
+static void hdl_transaction_guard_disarm(void)
+{
+    hdl_transaction_guard_target[0] = '\0';
+    hdl_transaction_guard_active = 0;
+    hdl_transaction_guard_checked = 0;
+    hdl_transaction_guard_found = 1;
+    hdl_transaction_guard_lookup_consumed = 0;
+}
+
+static void hdl_transaction_guard_arm(const char *target)
+{
+    hdl_transaction_guard_disarm();
+    if (target == NULL || target[0] == '\0')
+        return;
+    snprintf(hdl_transaction_guard_target,
+             sizeof(hdl_transaction_guard_target), "%s", target);
+    hdl_transaction_guard_active = 1;
+}
 
 static int hdl_install_partition_id(const char *disc_id, const char *title,
                                     char destination[HDL_PARTITION_ID_MAX])
@@ -81,15 +116,112 @@ static int hdl_install_partition_id(const char *disc_id, const char *title,
     return result;
 }
 
+static void normalize_iso_identity(const char *text, char *normalized,
+                                   size_t capacity)
+{
+    size_t used = 0;
+
+    if (normalized == NULL || capacity == 0)
+        return;
+    if (text != NULL) {
+        while (*text != '\0' && used + 1u < capacity) {
+            unsigned char ch = (unsigned char)*text++;
+
+            if (ch >= 'a' && ch <= 'z')
+                ch = (unsigned char)(ch - 'a' + 'A');
+            if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))
+                normalized[used++] = (char)ch;
+        }
+    }
+    normalized[used] = '\0';
+}
+
+static int iso_volume_title_is_identity(const hdl_iso_info_t *info)
+{
+    char volume[HDL_ISO_TITLE_MAX];
+    char disc[HDL_ISO_DISC_ID_MAX];
+    char startup[HDL_ISO_STARTUP_MAX];
+
+    if (info == NULL || info->volume_title[0] == '\0')
+        return 1;
+    normalize_iso_identity(info->volume_title, volume, sizeof(volume));
+    normalize_iso_identity(info->disc_id, disc, sizeof(disc));
+    normalize_iso_identity(info->startup, startup, sizeof(startup));
+    return volume[0] == '\0' || strcmp(volume, disc) == 0 ||
+           strcmp(volume, startup) == 0;
+}
+
+static void replace_identity_volume_title(hdl_iso_info_t *info)
+{
+    const char *base;
+    const char *colon;
+    size_t length;
+    size_t begin = 0;
+    size_t end;
+    size_t i;
+    size_t used = 0;
+
+    if (info == NULL || !iso_volume_title_is_identity(info) ||
+        hdl_selected_iso_path[0] == '\0')
+        return;
+    base = strrchr(hdl_selected_iso_path, '/');
+    colon = strrchr(hdl_selected_iso_path, ':');
+    if (base != NULL)
+        base++;
+    else if (colon != NULL)
+        base = colon + 1;
+    else
+        base = hdl_selected_iso_path;
+    length = strlen(base);
+    if (length > 4u && base[length - 4u] == '.' &&
+        (base[length - 3u] == 'i' || base[length - 3u] == 'I') &&
+        (base[length - 2u] == 's' || base[length - 2u] == 'S') &&
+        (base[length - 1u] == 'o' || base[length - 1u] == 'O'))
+        length -= 4u;
+    while (begin < length && base[begin] == ' ')
+        begin++;
+    end = length;
+    while (end > begin && base[end - 1u] == ' ')
+        end--;
+    if (end <= begin)
+        return;
+    for (i = begin; i < end && used + 1u < sizeof(info->volume_title); i++) {
+        unsigned char ch = (unsigned char)base[i];
+
+        info->volume_title[used++] =
+            (ch < 0x20u || ch == 0x7fu) ? '_' : (char)ch;
+    }
+    info->volume_title[used] = '\0';
+    session_log_line("HDL title fallback from ISO filename: %s",
+                     info->volume_title);
+}
+
+static int hdl_install_open_source(const char *path, uint64_t expected,
+                                   hdl_file_source_t *source)
+{
+    int result = open_source(path, expected, source);
+
+    hdl_selected_iso_path[0] = '\0';
+    if (result >= 0 && path != NULL)
+        snprintf(hdl_selected_iso_path, sizeof(hdl_selected_iso_path),
+                 "%s", path);
+    return result;
+}
+
 /* Keep the currently silent source-validation stages visible on real hardware.
  * If a removable-media driver stalls, the last rendered page now identifies
  * the exact stage instead of leaving an unrelated HDD monitor frame behind. */
 static int hdl_install_iso_probe(const hdl_iso_source_t *source,
                                  hdl_iso_info_t *info)
 {
+    int result;
+
     app_ui_activity_message("HDL ISO validation",
                             "Reading ISO9660 and SYSTEM.CNF from the selected mass:/ image.");
-    return hdl_iso_probe(source, info);
+    result = hdl_iso_probe(source, info);
+    if (result == 0)
+        replace_identity_volume_title(info);
+    return result;
 }
 
 static int hdl_install_source_fingerprint(hdl_file_source_t *source,
@@ -147,12 +279,35 @@ static int hdl_cached_target_exists(const char *target)
 
     /* This is now a pure cached lookup with no physical I/O. Do not render a
      * fake activity page here: on real hardware that direct GS frame could
-     * remain visible while the following legacy scr_printf confirmation was
-     * already waiting for L1+R1+X, making TRIANGLE appear to be the only input.
-     * The actual confirmation is rendered explicitly by install_ui.inc. */
+     * remain visible while the following confirmation was already waiting for
+     * L1+R1+X. The actual confirmation is rendered explicitly by install_ui. */
     hdl_pending_target_result_valid = 0;
     hdl_pending_target[0] = '\0';
     return found;
+}
+
+static int hdl_transaction_recheck_disk(uint32_t *max_partition_sectors,
+                                        uint32_t *free_sectors)
+{
+    int found = 0;
+    int result;
+
+    if (!hdl_transaction_guard_active)
+        return recheck_disk(max_partition_sectors, free_sectors);
+
+    disk_status_phase_at("Write preflight: revalidating target absence",
+                         "Raw APA chain, free space and generated target ID");
+    result = recheck_disk_target(hdl_transaction_guard_target, &found,
+                                 max_partition_sectors, free_sectors);
+    if (result == 0) {
+        hdl_transaction_guard_checked = 1;
+        hdl_transaction_guard_found = found;
+        session_log_line("HDL post-confirm raw guard target=%s collision=%d",
+                         hdl_transaction_guard_target, found);
+        if (found)
+            return HDL_INSTALL_TARGET_EXISTS;
+    }
+    return result;
 }
 
 /*
@@ -166,12 +321,37 @@ static int hdl_cached_target_exists(const char *target)
 static int hdl_status_fileXioOpen(const char *path, int flags, int mode)
 {
     if (path != NULL && strncmp(path, "hdd0:", 5) == 0 &&
-        (flags & FIO_O_CREAT) != 0)
+        flags == FIO_O_RDONLY && hdl_transaction_guard_active &&
+        hdl_transaction_guard_checked && !hdl_transaction_guard_found &&
+        !hdl_transaction_guard_lookup_consumed) {
+        char expected[64];
+
+        snprintf(expected, sizeof(expected), "hdd0:%s",
+                 hdl_transaction_guard_target);
+        if (strcmp(path, expected) == 0) {
+            hdl_transaction_guard_lookup_consumed = 1;
+            session_log_line(
+                "HDL skipped redundant stock APA pre-create lookup target=%s",
+                hdl_transaction_guard_target);
+            return -1;
+        }
+    }
+
+    if (path != NULL && strncmp(path, "hdd0:", 5) == 0 &&
+        (flags & FIO_O_CREAT) != 0) {
+        /* apaOpen() performs its own ID walk as part of the actual create. The
+         * raw post-confirm guard above has just proven the target absent; from
+         * this point the stock call is the allocator itself, not a third
+         * read-only collision probe. */
+        hdl_transaction_guard_active = 0;
+        disk_status_phase_at("Creating HDL main partition",
+                             "Stock APA allocator after raw target guard");
         disk_status_io(DISK_STATUS_WRITE, 0, 0, 0, 0);
-    else if (path != NULL && strncmp(path, "hdd0:", 5) == 0 &&
-             flags == FIO_O_RDONLY)
+    } else if (path != NULL && strncmp(path, "hdd0:", 5) == 0 &&
+               flags == FIO_O_RDONLY) {
         disk_status_phase_at("Rechecking target collision before allocation",
                              "APA partition-name lookup");
+    }
     return fileXioOpen(path, flags, mode);
 }
 
@@ -215,23 +395,50 @@ static int hdl_status_fileXioRemove(const char *path)
 #define fileXioOpen hdl_status_fileXioOpen
 #define fileXioIoctl2 hdl_status_fileXioIoctl2
 #define fileXioRemove hdl_status_fileXioRemove
+#define recheck_disk(...) hdl_transaction_recheck_disk(__VA_ARGS__)
 #include "hdl_tools/transaction.inc"
+#undef recheck_disk
 #undef fileXioRemove
 #undef fileXioIoctl2
 #undef fileXioOpen
 
+static int hdl_execute_transaction_guarded(hdl_transaction_t *transaction)
+{
+    int planned = transaction != NULL &&
+                  transaction->stage == HDL_TRANSACTION_STAGE_PLANNED;
+    int result;
+
+    if (planned)
+        hdl_transaction_guard_arm(transaction->target);
+    else
+        hdl_transaction_guard_disarm();
+
+    /* The user has already confirmed an install/resume at this point. Make
+     * any early raw validation READs show WRITE PREFLIGHT semantics even
+     * before execute_transaction() opens its detailed activity scope. */
+    disk_status_set_write_intent(1);
+    result = execute_transaction(transaction);
+    disk_status_set_write_intent(0);
+    hdl_transaction_guard_disarm();
+    return result;
+}
+
 /* Function-like wrappers avoid rewriting struct members such as
  * transaction.source_fingerprint while still intercepting the calls. */
+#define open_source(...) hdl_install_open_source(__VA_ARGS__)
 #define hdl_iso_probe(...) hdl_install_iso_probe(__VA_ARGS__)
 #define source_fingerprint(...) hdl_install_source_fingerprint(__VA_ARGS__)
 #define hdl_partition_id(...) hdl_install_partition_id(__VA_ARGS__)
 #define recheck_disk(...) hdl_install_recheck_disk(__VA_ARGS__)
 #define target_exists(...) hdl_cached_target_exists(__VA_ARGS__)
+#define execute_transaction(...) hdl_execute_transaction_guarded(__VA_ARGS__)
 #include "hdl_tools/install_ui.inc"
+#undef execute_transaction
 #undef target_exists
 #undef recheck_disk
 #undef hdl_partition_id
 #undef source_fingerprint
 #undef hdl_iso_probe
+#undef open_source
 
 #include "hdl_tools/game_ui.inc"
