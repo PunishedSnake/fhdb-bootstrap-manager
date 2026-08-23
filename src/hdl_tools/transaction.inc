@@ -72,6 +72,8 @@ static int delete_installed_game(const hdl_game_entry_t *game,
     char path[64];
     int result;
 
+    /* Before the user arms deletion these are genuinely read-only safety
+     * checks, so keep the ordinary READ monitor semantics here. */
     result = recheck_disk(&maximum, &free_sectors);
     if (result == 0)
         result = journal_blocks_game_delete(game->id);
@@ -96,16 +98,33 @@ static int delete_installed_game(const hdl_game_entry_t *game,
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_SQUARE))
         return HDL_INSTALL_CANCELLED;
 
+    /* Once destructive confirmation has been accepted, validation reads are
+     * no longer an independent read-only operation: they are the preflight of
+     * an armed write path. Keep ACTION truthful, but never display the green
+     * read-only footer during this window. */
+    disk_status_begin_at("HDL game removal",
+                         "Write path armed; revalidating selected target",
+                         "Selected HDL main/sub partition chain");
+    disk_status_set_write_intent(1);
     result = recheck_disk(&maximum, &free_sectors);
     if (result == 0)
         result = journal_blocks_game_delete(game->id);
     if (result == 0)
         result = verify_game_snapshot(game, total_sectors);
-    if (result < 0)
+    if (result < 0) {
+        disk_status_end();
         return result;
-    if (target_path("hdd0:", game->id, path, sizeof(path)) < 0)
+    }
+    if (target_path("hdd0:", game->id, path, sizeof(path)) < 0) {
+        disk_status_end();
         return HDL_INSTALL_TARGET_CHANGED;
+    }
+
+    disk_status_phase_at("Removing selected APA allocation",
+                         "APA metadata and linked HDL sub-partitions");
+    disk_status_io(DISK_STATUS_WRITE, game->main_lba, 2u, 0, 0);
     result = fileXioRemove(path);
+    disk_status_end();
     session_log_line("HDL game delete target=%s startup=%s result=%d",
                      game->id, game->metadata.startup, result);
     return result < 0 ? result : 0;
@@ -125,6 +144,9 @@ static int create_partitions(const hdl_transaction_t *transaction,
         fileXioClose(fd);
         return HDL_INSTALL_TARGET_EXISTS;
     }
+    disk_status_phase_at("Creating HDL main partition",
+                         "APA allocation metadata");
+    disk_status_io(DISK_STATUS_WRITE, 0, 0, 0, 0);
     snprintf(create, sizeof(create), "hdd0:%s,,,%s,HDL",
              transaction->target,
              allocation_name(plan->slices[0].allocation_bytes));
@@ -133,8 +155,13 @@ static int create_partitions(const hdl_transaction_t *transaction,
         return fd;
     for (i = 1; i < plan->count; i++) {
         const char *size = allocation_name(plan->slices[i].allocation_bytes);
-        int result = fileXioIoctl2(fd, HIOCADDSUB, (void *)size,
-                                   strlen(size) + 1u, NULL, 0);
+        int result;
+
+        disk_status_phase_at("Adding HDL sub-partition",
+                             "APA allocation metadata");
+        disk_status_io(DISK_STATUS_WRITE, 0, 0, i, plan->count);
+        result = fileXioIoctl2(fd, HIOCADDSUB, (void *)size,
+                               strlen(size) + 1u, NULL, 0);
 
         if (result < 0) {
             fileXioClose(fd);
@@ -142,6 +169,9 @@ static int create_partitions(const hdl_transaction_t *transaction,
             return HDL_INSTALL_CREATE_FAILED;
         }
     }
+    disk_status_phase_at("Flushing APA allocation metadata",
+                         "New HDL main/sub partition chain");
+    disk_status_io(DISK_STATUS_FLUSH, 0, 0, plan->count, plan->count);
     if (fileXioIoctl2(fd, HIOCFLUSH, NULL, 0, NULL, 0) < 0) {
         fileXioClose(fd);
         (void)remove_incomplete_target(transaction->target);
@@ -383,6 +413,10 @@ static int execute_transaction(hdl_transaction_t *transaction)
     disk_status_begin_at("HDL game installation",
                          "Preparing guarded APA allocation",
                          "Standard HDL main/sub partitions");
+    /* Reaching execute_transaction means the user has already authorized an
+     * install or resume. Validation may still read first, but the transaction
+     * owns an armed write path until it exits. */
+    disk_status_set_write_intent(1);
     if (transaction->stage == HDL_TRANSACTION_STAGE_PLANNED) {
         result = create_partitions(transaction, &plan);
         if (result < 0)
@@ -414,6 +448,11 @@ static int execute_transaction(hdl_transaction_t *transaction)
                               source.fd, target_fd);
         if (result < 0)
             goto done;
+        disk_status_phase_at("Flushing copied HDL payload",
+                             "HDL payload data area");
+        disk_status_io(DISK_STATUS_FLUSH,
+                       layout.starts[0], 0, transaction->total_sectors,
+                       transaction->total_sectors);
         if (fileXioIoctl2(target_fd, HDL_STREAM_IOCTL2_FLUSH,
                           NULL, 0, NULL, 0) < 0) {
             result = HDL_INSTALL_COPY_FAILED;
@@ -457,6 +496,10 @@ static int execute_transaction(hdl_transaction_t *transaction)
             goto done;
         disk_status_phase_at("Committing verified game metadata last",
                              "Main partition attribute area / HDL metadata");
+        disk_status_io(DISK_STATUS_WRITE,
+                       layout.starts[0] + HDL_METADATA_LBA_OFFSET,
+                       2u, transaction->total_sectors,
+                       transaction->total_sectors);
         result = fileXioIoctl2(target_fd,
                                HDL_STREAM_IOCTL2_COMMIT_METADATA,
                                metadata, sizeof(metadata), NULL, 0);
