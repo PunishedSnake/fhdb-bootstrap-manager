@@ -71,6 +71,10 @@ static int hdl_raw_target_exists(const char *target)
     int result;
     int found = 0;
 
+    /* Keep the legacy helper linked for other code-review/build configurations;
+     * the new-install path below intentionally bypasses it on large disks. */
+    (void)target_exists;
+
     if (target == NULL || target[0] == '\0')
         return 1;
 
@@ -192,12 +196,12 @@ static int hdl_status_fileXioRemove(const char *path)
 #undef fileXioIoctl2
 #undef fileXioOpen
 
-/* The new-install controller receives stage-labelled wrappers and the raw APA
- * collision test. Transaction resume keeps the original validation functions. */
-#define hdl_iso_probe hdl_install_iso_probe
-#define source_fingerprint hdl_install_source_fingerprint
-#define recheck_disk hdl_install_recheck_disk
-#define target_exists hdl_raw_target_exists
+/* Function-like wrappers avoid rewriting struct members such as
+ * transaction.source_fingerprint while still intercepting the calls. */
+#define hdl_iso_probe(...) hdl_install_iso_probe(__VA_ARGS__)
+#define source_fingerprint(...) hdl_install_source_fingerprint(__VA_ARGS__)
+#define recheck_disk(...) hdl_install_recheck_disk(__VA_ARGS__)
+#define target_exists(...) hdl_raw_target_exists(__VA_ARGS__)
 #include "hdl_tools/install_ui.inc"
 #undef target_exists
 #undef recheck_disk
