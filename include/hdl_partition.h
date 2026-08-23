@@ -6,6 +6,10 @@
 
 #define HDL_MAX_PARTITIONS 65u
 #define HDL_METADATA_SIZE 1024u
+/* Raw APA LBAs include the 4 KiB partition-information area that fileXio
+ * hides before its extended-attribute view. HDLoader metadata is 1 MiB into
+ * that file view, therefore the physical sector is main + (4096+1MiB)/512. */
+#define HDL_METADATA_PHYSICAL_SECTOR_OFFSET 0x0808u
 #define HDL_GAME_TITLE_MAX 160u
 #define HDL_STARTUP_MAX 60u
 #define HDL_PARTITION_ID_MAX 33u
