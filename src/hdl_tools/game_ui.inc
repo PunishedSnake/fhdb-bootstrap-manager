@@ -5,7 +5,7 @@ static void show_game_details(const hdl_game_entry_t *game)
     scr_clear();
     scr_printf("Installed HDL partition\n\n");
     scr_printf("Target    : %s\n", game->id);
-    scr_printf("Main LBA  : %u\n", game->main_lba);
+    scr_printf("Main LBA  : %lu\n", (unsigned long)game->main_lba);
     scr_printf("Allocation: %llu MiB\n",
                (unsigned long long)(game->allocation_bytes / 1024u / 1024u));
     if (game->metadata_state == 0) {
