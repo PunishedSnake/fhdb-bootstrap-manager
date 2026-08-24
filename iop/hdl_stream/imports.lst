@@ -32,3 +32,17 @@ sifman_IMPORTS_end
 bdm_IMPORTS_start
 I_bdm_get_bd
 bdm_IMPORTS_end
+
+thbase_IMPORTS_start
+I_CreateThread
+I_DeleteThread
+I_StartThread
+I_ExitThread
+thbase_IMPORTS_end
+
+thsemap_IMPORTS_start
+I_CreateSema
+I_DeleteSema
+I_SignalSema
+I_WaitSema
+thsemap_IMPORTS_end
