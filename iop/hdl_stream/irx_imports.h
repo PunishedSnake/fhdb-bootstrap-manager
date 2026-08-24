@@ -7,5 +7,7 @@
 #include <sysmem.h>
 #include <sifman.h>
 #include <bdm.h>
+#include <thbase.h>
+#include <thsemap.h>
 
 #endif
