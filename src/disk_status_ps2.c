@@ -13,8 +13,19 @@
 /* Raw forensic scanning can generate ~15k READ events on a 2 TB disk. Waiting
  * for VBlank on every one would serialize the scan to display refresh speed.
  * Keep the latest telemetry authoritative, but only present one out of each 32
- * high-rate reads. Writes and phase changes remain uncoalesced. */
+ * high-rate reads. */
 #define STATUS_READ_RENDER_DIVISOR 32u
+
+/* Bulk HDL transfers are 64 KiB per event. Rendering every block can insert a
+ * framebuffer/VBlank wait between otherwise back-to-back USB requests, which
+ * is exactly the kind of tiny UI tax that becomes a large throughput loss on a
+ * 12 Mbit/s bus. Keep destructive metadata writes immediate, but coalesce only
+ * large semantic streaming events. Copy remains visibly live at roughly every
+ * 256 KiB; HDD-only verification updates every 2 MiB. The final event is
+ * always rendered regardless of the divisor. */
+#define STATUS_STREAM_MIN_SECTORS 64u
+#define STATUS_WRITE_RENDER_DIVISOR 4u
+#define STATUS_VERIFY_RENDER_DIVISOR 32u
 
 static const char *operation_stack[STATUS_STACK_DEPTH];
 static const char *phase_stack[STATUS_STACK_DEPTH];
@@ -23,6 +34,7 @@ static unsigned char write_intent_stack[STATUS_STACK_DEPTH];
 static unsigned int status_depth;
 static unsigned int status_overflow_depth;
 static unsigned int read_events_since_render;
+static unsigned int stream_events_since_render;
 
 static const char *kind_name(disk_status_kind_t kind)
 {
@@ -99,9 +111,9 @@ static void render(disk_status_kind_t kind, unsigned int lba,
                       kind == DISK_STATUS_POINTER;
 
     /* The GS frontend renders this complete status view into its back buffer
-     * and owns the VBlank framebuffer swap. High-rate READ coalescing happens
-     * before this function, so presentation cannot turn raw disk throughput
-     * into a 50/60-Hz I/O throttle. */
+     * and owns the framebuffer swap. High-rate I/O coalescing happens before
+     * this function so presentation cannot become part of the storage timing
+     * loop itself. */
     gs_ui_render_disk_status(operation,
                              phase != NULL && phase[0] != '\0'
                                  ? phase : kind_name(kind),
@@ -110,6 +122,12 @@ static void render(disk_status_kind_t kind, unsigned int lba,
                              (unsigned int)progress_current,
                              (unsigned int)progress_total,
                              lba, sectors, write_sensitive);
+}
+
+static void reset_render_counters(void)
+{
+    read_events_since_render = 0;
+    stream_events_since_render = 0;
 }
 
 void disk_status_begin_at(const char *operation, const char *phase,
@@ -133,7 +151,7 @@ void disk_status_begin_at(const char *operation, const char *phase,
     phase_stack[slot] = phase;
     location_stack[slot] = location;
     write_intent_stack[slot] = 0u;
-    read_events_since_render = 0;
+    reset_render_counters();
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -147,7 +165,7 @@ void disk_status_phase(const char *phase)
     if (status_depth == 0)
         return;
     phase_stack[status_depth - 1u] = phase;
-    read_events_since_render = 0;
+    reset_render_counters();
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -156,7 +174,7 @@ void disk_status_location(const char *location)
     if (status_depth == 0)
         return;
     location_stack[status_depth - 1u] = location;
-    read_events_since_render = 0;
+    reset_render_counters();
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -166,7 +184,7 @@ void disk_status_phase_at(const char *phase, const char *location)
         return;
     phase_stack[status_depth - 1u] = phase;
     location_stack[status_depth - 1u] = location;
-    read_events_since_render = 0;
+    reset_render_counters();
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -175,7 +193,7 @@ void disk_status_set_write_intent(int armed)
     if (status_depth == 0)
         return;
     write_intent_stack[status_depth - 1u] = armed ? 1u : 0u;
-    read_events_since_render = 0;
+    reset_render_counters();
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
@@ -183,6 +201,9 @@ void disk_status_io(disk_status_kind_t kind, unsigned int lba,
                     unsigned int sectors, unsigned int current,
                     unsigned int total)
 {
+    unsigned int divisor = 0;
+    int final_event = total != 0u && current >= total;
+
     /* A bare raw read with no semantic progress used to overwrite useful UI
      * with a fake HDD-position percentage. Leave the caller's activity page on
      * screen instead. Scoped operations still get full LBA telemetry. */
@@ -194,15 +215,25 @@ void disk_status_io(disk_status_kind_t kind, unsigned int lba,
         if (read_events_since_render < STATUS_READ_RENDER_DIVISOR)
             return;
         read_events_since_render = 0;
-    } else {
+        stream_events_since_render = 0;
+    } else if (total != 0u && sectors >= STATUS_STREAM_MIN_SECTORS &&
+               (kind == DISK_STATUS_WRITE || kind == DISK_STATUS_VERIFY)) {
+        divisor = kind == DISK_STATUS_WRITE ? STATUS_WRITE_RENDER_DIVISOR
+                                             : STATUS_VERIFY_RENDER_DIVISOR;
+        stream_events_since_render++;
+        if (!final_event && stream_events_since_render < divisor)
+            return;
+        stream_events_since_render = 0;
         read_events_since_render = 0;
+    } else {
+        reset_render_counters();
     }
     render(kind, lba, sectors, current, total);
 }
 
 void disk_status_end(void)
 {
-    read_events_since_render = 0;
+    reset_render_counters();
     if (status_overflow_depth != 0) {
         status_overflow_depth--;
         return;
