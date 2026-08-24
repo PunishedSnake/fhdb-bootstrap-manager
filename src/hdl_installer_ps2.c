@@ -1,3 +1,5 @@
+#include <kernel.h>
+
 /* HDL Tools controller is split by responsibility to keep the large PS2-only
  * implementation reviewable. These fragments form one translation unit. */
 #include "hdl_tools/source_ui.inc"
@@ -88,6 +90,8 @@ static int hdl_transaction_guard_lookup_consumed;
  * already owns the same APA file slot returns EBUSY in ps2hdd, which is exactly
  * what dev15 hit after a successful METADATA_COMMITTED journal transition. */
 static int hdl_active_target_fd = -1;
+
+#include "hdl_tools/fast_io.inc"
 
 /*
  * APA deletion does not erase the old partition payload. If the allocator
@@ -431,6 +435,7 @@ static int hdl_status_fileXioClose(int fd)
 {
     if (fd == hdl_active_target_fd) {
         session_log_line("HDL active stream closed fd=%d", fd);
+        hdl_fast_io_reset();
         hdl_active_target_fd = -1;
     }
     return fileXioClose(fd);
@@ -567,11 +572,17 @@ static int hdl_remove_incomplete_target_journal(const char *target)
 #define fileXioClose hdl_status_fileXioClose
 #define fileXioIoctl2 hdl_status_fileXioIoctl2
 #define fileXioRemove hdl_status_fileXioRemove
+#define fileXioRead hdl_fast_fileXioRead
+#define fileXioWrite hdl_fast_fileXioWrite
+#define fileXioLseek64 hdl_fast_fileXioLseek64
 #define target_metadata_matches(...) hdl_target_metadata_matches_active(__VA_ARGS__)
 #define recheck_disk(...) hdl_transaction_recheck_disk(__VA_ARGS__)
 #include "hdl_tools/transaction.inc"
 #undef recheck_disk
 #undef target_metadata_matches
+#undef fileXioLseek64
+#undef fileXioWrite
+#undef fileXioRead
 #undef fileXioRemove
 #undef fileXioIoctl2
 #undef fileXioClose
@@ -584,6 +595,7 @@ static int hdl_execute_transaction_guarded(hdl_transaction_t *transaction)
     int result;
 
     hdl_active_target_fd = -1;
+    hdl_fast_io_reset();
     if (planned)
         hdl_transaction_guard_arm(transaction->target);
     else
@@ -595,6 +607,7 @@ static int hdl_execute_transaction_guarded(hdl_transaction_t *transaction)
     disk_status_set_write_intent(1);
     result = execute_transaction(transaction);
     disk_status_set_write_intent(0);
+    hdl_fast_io_reset();
     hdl_active_target_fd = -1;
     hdl_transaction_guard_disarm();
     return result;
