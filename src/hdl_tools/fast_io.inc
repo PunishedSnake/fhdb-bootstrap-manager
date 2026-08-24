@@ -23,6 +23,7 @@ static int hdl_fast_pump_mode;
 static int hdl_fast_pump_ack;
 static unsigned int hdl_fast_pump_ack_bytes;
 static int hdl_fast_path_logged;
+static int hdl_fast_stats_logged;
 
 static void hdl_fast_io_reset(void)
 {
@@ -36,11 +37,32 @@ static void hdl_fast_io_reset(void)
     hdl_fast_pump_ack = 0;
     hdl_fast_pump_ack_bytes = 0;
     hdl_fast_path_logged = 0;
+    hdl_fast_stats_logged = 0;
 }
 
-static void hdl_fast_io_set_source_total(uint64_t bytes)
+static int hdl_fast_resolve_source_total(int source_fd)
 {
-    hdl_fast_source_total = bytes;
+    s64 end;
+    s64 restore;
+
+    if (hdl_fast_source_total != 0)
+        return 0;
+    if (source_fd < 0 || !hdl_fast_source_position_valid)
+        return HDL_INSTALL_COPY_FAILED;
+
+    /* Resolve EOF once through the ordinary fileXio descriptor. Direct-BDM
+     * reads use explicit physical offsets afterwards, while the fallback path
+     * seeks explicitly before every read, so restoring the descriptor here is
+     * sufficient and costs only two RPCs per transaction rather than per block. */
+    end = fileXioLseek64(source_fd, 0, FIO_SEEK_END);
+    if (end <= 0)
+        return end < 0 ? (int)end : HDL_INSTALL_COPY_FAILED;
+    restore = fileXioLseek64(source_fd, (s64)hdl_fast_source_position,
+                             FIO_SEEK_SET);
+    if (restore != (s64)hdl_fast_source_position)
+        return restore < 0 ? (int)restore : HDL_INSTALL_COPY_FAILED;
+    hdl_fast_source_total = (uint64_t)end;
+    return 0;
 }
 
 static void hdl_fast_io_log_stats(int target_fd)
@@ -48,7 +70,7 @@ static void hdl_fast_io_log_stats(int target_fd)
     hdl_stream_fast_stats_t stats;
     int result;
 
-    if (target_fd < 0)
+    if (target_fd < 0 || hdl_fast_stats_logged)
         return;
     memset(&stats, 0, sizeof(stats));
     result = fileXioIoctl2(target_fd, HDL_STREAM_IOCTL2_GET_FAST_STATS,
@@ -59,11 +81,11 @@ static void hdl_fast_io_log_stats(int target_fd)
         return;
     }
     session_log_line(
-        "HDL fast I/O stats flags=0x%08x fragments=%u direct=%u fallback=%u prefetch-hit=%u miss=%u pump=%u sectors=%u src-dma=%u hdd-dma=%u",
+        "HDL fast I/O source stats flags=0x%08x fragments=%u direct=%u fallback=%u prefetch-hit=%u miss=%u pump=%u sectors=%u src-dma=%u",
         stats.flags, stats.fragment_count, stats.direct_reads,
         stats.fallback_reads, stats.prefetch_hits, stats.prefetch_misses,
-        stats.pumped_chunks, stats.pumped_sectors, stats.source_dma_chunks,
-        stats.target_dma_chunks);
+        stats.pumped_chunks, stats.pumped_sectors, stats.source_dma_chunks);
+    hdl_fast_stats_logged = 1;
 }
 
 static s64 hdl_fast_fileXioLseek64(int fd, s64 offset, int whence)
@@ -114,8 +136,9 @@ static int hdl_fast_dma_read(int command, int source_fd, void *buffer,
     } else {
         hdl_stream_source_io_t request;
 
-        if (hdl_fast_source_total == 0)
-            return INT_MIN;
+        result = hdl_fast_resolve_source_total(source_fd);
+        if (result < 0)
+            return result;
         request.source_fd = source_fd;
         request.ee_address = (uint32_t)(uintptr_t)buffer;
         request.bytes = bytes;
@@ -162,7 +185,7 @@ static int hdl_fast_fileXioRead(int fd, void *buffer, int size)
                 hdl_fast_pump_ack_bytes = (unsigned int)size;
                 if (!hdl_fast_path_logged) {
                     session_log_line(
-                        "HDL IOP fast pump active: double-buffer-capable USB source -> ps2hdd + one IOP->EE SHA DMA, chunk=%u",
+                        "HDL IOP fast pump active: double-buffered USB source -> ps2hdd + one IOP->EE SHA DMA, chunk=%u",
                         (unsigned int)size);
                     hdl_fast_path_logged = 1;
                 }
@@ -170,6 +193,9 @@ static int hdl_fast_fileXioRead(int fd, void *buffer, int size)
                 hdl_fast_pump_ack = 0;
                 hdl_fast_pump_ack_bytes = 0;
             }
+            if (result == size && hdl_fast_source_total != 0 &&
+                hdl_fast_source_position == hdl_fast_source_total)
+                hdl_fast_io_log_stats(hdl_active_target_fd);
             return result;
         }
     }
