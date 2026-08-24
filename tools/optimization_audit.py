@@ -141,6 +141,13 @@ def format_bytes(value: int) -> str:
     return f"{value / 1024.0:.2f} KiB" if value >= 1024 else f"{value} B"
 
 
+def format_callers(calls, symbol: str) -> str:
+    caller_list = calls.get(symbol)
+    if not caller_list:
+        return "PRESENT, no direct jal caller resolved"
+    return ", ".join(f"{name}({count})" for name, count in caller_list.most_common())
+
+
 def write_report(path: Path, elf: Path, functions: dict[str, Function], global_mnemonics,
                  calls, nm_text: str, source_hits) -> None:
     emitted = [f for f in functions.values() if f.size > 0 and f.words]
@@ -176,15 +183,11 @@ def write_report(path: Path, elf: Path, functions: dict[str, Function], global_m
     if not helper_hits:
         lines.append("  none of the watched helpers are defined in the final EE ELF")
     for helper in helper_hits:
-        caller_list = calls.get(helper, {})
-        pretty = ", ".join(f"{name}({count})" for name, count in caller_list.most_common())
-        lines.append(f"  {helper}: {pretty or 'PRESENT, no direct jal caller resolved'}")
+        lines.append(f"  {helper}: {format_callers(calls, helper)}")
     lines += ["", "Heavy libc entry points and direct callers"]
     for symbol in HEAVY_LIBC:
         if symbol in nm_text:
-            caller_list = calls.get(symbol, {})
-            pretty = ", ".join(f"{name}({count})" for name, count in caller_list.most_common())
-            lines.append(f"  {symbol}: {pretty or 'PRESENT, no direct jal caller resolved'}")
+            lines.append(f"  {symbol}: {format_callers(calls, symbol)}")
     lines += ["", "Source sites that can pull heavyweight libc"]
     for label, _ in SOURCE_PATTERNS:
         lines.append(f"  [{label}]")
