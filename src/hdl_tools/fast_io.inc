@@ -16,6 +16,7 @@
 static int hdl_fast_source_fd = -1;
 static uint64_t hdl_fast_source_position;
 static uint64_t hdl_fast_source_seek_value;
+static uint64_t hdl_fast_source_total;
 static int hdl_fast_source_position_valid;
 static int hdl_fast_source_seek_pending;
 static int hdl_fast_pump_mode;
@@ -28,11 +29,41 @@ static void hdl_fast_io_reset(void)
     hdl_fast_source_fd = -1;
     hdl_fast_source_position = 0;
     hdl_fast_source_seek_value = 0;
+    hdl_fast_source_total = 0;
     hdl_fast_source_position_valid = 0;
     hdl_fast_source_seek_pending = 0;
     hdl_fast_pump_mode = 0;
     hdl_fast_pump_ack = 0;
     hdl_fast_pump_ack_bytes = 0;
+    hdl_fast_path_logged = 0;
+}
+
+static void hdl_fast_io_set_source_total(uint64_t bytes)
+{
+    hdl_fast_source_total = bytes;
+}
+
+static void hdl_fast_io_log_stats(int target_fd)
+{
+    hdl_stream_fast_stats_t stats;
+    int result;
+
+    if (target_fd < 0)
+        return;
+    memset(&stats, 0, sizeof(stats));
+    result = fileXioIoctl2(target_fd, HDL_STREAM_IOCTL2_GET_FAST_STATS,
+                           NULL, 0, &stats, sizeof(stats));
+    if (result < 0) {
+        session_log_line("HDL fast I/O stats unavailable fd=%d result=%d",
+                         target_fd, result);
+        return;
+    }
+    session_log_line(
+        "HDL fast I/O stats flags=0x%08x fragments=%u direct=%u fallback=%u prefetch-hit=%u miss=%u pump=%u sectors=%u src-dma=%u hdd-dma=%u",
+        stats.flags, stats.fragment_count, stats.direct_reads,
+        stats.fallback_reads, stats.prefetch_hits, stats.prefetch_misses,
+        stats.pumped_chunks, stats.pumped_sectors, stats.source_dma_chunks,
+        stats.target_dma_chunks);
 }
 
 static s64 hdl_fast_fileXioLseek64(int fd, s64 offset, int whence)
@@ -83,11 +114,15 @@ static int hdl_fast_dma_read(int command, int source_fd, void *buffer,
     } else {
         hdl_stream_source_io_t request;
 
+        if (hdl_fast_source_total == 0)
+            return INT_MIN;
         request.source_fd = source_fd;
         request.ee_address = (uint32_t)(uintptr_t)buffer;
         request.bytes = bytes;
         request.source_offset_low = (uint32_t)hdl_fast_source_position;
         request.source_offset_high = (uint32_t)(hdl_fast_source_position >> 32);
+        request.source_total_low = (uint32_t)hdl_fast_source_total;
+        request.source_total_high = (uint32_t)(hdl_fast_source_total >> 32);
         result = fileXioIoctl2(hdl_active_target_fd, command,
                                &request, sizeof(request), NULL, 0);
     }
@@ -127,7 +162,7 @@ static int hdl_fast_fileXioRead(int fd, void *buffer, int size)
                 hdl_fast_pump_ack_bytes = (unsigned int)size;
                 if (!hdl_fast_path_logged) {
                     session_log_line(
-                        "HDL IOP fast pump active: USB source -> ps2hdd + one IOP->EE SHA DMA, chunk=%u",
+                        "HDL IOP fast pump active: double-buffer-capable USB source -> ps2hdd + one IOP->EE SHA DMA, chunk=%u",
                         (unsigned int)size);
                     hdl_fast_path_logged = 1;
                 }
