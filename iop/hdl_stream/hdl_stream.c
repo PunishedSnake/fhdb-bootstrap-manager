@@ -2,10 +2,12 @@
  * Sequential HDL payload transport for the IOP.
  *
  * This driver deliberately delegates disk writes to ps2hdd. Besides the
- * ordinary hdl0: stream it now owns a small high-throughput staging path for
- * USB installs: source bytes can stay on the IOP, be written directly to the
- * HDL target and be DMAed to EE only once for R5900-side SHA-256. This avoids
- * the old mass: -> IOP -> EE -> IOP -> HDD bounce for every payload block.
+ * ordinary hdl0: stream it owns a high-throughput staging path for USB installs:
+ * source bytes stay on the IOP, are written directly to the HDL target and are
+ * DMAed to EE only once for R5900-side SHA-256. The fast path also pipelines the
+ * next 64 KiB USB read on a worker thread while the current block is written to
+ * DEV9/SIF, removing the old mass: -> IOP -> EE -> IOP -> HDD bounce and most
+ * of the idle gap between consecutive USB requests.
  */
 
 #include <bdm.h>
@@ -20,6 +22,8 @@
 #include <sys/fcntl.h>
 #include <sysclib.h>
 #include <sysmem.h>
+#include <thbase.h>
+#include <thsemap.h>
 #include <usbhdfsd-common.h>
 
 #include "hdl_stream_rpc.h"
@@ -32,11 +36,14 @@
 #define HDL_STREAM_MAX_SOURCE_FRAGMENTS 4096u
 #define HDL_STREAM_USB_SECTOR_SIZE 512u
 #define HDL_STREAM_USB_SECTOR_SHIFT 9u
+#define HDL_STREAM_PREFETCH_STACK 0x1000u
+#define HDL_STREAM_PREFETCH_PRIORITY 0x30u
 
-IRX_ID("hdl_stream", 1, 3);
+IRX_ID("hdl_stream", 1, 4);
 
 typedef struct {
     int source_fd;
+    int disabled;
     struct block_device *bd;
     bd_fragment_t *fragments;
     uint32_t fragment_count;
@@ -52,9 +59,25 @@ typedef struct {
     uint32_t starts[HDL_STREAM_MAX_PARTITIONS];
     uint64_t capacity_bytes;
     uint64_t position;
+
     void *stage_allocation;
-    unsigned char *stage;
+    unsigned char *stage[2];
+    uint32_t stage_count;
+
+    int prefetch_thread;
+    int prefetch_request_sema;
+    int prefetch_done_sema;
+    int prefetch_stopped_sema;
+    volatile int prefetch_stop;
+    volatile int prefetch_active;
+    int prefetch_result;
+    int prefetch_source_fd;
+    uint64_t prefetch_offset;
+    uint32_t prefetch_bytes;
+    uint32_t prefetch_stage_index;
+
     hdl_source_map_t source;
+    hdl_stream_fast_stats_t stats;
 } hdl_stream_file_t;
 
 static int stream_init(iomanX_iop_device_t *device)
@@ -99,16 +122,30 @@ static int ioctl_u32_result(int raw, uint32_t *value)
     return 0;
 }
 
+static void source_map_free_fragments(hdl_source_map_t *source)
+{
+    if (source->fragments != NULL)
+        FreeSysMemory(source->fragments);
+    source->fragments = NULL;
+    source->fragment_count = 0;
+    source->cursor_fragment = 0;
+    source->cursor_base = 0;
+    source->bd = NULL;
+}
+
 static void source_map_reset(hdl_stream_file_t *stream)
 {
-    if (stream->source.fragments != NULL)
-        FreeSysMemory(stream->source.fragments);
-    stream->source.fragments = NULL;
-    stream->source.fragment_count = 0;
-    stream->source.cursor_fragment = 0;
-    stream->source.cursor_base = 0;
-    stream->source.bd = NULL;
+    source_map_free_fragments(&stream->source);
     stream->source.source_fd = -1;
+    stream->source.disabled = 0;
+}
+
+static void source_map_disable(hdl_stream_file_t *stream, int source_fd)
+{
+    source_map_free_fragments(&stream->source);
+    stream->source.source_fd = source_fd;
+    stream->source.disabled = 1;
+    stream->stats.flags &= ~HDL_STREAM_FAST_FLAG_DIRECT_BDM;
 }
 
 static int source_map_prepare(hdl_stream_file_t *stream, int source_fd)
@@ -121,16 +158,21 @@ static int source_map_prepare(hdl_stream_file_t *stream, int source_fd)
     int result;
     unsigned int i;
 
-    if (stream->source.source_fd == source_fd && stream->source.bd != NULL &&
-        stream->source.fragments != NULL)
-        return 0;
+    if (stream->source.source_fd == source_fd) {
+        if (stream->source.disabled)
+            return -ENOTSUP;
+        if (stream->source.bd != NULL && stream->source.fragments != NULL)
+            return 0;
+    }
 
     source_map_reset(stream);
     fragment_count = iomanX_ioctl2(source_fd, USBMASS_IOCTL_GET_FRAGLIST,
                                    NULL, 0, NULL, 0);
     if (fragment_count <= 0 ||
-        (uint32_t)fragment_count > HDL_STREAM_MAX_SOURCE_FRAGMENTS)
+        (uint32_t)fragment_count > HDL_STREAM_MAX_SOURCE_FRAGMENTS) {
+        source_map_disable(stream, source_fd);
         return -ENOTSUP;
+    }
 
     fragments = AllocSysMemory(ALLOC_FIRST,
                                (unsigned int)fragment_count * sizeof(*fragments),
@@ -142,6 +184,7 @@ static int source_map_prepare(hdl_stream_file_t *stream, int source_fd)
                            (unsigned int)fragment_count * sizeof(*fragments));
     if (result != fragment_count) {
         FreeSysMemory(fragments);
+        source_map_disable(stream, source_fd);
         return -ENOTSUP;
     }
 
@@ -150,12 +193,14 @@ static int source_map_prepare(hdl_stream_file_t *stream, int source_fd)
                            NULL, 0, &device_number, sizeof(device_number));
     if (result < 0) {
         FreeSysMemory(fragments);
+        source_map_disable(stream, source_fd);
         return -ENOTSUP;
     }
     result = iomanX_ioctl2(source_fd, USBMASS_IOCTL_GET_DRIVERNAME,
                            NULL, 0, driver_name, sizeof(driver_name));
     if (result < 0 || driver_name[0] == '\0') {
         FreeSysMemory(fragments);
+        source_map_disable(stream, source_fd);
         return -ENOTSUP;
     }
 
@@ -168,16 +213,20 @@ static int source_map_prepare(hdl_stream_file_t *stream, int source_fd)
             bd->name != NULL && strcmp(bd->name, driver_name) == 0 &&
             bd->read != NULL && bd->sectorSize == HDL_STREAM_USB_SECTOR_SIZE) {
             stream->source.source_fd = source_fd;
+            stream->source.disabled = 0;
             stream->source.bd = bd;
             stream->source.fragments = fragments;
             stream->source.fragment_count = (uint32_t)fragment_count;
             stream->source.cursor_fragment = 0;
             stream->source.cursor_base = 0;
+            stream->stats.flags |= HDL_STREAM_FAST_FLAG_DIRECT_BDM;
+            stream->stats.fragment_count = (uint32_t)fragment_count;
             return 0;
         }
     }
 
     FreeSysMemory(fragments);
+    source_map_disable(stream, source_fd);
     return -ENOTSUP;
 }
 
@@ -291,11 +340,174 @@ static int source_read_at(hdl_stream_file_t *stream, int source_fd,
             &stream->source, offset >> HDL_STREAM_USB_SECTOR_SHIFT, buffer,
             (uint16_t)(bytes >> HDL_STREAM_USB_SECTOR_SHIFT));
 
-        if (result >= 0)
+        if (result >= 0) {
+            stream->stats.direct_reads++;
             return (int)bytes;
-        source_map_reset(stream);
+        }
+        source_map_disable(stream, source_fd);
     }
+
+    stream->stats.fallback_reads++;
     return source_read_fallback(source_fd, offset, buffer, bytes);
+}
+
+static void prefetch_worker(void *arg)
+{
+    hdl_stream_file_t *stream = arg;
+
+    for (;;) {
+        WaitSema(stream->prefetch_request_sema);
+        if (stream->prefetch_stop)
+            break;
+        stream->prefetch_result = source_read_at(
+            stream, stream->prefetch_source_fd, stream->prefetch_offset,
+            stream->stage[stream->prefetch_stage_index],
+            stream->prefetch_bytes);
+        SignalSema(stream->prefetch_done_sema);
+    }
+
+    SignalSema(stream->prefetch_stopped_sema);
+    ExitThread();
+}
+
+static void prefetch_delete_semas(hdl_stream_file_t *stream)
+{
+    if (stream->prefetch_request_sema >= 0)
+        DeleteSema(stream->prefetch_request_sema);
+    if (stream->prefetch_done_sema >= 0)
+        DeleteSema(stream->prefetch_done_sema);
+    if (stream->prefetch_stopped_sema >= 0)
+        DeleteSema(stream->prefetch_stopped_sema);
+    stream->prefetch_request_sema = -1;
+    stream->prefetch_done_sema = -1;
+    stream->prefetch_stopped_sema = -1;
+}
+
+static int prefetch_init(hdl_stream_file_t *stream)
+{
+    iop_sema_t sema;
+    iop_thread_t thread;
+    int result;
+
+    if (stream->stage_count < 2)
+        return -ENOMEM;
+
+    stream->prefetch_thread = -1;
+    stream->prefetch_request_sema = -1;
+    stream->prefetch_done_sema = -1;
+    stream->prefetch_stopped_sema = -1;
+    stream->prefetch_stop = 0;
+    stream->prefetch_active = 0;
+
+    memset(&sema, 0, sizeof(sema));
+    sema.initial = 0;
+    sema.max = 1;
+    stream->prefetch_request_sema = CreateSema(&sema);
+    if (stream->prefetch_request_sema < 0)
+        goto fail;
+    stream->prefetch_done_sema = CreateSema(&sema);
+    if (stream->prefetch_done_sema < 0)
+        goto fail;
+    stream->prefetch_stopped_sema = CreateSema(&sema);
+    if (stream->prefetch_stopped_sema < 0)
+        goto fail;
+
+    memset(&thread, 0, sizeof(thread));
+    thread.attr = TH_C;
+    thread.thread = prefetch_worker;
+    thread.priority = HDL_STREAM_PREFETCH_PRIORITY;
+    thread.stacksize = HDL_STREAM_PREFETCH_STACK;
+    result = CreateThread(&thread);
+    if (result < 0)
+        goto fail;
+    stream->prefetch_thread = result;
+    result = StartThread(stream->prefetch_thread, stream);
+    if (result < 0) {
+        DeleteThread(stream->prefetch_thread);
+        stream->prefetch_thread = -1;
+        goto fail;
+    }
+
+    stream->stats.flags |= HDL_STREAM_FAST_FLAG_DOUBLE_BUFFER;
+    return 0;
+
+fail:
+    prefetch_delete_semas(stream);
+    return -ENOMEM;
+}
+
+static int prefetch_wait(hdl_stream_file_t *stream)
+{
+    int result;
+
+    if (!stream->prefetch_active)
+        return 0;
+    result = WaitSema(stream->prefetch_done_sema);
+    if (result < 0)
+        return result;
+    stream->prefetch_active = 0;
+    return stream->prefetch_result;
+}
+
+static int prefetch_take(hdl_stream_file_t *stream, int source_fd,
+                         uint64_t offset, uint32_t bytes,
+                         unsigned char **stage, uint32_t *stage_index)
+{
+    int matches;
+    int result;
+
+    if (!stream->prefetch_active)
+        return 0;
+    matches = stream->prefetch_source_fd == source_fd &&
+              stream->prefetch_offset == offset &&
+              stream->prefetch_bytes == bytes;
+    result = prefetch_wait(stream);
+    if (!matches) {
+        stream->stats.prefetch_misses++;
+        return 0;
+    }
+    if (result != (int)bytes)
+        return result < 0 ? result : -EIO;
+    stream->stats.prefetch_hits++;
+    *stage_index = stream->prefetch_stage_index;
+    *stage = stream->stage[*stage_index];
+    return 1;
+}
+
+static void prefetch_schedule(hdl_stream_file_t *stream, int source_fd,
+                              uint64_t offset, uint32_t bytes,
+                              uint32_t stage_index)
+{
+    if (stream->prefetch_thread < 0 || stream->prefetch_active || bytes == 0 ||
+        stage_index >= stream->stage_count)
+        return;
+
+    stream->prefetch_source_fd = source_fd;
+    stream->prefetch_offset = offset;
+    stream->prefetch_bytes = bytes;
+    stream->prefetch_stage_index = stage_index;
+    stream->prefetch_result = -EIO;
+    stream->prefetch_active = 1;
+    if (SignalSema(stream->prefetch_request_sema) < 0)
+        stream->prefetch_active = 0;
+}
+
+static void prefetch_shutdown(hdl_stream_file_t *stream)
+{
+    if (stream->prefetch_thread < 0) {
+        prefetch_delete_semas(stream);
+        return;
+    }
+
+    if (stream->prefetch_active)
+        (void)prefetch_wait(stream);
+    stream->prefetch_stop = 1;
+    if (SignalSema(stream->prefetch_request_sema) >= 0) {
+        WaitSema(stream->prefetch_stopped_sema);
+        DeleteThread(stream->prefetch_thread);
+    }
+    stream->prefetch_thread = -1;
+    prefetch_delete_semas(stream);
 }
 
 static int dma_to_ee(uint32_t ee_address, const void *source,
@@ -337,14 +549,28 @@ static int stream_open(iomanX_iop_file_t *file, const char *name,
         return -ENOMEM;
     memset(stream, 0, sizeof(*stream));
     stream->source.source_fd = -1;
+    stream->prefetch_thread = -1;
+    stream->prefetch_request_sema = -1;
+    stream->prefetch_done_sema = -1;
+    stream->prefetch_stopped_sema = -1;
+
     stream->stage_allocation = AllocSysMemory(
-        ALLOC_FIRST, HDL_STREAM_IOP_STAGE_BYTES + 63u, NULL);
+        ALLOC_FIRST, (HDL_STREAM_IOP_STAGE_BYTES * 2u) + 63u, NULL);
+    if (stream->stage_allocation != NULL) {
+        stream->stage_count = 2;
+    } else {
+        stream->stage_allocation = AllocSysMemory(
+            ALLOC_FIRST, HDL_STREAM_IOP_STAGE_BYTES + 63u, NULL);
+        stream->stage_count = stream->stage_allocation != NULL ? 1u : 0u;
+    }
     if (stream->stage_allocation == NULL) {
         FreeSysMemory(stream);
         return -ENOMEM;
     }
     aligned = ((uintptr_t)stream->stage_allocation + 63u) & ~(uintptr_t)63u;
-    stream->stage = (unsigned char *)aligned;
+    stream->stage[0] = (unsigned char *)aligned;
+    if (stream->stage_count == 2)
+        stream->stage[1] = stream->stage[0] + HDL_STREAM_IOP_STAGE_BYTES;
 
     stream->hdd_fd = iomanX_open(path, flags, 0);
     if (stream->hdd_fd < 0) {
@@ -394,6 +620,11 @@ static int stream_open(iomanX_iop_file_t *file, const char *name,
         stream->starts[i] = start;
         stream->capacity_bytes += ((uint64_t)length - skip) * 512u;
     }
+
+    /* Prefetch is an optimization, never an admission requirement. A low-memory
+     * IOP still gets the synchronous direct-BDM fast path with one staging block. */
+    if (stream->stage_count == 2)
+        (void)prefetch_init(stream);
     file->privdata = stream;
     return 0;
 }
@@ -405,6 +636,7 @@ static int stream_close(iomanX_iop_file_t *file)
 
     if (stream == NULL)
         return -EBADF;
+    prefetch_shutdown(stream);
     source_map_reset(stream);
     result = iomanX_close(stream->hdd_fd);
     FreeSysMemory(stream->stage_allocation);
@@ -425,7 +657,7 @@ static int locate_position(const hdl_stream_file_t *stream, uint64_t position,
 
         if (position < capacity) {
             *part = i;
-            *sector = skip + (uint32_t)(position / 512u);
+            *sector = skip + (uint32_t)(position >> 9);
             *bytes_available = capacity - position;
             return 0;
         }
@@ -468,7 +700,7 @@ static int stream_transfer(iomanX_iop_file_t *file, void *buffer,
             chunk = (int)available;
         transfer.sub = part;
         transfer.sector = sector;
-        transfer.size = (uint32_t)chunk / 512u;
+        transfer.size = (uint32_t)chunk >> 9;
         transfer.mode = direction;
         transfer.buffer = cursor;
         result = iomanX_ioctl2(stream->hdd_fd, HIOCTRANSFER,
@@ -592,7 +824,12 @@ static int fast_source_to_ee(iomanX_iop_file_t *file,
                              unsigned int request_size, int pump)
 {
     hdl_stream_file_t *stream = file->privdata;
+    unsigned char *stage;
     uint64_t offset;
+    uint64_t total;
+    uint64_t next_offset;
+    uint32_t stage_index = 0;
+    int prefetched;
     int result;
 
     if (stream == NULL || request == NULL ||
@@ -602,18 +839,53 @@ static int fast_source_to_ee(iomanX_iop_file_t *file,
         return -EINVAL;
     offset = (uint64_t)request->source_offset_low |
              ((uint64_t)request->source_offset_high << 32);
-    result = source_read_at(stream, request->source_fd, offset,
-                            stream->stage, request->bytes);
-    if (result != (int)request->bytes)
-        return result < 0 ? result : -EIO;
-    if (pump) {
-        result = stream_transfer(file, stream->stage, request->bytes,
-                                 APA_IO_MODE_WRITE);
+    total = (uint64_t)request->source_total_low |
+            ((uint64_t)request->source_total_high << 32);
+    if (total == 0 || offset > total || request->bytes > total - offset)
+        return -EINVAL;
+
+    stage = stream->stage[0];
+    prefetched = prefetch_take(stream, request->source_fd, offset,
+                               request->bytes, &stage, &stage_index);
+    if (prefetched < 0)
+        return prefetched;
+    if (prefetched == 0) {
+        result = source_read_at(stream, request->source_fd, offset,
+                                stage, request->bytes);
         if (result != (int)request->bytes)
             return result < 0 ? result : -EIO;
     }
-    result = dma_to_ee(request->ee_address, stream->stage, request->bytes);
-    return result < 0 ? result : (int)request->bytes;
+
+    /* Start the next USB request before touching DEV9 or SIF with this block.
+     * While this thread waits for HDD DMA and the EE hashes the current block,
+     * the worker can keep the USB bulk endpoint occupied using the other IOP
+     * staging buffer. This is the key throughput optimization, not larger
+     * individual USB requests. */
+    next_offset = offset + request->bytes;
+    if (stream->prefetch_thread >= 0 && next_offset < total) {
+        uint64_t remaining = total - next_offset;
+        uint32_t next_bytes = remaining > HDL_STREAM_IOP_STAGE_BYTES ?
+                              HDL_STREAM_IOP_STAGE_BYTES : (uint32_t)remaining;
+        uint32_t next_stage = stage_index ^ 1u;
+
+        if ((next_bytes & 0x1ffu) == 0)
+            prefetch_schedule(stream, request->source_fd, next_offset,
+                              next_bytes, next_stage);
+    }
+
+    if (pump) {
+        result = stream_transfer(file, stage, request->bytes,
+                                 APA_IO_MODE_WRITE);
+        if (result != (int)request->bytes)
+            return result < 0 ? result : -EIO;
+        stream->stats.pumped_chunks++;
+        stream->stats.pumped_sectors += request->bytes >> 9;
+    }
+    result = dma_to_ee(request->ee_address, stage, request->bytes);
+    if (result < 0)
+        return result;
+    stream->stats.source_dma_chunks++;
+    return (int)request->bytes;
 }
 
 static int fast_target_to_ee(iomanX_iop_file_t *file,
@@ -628,12 +900,15 @@ static int fast_target_to_ee(iomanX_iop_file_t *file,
         request->bytes > HDL_STREAM_IOP_STAGE_BYTES ||
         (request->bytes & 0x1ffu) != 0)
         return -EINVAL;
-    result = stream_transfer(file, stream->stage, request->bytes,
+    result = stream_transfer(file, stream->stage[0], request->bytes,
                              APA_IO_MODE_READ);
     if (result != (int)request->bytes)
         return result < 0 ? result : -EIO;
-    result = dma_to_ee(request->ee_address, stream->stage, request->bytes);
-    return result < 0 ? result : (int)request->bytes;
+    result = dma_to_ee(request->ee_address, stream->stage[0], request->bytes);
+    if (result < 0)
+        return result;
+    stream->stats.target_dma_chunks++;
+    return (int)request->bytes;
 }
 
 static int stream_ioctl2(iomanX_iop_file_t *file, int command,
@@ -673,6 +948,12 @@ static int stream_ioctl2(iomanX_iop_file_t *file, int command,
         return fast_source_to_ee(file, argument, argument_length, 1);
     if (command == HDL_STREAM_IOCTL2_TARGET_TO_EE)
         return fast_target_to_ee(file, argument, argument_length);
+    if (command == HDL_STREAM_IOCTL2_GET_FAST_STATS) {
+        if (buffer == NULL || buffer_length < sizeof(stream->stats))
+            return -EINVAL;
+        memcpy(buffer, &stream->stats, sizeof(stream->stats));
+        return 0;
+    }
     return -EINVAL;
 }
 
