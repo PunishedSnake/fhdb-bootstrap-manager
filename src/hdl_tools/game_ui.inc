@@ -137,6 +137,14 @@ static void installed_games_menu(void)
     catalog_free(&catalog);
 }
 
+/* Root manager dispatch is intentionally kept separate from this complete
+ * workspace. With whole-program LTO the three HDL subtrees were profitable to
+ * inline by generic compiler heuristics, but doing so makes the always-hot root
+ * manager compete with ISO/APA tooling for the R5900's 16 KiB I-cache. A human
+ * menu transition is not a call-overhead benchmark. */
+#if defined(__GNUC__)
+__attribute__((noinline))
+#endif
 void hdl_tools_menu(void)
 {
     static const app_ui_menu_item_t items[] = {
