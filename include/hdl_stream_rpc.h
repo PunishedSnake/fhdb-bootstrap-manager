@@ -20,10 +20,16 @@
  * 64-byte-aligned IOP staging buffer, optionally read the USB file directly
  * through its BDM fragment map, write that staging buffer straight to ps2hdd,
  * and DMA one copy to EE only when the R5900 needs the bytes for SHA-256.
+ *
+ * source_total lets the IOP safely prefetch the next sequential block without
+ * crossing EOF. The stock USB mass driver intentionally caps one SCSI request
+ * at 128 512-byte sectors, so the 64 KiB staging block is also the natural
+ * compatibility-sized unit for a double-buffered USB pipeline.
  */
 #define HDL_STREAM_IOCTL2_SOURCE_TO_EE 0x6D05
 #define HDL_STREAM_IOCTL2_PUMP_TO_EE 0x6D06
 #define HDL_STREAM_IOCTL2_TARGET_TO_EE 0x6D07
+#define HDL_STREAM_IOCTL2_GET_FAST_STATS 0x6D08
 
 typedef struct {
     uint32_t count;
@@ -37,12 +43,30 @@ typedef struct {
     uint32_t bytes;
     uint32_t source_offset_low;
     uint32_t source_offset_high;
+    uint32_t source_total_low;
+    uint32_t source_total_high;
 } hdl_stream_source_io_t;
 
 typedef struct {
     uint32_t ee_address;
     uint32_t bytes;
 } hdl_stream_target_io_t;
+
+#define HDL_STREAM_FAST_FLAG_DOUBLE_BUFFER 0x00000001u
+#define HDL_STREAM_FAST_FLAG_DIRECT_BDM 0x00000002u
+
+typedef struct {
+    uint32_t flags;
+    uint32_t fragment_count;
+    uint32_t direct_reads;
+    uint32_t fallback_reads;
+    uint32_t prefetch_hits;
+    uint32_t prefetch_misses;
+    uint32_t pumped_chunks;
+    uint32_t pumped_sectors;
+    uint32_t source_dma_chunks;
+    uint32_t target_dma_chunks;
+} hdl_stream_fast_stats_t;
 
 /*
  * Keep a tuned stock fileXio fallback for small probes and for hardware that
