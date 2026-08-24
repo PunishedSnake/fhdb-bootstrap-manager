@@ -256,13 +256,62 @@ static uint32_t physical_lba(const hdl_partition_plan_t *plan,
     return 0;
 }
 
+/*
+ * Hash a source ISO without involving the HDD. This is primarily used when a
+ * previously PAYLOAD_VERIFIED journal is resumed: the old journal format does
+ * not persist a full payload SHA-256, so one source pass is still required to
+ * reconstruct the expected digest. Fresh installs do not pay this second USB
+ * pass because copy_payload() hashes source bytes while they are already being
+ * transferred.
+ */
+static int hash_source_payload(const hdl_transaction_t *transaction,
+                               int source_fd,
+                               unsigned char digest[32])
+{
+    unsigned char *buffer;
+    sha256_context_t hash;
+    uint64_t offset = 0;
+    int result = 0;
+
+    buffer = memalign(64, HDL_INSTALL_IO_BYTES);
+    if (buffer == NULL)
+        return HDL_INSTALL_MEMORY_FAILED;
+    if (fileXioLseek64(source_fd, 0, FIO_SEEK_SET) != 0) {
+        result = HDL_INSTALL_VERIFY_FAILED;
+        goto done;
+    }
+    sha256_init(&hash);
+    while (offset < transaction->source_bytes) {
+        uint64_t remaining = transaction->source_bytes - offset;
+        unsigned int bytes = remaining > HDL_INSTALL_IO_BYTES ?
+                             HDL_INSTALL_IO_BYTES : (unsigned int)remaining;
+
+        if (read_exact_fd(source_fd, buffer, bytes) < 0) {
+            result = HDL_INSTALL_VERIFY_FAILED;
+            goto done;
+        }
+        sha256_update(&hash, buffer, bytes);
+        offset += bytes;
+        disk_status_io(DISK_STATUS_VERIFY, 0, 0,
+                       (unsigned int)(offset / 2048u),
+                       (unsigned int)transaction->total_sectors);
+    }
+    sha256_final(&hash, digest);
+done:
+    free(buffer);
+    return result;
+}
+
 static int copy_payload(hdl_transaction_t *transaction,
                         const hdl_partition_plan_t *plan,
                         const hdl_stream_layout_t *layout,
-                        int source_fd, int target_fd)
+                        int source_fd, int target_fd,
+                        unsigned char source_digest[32])
 {
     unsigned char *buffer;
+    sha256_context_t source_hash;
     uint64_t offset = transaction->completed_sectors * 2048u;
+    uint64_t hash_offset = 0;
     uint64_t next_journal = transaction->completed_sectors +
                             HDL_INSTALL_JOURNAL_INTERVAL_SECTORS;
     int result = 0;
@@ -270,6 +319,36 @@ static int copy_payload(hdl_transaction_t *transaction,
     buffer = memalign(64, HDL_INSTALL_IO_BYTES);
     if (buffer == NULL)
         return HDL_INSTALL_MEMORY_FAILED;
+    sha256_init(&source_hash);
+
+    /* Resume needs the SHA state for the already-copied prefix. Re-read only
+     * that prefix from USB, then continue hashing naturally while copying the
+     * remaining bytes. A fresh install starts at zero and skips this pass. */
+    if (offset > 0) {
+        disk_status_phase_at("Rebuilding source digest for resumed copy",
+                             "Already-copied prefix on mass:");
+        if (fileXioLseek64(source_fd, 0, FIO_SEEK_SET) != 0) {
+            result = HDL_INSTALL_COPY_FAILED;
+            goto done;
+        }
+        while (hash_offset < offset) {
+            uint64_t remaining = offset - hash_offset;
+            unsigned int bytes = remaining > HDL_INSTALL_IO_BYTES ?
+                                 HDL_INSTALL_IO_BYTES : (unsigned int)remaining;
+
+            result = read_exact_fd(source_fd, buffer, bytes);
+            if (result < 0)
+                goto done;
+            sha256_update(&source_hash, buffer, bytes);
+            hash_offset += bytes;
+            disk_status_io(DISK_STATUS_VERIFY, 0, 0,
+                           (unsigned int)(hash_offset / 2048u),
+                           (unsigned int)transaction->total_sectors);
+        }
+    }
+
+    disk_status_phase_at("Copying ISO payload from mass:",
+                         "HDL payload data area");
     if (fileXioLseek64(source_fd, (s64)offset, FIO_SEEK_SET) != (s64)offset ||
         fileXioLseek64(target_fd, (s64)offset, FIO_SEEK_SET) != (s64)offset) {
         result = HDL_INSTALL_COPY_FAILED;
@@ -284,14 +363,15 @@ static int copy_payload(hdl_transaction_t *transaction,
         result = read_exact_fd(source_fd, buffer, bytes);
         if (result < 0)
             goto done;
+        sha256_update(&source_hash, buffer, bytes);
         result = write_exact_fd(target_fd, buffer, bytes);
         if (result < 0)
             goto done;
+        offset += bytes;
         disk_status_io(DISK_STATUS_WRITE,
-                       physical_lba(plan, layout, offset), bytes / 512u,
+                       physical_lba(plan, layout, offset - bytes), bytes / 512u,
                        (unsigned int)(offset / 2048u),
                        (unsigned int)transaction->total_sectors);
-        offset += bytes;
         transaction->completed_sectors = offset / 2048u;
         if (transaction->completed_sectors >= next_journal ||
             offset == transaction->source_bytes) {
@@ -308,50 +388,48 @@ static int copy_payload(hdl_transaction_t *transaction,
             goto done;
         }
     }
+    sha256_final(&source_hash, source_digest);
 done:
     free(buffer);
     return result;
 }
 
-static int verify_payload(const hdl_transaction_t *transaction,
-                          const hdl_partition_plan_t *plan,
-                          const hdl_stream_layout_t *layout,
-                          int source_fd, int target_fd)
+/*
+ * Verify the installed payload from HDD only. The source digest is either
+ * accumulated for free while fresh bytes are copied, or reconstructed by one
+ * source-only pass when resuming a PAYLOAD_VERIFIED journal. This removes the
+ * old second full USB read from the normal install path while preserving full
+ * end-to-end SHA-256 verification of every payload byte.
+ */
+static int verify_target_digest(const hdl_transaction_t *transaction,
+                                const hdl_partition_plan_t *plan,
+                                const hdl_stream_layout_t *layout,
+                                int target_fd,
+                                const unsigned char expected_digest[32])
 {
-    unsigned char *source_buffer;
     unsigned char *target_buffer;
-    unsigned char source_digest[32];
     unsigned char target_digest[32];
-    sha256_context_t source_hash;
     sha256_context_t target_hash;
     uint64_t offset = 0;
     int result = 0;
 
-    source_buffer = memalign(64, HDL_INSTALL_IO_BYTES);
     target_buffer = memalign(64, HDL_INSTALL_IO_BYTES);
-    if (source_buffer == NULL || target_buffer == NULL) {
-        result = HDL_INSTALL_MEMORY_FAILED;
-        goto done;
-    }
-    if (fileXioLseek64(source_fd, 0, FIO_SEEK_SET) != 0 ||
-        fileXioLseek64(target_fd, 0, FIO_SEEK_SET) != 0) {
+    if (target_buffer == NULL)
+        return HDL_INSTALL_MEMORY_FAILED;
+    if (fileXioLseek64(target_fd, 0, FIO_SEEK_SET) != 0) {
         result = HDL_INSTALL_VERIFY_FAILED;
         goto done;
     }
-    sha256_init(&source_hash);
     sha256_init(&target_hash);
     while (offset < transaction->source_bytes) {
         uint64_t remaining = transaction->source_bytes - offset;
         unsigned int bytes = remaining > HDL_INSTALL_IO_BYTES ?
                              HDL_INSTALL_IO_BYTES : (unsigned int)remaining;
 
-        if (read_exact_fd(source_fd, source_buffer, bytes) < 0 ||
-            read_exact_fd(target_fd, target_buffer, bytes) < 0 ||
-            memcmp(source_buffer, target_buffer, bytes) != 0) {
+        if (read_exact_fd(target_fd, target_buffer, bytes) < 0) {
             result = HDL_INSTALL_VERIFY_FAILED;
             goto done;
         }
-        sha256_update(&source_hash, source_buffer, bytes);
         sha256_update(&target_hash, target_buffer, bytes);
         disk_status_io(DISK_STATUS_VERIFY,
                        physical_lba(plan, layout, offset), bytes / 512u,
@@ -359,12 +437,10 @@ static int verify_payload(const hdl_transaction_t *transaction,
                        (unsigned int)transaction->total_sectors);
         offset += bytes;
     }
-    sha256_final(&source_hash, source_digest);
     sha256_final(&target_hash, target_digest);
-    if (memcmp(source_digest, target_digest, sizeof(source_digest)) != 0)
+    if (memcmp(expected_digest, target_digest, sizeof(target_digest)) != 0)
         result = HDL_INSTALL_VERIFY_FAILED;
 done:
-    free(source_buffer);
     free(target_buffer);
     return result;
 }
@@ -377,12 +453,16 @@ static int execute_transaction(hdl_transaction_t *transaction)
     unsigned char metadata[HDL_METADATA_SIZE];
     hdl_file_source_t source;
     unsigned char fingerprint[32];
+    unsigned char source_payload_digest[32];
     uint32_t maximum;
     uint32_t free_sectors;
     int target_fd = -1;
     int verified_this_run = 0;
+    int source_digest_valid = 0;
     int result;
 
+    source.fd = -1;
+    source.bytes = transaction->source_bytes;
     result = recheck_disk(&maximum, &free_sectors);
     if (result < 0)
         return result;
@@ -394,19 +474,26 @@ static int execute_transaction(hdl_transaction_t *transaction)
     if (plan.allocation_bytes / 512u > free_sectors &&
         transaction->stage == HDL_TRANSACTION_STAGE_PLANNED)
         return HDL_INSTALL_NO_SPACE;
-    result = open_source(transaction->source_path,
-                         transaction->source_bytes, &source);
-    if (result < 0)
-        return result;
-    result = source_fingerprint(&source, fingerprint);
-    if (result == 0 && memcmp(fingerprint, transaction->source_fingerprint,
-                              sizeof(fingerprint)) != 0)
-        result = HDL_INSTALL_SOURCE_CHANGED;
-    if (result == 0)
-        result = source_identity_matches(&source, transaction);
-    if (result < 0) {
-        fileXioClose(source.fd);
-        return result;
+
+    /* Once METADATA_COMMITTED is durable, payload and source identity have
+     * already passed full verification. Completion recovery only needs the
+     * target layout plus metadata read-back, so do not require the USB ISO to
+     * remain connected merely to move stage 5 -> COMPLETE. */
+    if (transaction->stage < HDL_TRANSACTION_STAGE_METADATA_COMMITTED) {
+        result = open_source(transaction->source_path,
+                             transaction->source_bytes, &source);
+        if (result < 0)
+            return result;
+        result = source_fingerprint(&source, fingerprint);
+        if (result == 0 && memcmp(fingerprint, transaction->source_fingerprint,
+                                  sizeof(fingerprint)) != 0)
+            result = HDL_INSTALL_SOURCE_CHANGED;
+        if (result == 0)
+            result = source_identity_matches(&source, transaction);
+        if (result < 0) {
+            fileXioClose(source.fd);
+            return result;
+        }
     }
 
     pad_activity_begin();
@@ -442,12 +529,11 @@ static int execute_transaction(hdl_transaction_t *transaction)
         }
     }
     if (transaction->stage == HDL_TRANSACTION_STAGE_COPYING) {
-        disk_status_phase_at("Copying ISO payload from mass:",
-                             "HDL payload data area");
         result = copy_payload(transaction, &plan, &layout,
-                              source.fd, target_fd);
+                              source.fd, target_fd, source_payload_digest);
         if (result < 0)
             goto done;
+        source_digest_valid = 1;
         disk_status_phase_at("Flushing copied HDL payload",
                              "HDL payload data area");
         disk_status_io(DISK_STATUS_FLUSH,
@@ -458,10 +544,10 @@ static int execute_transaction(hdl_transaction_t *transaction)
             result = HDL_INSTALL_COPY_FAILED;
             goto done;
         }
-        disk_status_phase_at("Verifying every installed byte",
-                             "HDL payload read-back against source ISO");
-        result = verify_payload(transaction, &plan, &layout,
-                                source.fd, target_fd);
+        disk_status_phase_at("Verifying installed payload on HDD",
+                             "HDD-only SHA-256 read-back against source digest");
+        result = verify_target_digest(transaction, &plan, &layout,
+                                      target_fd, source_payload_digest);
         if (result < 0)
             goto done;
         verified_this_run = 1;
@@ -475,12 +561,23 @@ static int execute_transaction(hdl_transaction_t *transaction)
     }
     if (transaction->stage == HDL_TRANSACTION_STAGE_PAYLOAD_VERIFIED) {
         if (!verified_this_run) {
-            disk_status_phase_at("Re-verifying resumed payload",
-                                 "HDL payload read-back against source ISO");
-            result = verify_payload(transaction, &plan, &layout,
-                                    source.fd, target_fd);
+            disk_status_phase_at("Hashing source for resumed verification",
+                                 "One source pass required by legacy journal format");
+            result = hash_source_payload(transaction, source.fd,
+                                         source_payload_digest);
             if (result < 0)
                 goto done;
+            source_digest_valid = 1;
+            disk_status_phase_at("Re-verifying resumed payload on HDD",
+                                 "HDD-only SHA-256 read-back against source digest");
+            result = verify_target_digest(transaction, &plan, &layout,
+                                          target_fd, source_payload_digest);
+            if (result < 0)
+                goto done;
+        }
+        if (!source_digest_valid && !verified_this_run) {
+            result = HDL_INSTALL_VERIFY_FAILED;
+            goto done;
         }
         metadata_options.game_title = transaction->game_title;
         metadata_options.startup = transaction->startup;
@@ -542,7 +639,8 @@ static int execute_transaction(hdl_transaction_t *transaction)
 done:
     if (target_fd >= 0)
         fileXioClose(target_fd);
-    fileXioClose(source.fd);
+    if (source.fd >= 0)
+        fileXioClose(source.fd);
     disk_status_end();
     pad_activity_end();
     session_log_line("HDL transaction target=%s stage=%u progress=%llu/%llu result=%d",
