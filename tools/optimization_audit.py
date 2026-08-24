@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Static optimization report for the unstripped PS2 EE ELF.
+"""Static optimization report for the unstripped PlayStation 2 EE ELF.
 
-The report is intentionally compiler-output based. It tells us what survived LTO,
-which functions dominate the 16 KiB R5900 I-cache budget, whether expensive 64-bit
-runtime helpers leaked into hot code, and whether two named functions still contain
-byte-identical instruction streams after optimization.
+The report is compiler-output based. It inspects what actually survived LTO rather
+than assuming source-level duplication becomes machine-code duplication. It tracks
+R5900 I-cache pressure, instruction mix, exact duplicate functions, and call sites
+that pull expensive libc/libgcc helpers into the final program.
 """
 
 from __future__ import annotations
@@ -22,14 +22,11 @@ from pathlib import Path
 
 FUNCTION_TYPES = set("tTwW")
 EXPENSIVE_HELPERS = (
-    "__divdi3",
-    "__udivdi3",
-    "__moddi3",
-    "__umoddi3",
-    "__muldi3",
-    "__ashldi3",
-    "__ashrdi3",
-    "__lshrdi3",
+    "__divdi3", "__udivdi3", "__moddi3", "__umoddi3", "__muldi3",
+    "__ashldi3", "__ashrdi3", "__lshrdi3",
+)
+HEAVY_LIBC = (
+    "__ssvfiscanf_r", "_svfprintf_r", "_vfiprintf_r", "_dtoa_r",
 )
 
 
@@ -43,13 +40,8 @@ class Function:
 
 
 def run(command: list[str]) -> str:
-    process = subprocess.run(
-        command,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    process = subprocess.run(command, check=False, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
     if process.returncode != 0:
         raise RuntimeError(
             f"command failed ({process.returncode}): {' '.join(command)}\n"
@@ -72,27 +64,28 @@ def find_tool(explicit: str | None, candidates: tuple[str, ...]) -> str:
 
 def parse_nm(text: str) -> dict[str, Function]:
     functions: dict[str, Function] = {}
-    pattern = re.compile(
-        r"^([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([A-Za-z])\s+(.+)$"
-    )
+    pattern = re.compile(r"^([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\s+([A-Za-z])\s+(.+)$")
     for line in text.splitlines():
         match = pattern.match(line.strip())
         if not match or match.group(3) not in FUNCTION_TYPES:
             continue
-        address = int(match.group(1), 16)
-        size = int(match.group(2), 16)
-        name = match.group(4).strip()
-        functions[name] = Function(name=name, address=address, size=size)
+        functions[match.group(4).strip()] = Function(
+            name=match.group(4).strip(),
+            address=int(match.group(1), 16),
+            size=int(match.group(2), 16),
+        )
     return functions
 
 
-def parse_disassembly(text: str, functions: dict[str, Function]) -> collections.Counter[str]:
+def parse_disassembly(text: str, functions: dict[str, Function]):
     header = re.compile(r"^[0-9a-fA-F]+\s+<(.+)>:$")
     instruction = re.compile(
-        r"^\s*[0-9a-fA-F]+:\s+([0-9a-fA-F]{8})\s+([.$A-Za-z_][.$A-Za-z0-9_]*)"
+        r"^\s*[0-9a-fA-F]+:\s+([0-9a-fA-F]{8})\s+([.$A-Za-z_][.$A-Za-z0-9_]*)(.*)$"
     )
+    target = re.compile(r"<([^>]+)>")
     current: Function | None = None
     global_mnemonics: collections.Counter[str] = collections.Counter()
+    calls: dict[str, collections.Counter[str]] = collections.defaultdict(collections.Counter)
 
     for line in text.splitlines():
         match = header.match(line)
@@ -105,17 +98,19 @@ def parse_disassembly(text: str, functions: dict[str, Function]) -> collections.
             current.words = []
             current.mnemonics = collections.Counter()
             continue
-
         match = instruction.match(line)
         if match is None or current is None:
             continue
-        word = match.group(1).lower()
-        mnemonic = match.group(2).lower()
-        current.words.append(word)
+        word, mnemonic, operands = match.groups()
+        mnemonic = mnemonic.lower()
+        current.words.append(word.lower())
         current.mnemonics[mnemonic] += 1
         global_mnemonics[mnemonic] += 1
-
-    return global_mnemonics
+        if mnemonic in ("jal", "jalr"):
+            called = target.search(operands)
+            if called:
+                calls[called.group(1)][current.name] += 1
+    return global_mnemonics, calls
 
 
 def duplicate_groups(functions: dict[str, Function]) -> list[list[Function]]:
@@ -124,89 +119,82 @@ def duplicate_groups(functions: dict[str, Function]) -> list[list[Function]]:
         if function.words is None or len(function.words) < 4:
             continue
         raw = "".join(function.words).encode("ascii")
-        digest = hashlib.sha256(raw).hexdigest()
-        fingerprints[(len(function.words), digest)].append(function)
+        fingerprints[(len(function.words), hashlib.sha256(raw).hexdigest())].append(function)
     groups = [group for group in fingerprints.values() if len(group) > 1]
     groups.sort(key=lambda group: (len(group[0].words or []), len(group)), reverse=True)
     return groups
 
 
 def format_bytes(value: int) -> str:
-    if value >= 1024:
-        return f"{value / 1024.0:.2f} KiB"
-    return f"{value} B"
+    return f"{value / 1024.0:.2f} KiB" if value >= 1024 else f"{value} B"
 
 
-def write_report(
-    path: Path,
-    elf: Path,
-    functions: dict[str, Function],
-    global_mnemonics: collections.Counter[str],
-    nm_text: str,
-) -> None:
-    sized = [function for function in functions.values() if function.size > 0]
-    sized.sort(key=lambda function: function.size, reverse=True)
-    text_bytes = sum(function.size for function in sized)
+def write_report(path: Path, elf: Path, functions: dict[str, Function],
+                 global_mnemonics: collections.Counter[str], calls,
+                 nm_text: str) -> None:
+    # LTO emits source-marker symbols with a size but no disassembly. Ignore
+    # those pseudo-functions for cache accounting; they caused the first audit
+    # to report a meaningless ~500 KiB pthread source marker as executable code.
+    emitted = [f for f in functions.values() if f.size > 0 and f.words]
+    emitted.sort(key=lambda function: function.size, reverse=True)
+    text_bytes = sum(function.size for function in emitted)
     duplicates = duplicate_groups(functions)
-
     helper_hits = [helper for helper in EXPENSIVE_HELPERS if helper in nm_text]
     all_instruction_count = sum(global_mnemonics.values())
 
-    lines: list[str] = []
-    lines.append("PS2 HDD Bootstrap Manager - compiler optimization audit")
-    lines.append(f"ELF: {elf}")
-    lines.append(f"named text functions: {len(sized)}")
-    lines.append(f"sum of named function sizes: {text_bytes} bytes ({format_bytes(text_bytes)})")
-    lines.append(f"disassembled instructions: {all_instruction_count}")
-    lines.append("")
-    lines.append("R5900 cache context")
-    lines.append("  I-cache: 16 KiB, 64-byte lines, 2-way associative")
-    lines.append("  D-cache:  8 KiB, 64-byte lines, 2-way associative")
-    lines.append("  Audit rule: avoid enlarging hot code blindly; optimize measured loops and passes.")
-    lines.append("")
-
-    lines.append("Largest functions")
-    for function in sized[:40]:
-        instruction_count = len(function.words or [])
+    lines: list[str] = [
+        "PS2 HDD Bootstrap Manager - compiler optimization audit",
+        f"ELF: {elf}",
+        f"emitted named text functions: {len(emitted)}",
+        f"sum of emitted named function sizes: {text_bytes} bytes ({format_bytes(text_bytes)})",
+        f"disassembled instructions: {all_instruction_count}", "",
+        "R5900 cache context",
+        "  I-cache: 16 KiB, 64-byte lines, 2-way associative",
+        "  D-cache:  8 KiB, 64-byte lines, 2-way associative",
+        "  Audit rule: optimize measured hot paths; do not trade them for blind -O3 code growth.", "",
+        "Largest emitted functions",
+    ]
+    for function in emitted[:40]:
         pressure = "  [>25% I-cache]" if function.size > 4096 else ""
-        lines.append(
-            f"  {function.size:6d} B  {instruction_count:5d} insn  {function.name}{pressure}"
-        )
-    lines.append("")
+        lines.append(f"  {function.size:6d} B  {len(function.words or []):5d} insn  {function.name}{pressure}")
 
-    lines.append("Most common emitted instructions")
+    lines += ["", "Most common emitted instructions"]
     for mnemonic, count in global_mnemonics.most_common(30):
-        percent = (count * 100.0 / all_instruction_count) if all_instruction_count else 0.0
+        percent = count * 100.0 / all_instruction_count if all_instruction_count else 0.0
         lines.append(f"  {mnemonic:12s} {count:7d}  {percent:6.2f}%")
-    lines.append("")
 
-    lines.append("Exact duplicate machine-code functions")
+    lines += ["", "Exact duplicate machine-code functions"]
     if not duplicates:
         lines.append("  none (for functions with at least four instructions)")
     else:
         for group in duplicates[:50]:
-            lines.append(
-                f"  {len(group[0].words or []):5d} insn x {len(group):2d}: "
-                + ", ".join(function.name for function in group)
-            )
-    lines.append("")
+            lines.append(f"  {len(group[0].words or []):5d} insn x {len(group):2d}: " +
+                         ", ".join(function.name for function in group))
 
-    lines.append("Potentially expensive 64-bit libgcc helpers")
-    if helper_hits:
-        for helper in helper_hits:
-            lines.append(f"  PRESENT: {helper}")
-    else:
+    lines += ["", "Potentially expensive 64-bit libgcc helpers and callers"]
+    if not helper_hits:
         lines.append("  none of the watched helpers are defined in the final EE ELF")
-    lines.append("")
+    for helper in helper_hits:
+        caller_list = calls.get(helper, {})
+        if caller_list:
+            pretty = ", ".join(f"{name}({count})" for name, count in caller_list.most_common())
+            lines.append(f"  {helper}: {pretty}")
+        else:
+            lines.append(f"  {helper}: PRESENT, no direct jal caller resolved")
 
-    lines.append("Large per-function instruction mixes")
-    for function in sized[:20]:
+    lines += ["", "Heavy libc entry points and direct callers"]
+    for symbol in HEAVY_LIBC:
+        if symbol not in nm_text:
+            continue
+        caller_list = calls.get(symbol, {})
+        pretty = ", ".join(f"{name}({count})" for name, count in caller_list.most_common())
+        lines.append(f"  {symbol}: {pretty or 'PRESENT, no direct jal caller resolved'}")
+
+    lines += ["", "Large per-function instruction mixes"]
+    for function in emitted[:20]:
         if not function.mnemonics:
             continue
-        mix = ", ".join(
-            f"{mnemonic}={count}"
-            for mnemonic, count in function.mnemonics.most_common(8)
-        )
+        mix = ", ".join(f"{mnemonic}={count}" for mnemonic, count in function.mnemonics.most_common(8))
         lines.append(f"  {function.name}: {mix}")
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -219,39 +207,20 @@ def main() -> int:
     parser.add_argument("--nm")
     parser.add_argument("--objdump")
     args = parser.parse_args()
-
     if not args.elf.is_file():
         print(f"ELF not found: {args.elf}", file=sys.stderr)
         return 2
-
     try:
-        nm = find_tool(
-            args.nm,
-            (
-                "mips64r5900el-ps2-elf-nm",
-                "mips64r5900el-none-elf-nm",
-                "mipsel-none-elf-nm",
-                "nm",
-            ),
-        )
-        objdump = find_tool(
-            args.objdump,
-            (
-                "mips64r5900el-ps2-elf-objdump",
-                "mips64r5900el-none-elf-objdump",
-                "mipsel-none-elf-objdump",
-                "objdump",
-            ),
-        )
+        nm = find_tool(args.nm, ("mips64r5900el-ps2-elf-nm", "mips64r5900el-none-elf-nm", "mipsel-none-elf-nm", "nm"))
+        objdump = find_tool(args.objdump, ("mips64r5900el-ps2-elf-objdump", "mips64r5900el-none-elf-objdump", "mipsel-none-elf-objdump", "objdump"))
         nm_text = run([nm, "-S", "--size-sort", "--radix=x", "--defined-only", str(args.elf)])
         disassembly = run([objdump, "-d", "-w", str(args.elf)])
         functions = parse_nm(nm_text)
-        mnemonics = parse_disassembly(disassembly, functions)
-        write_report(args.output, args.elf, functions, mnemonics, nm_text)
+        mnemonics, calls = parse_disassembly(disassembly, functions)
+        write_report(args.output, args.elf, functions, mnemonics, calls, nm_text)
     except (OSError, RuntimeError) as error:
         print(str(error), file=sys.stderr)
         return 1
-
     return 0
 
 
