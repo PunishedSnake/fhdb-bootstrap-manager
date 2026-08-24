@@ -290,6 +290,23 @@ static int stream_seek(iomanX_iop_file_t *file, int offset, int whence)
     return (int)result;
 }
 
+static int read_metadata(hdl_stream_file_t *stream, void *metadata,
+                         unsigned int size)
+{
+    int result;
+
+    if (metadata == NULL || size != HDL_STREAM_METADATA_SIZE)
+        return -EINVAL;
+    result = iomanX_lseek(stream->hdd_fd, HDL_STREAM_METADATA_OFFSET,
+                          FIO_SEEK_SET);
+    if (result != HDL_STREAM_METADATA_OFFSET)
+        return result < 0 ? result : -EIO;
+    result = iomanX_read(stream->hdd_fd, metadata, HDL_STREAM_METADATA_SIZE);
+    if (result != HDL_STREAM_METADATA_SIZE)
+        return result < 0 ? result : -EIO;
+    return 0;
+}
+
 static int commit_metadata(hdl_stream_file_t *stream, const void *metadata,
                            unsigned int size)
 {
@@ -312,16 +329,10 @@ static int commit_metadata(hdl_stream_file_t *stream, const void *metadata,
         result = iomanX_ioctl2(stream->hdd_fd, HIOCFLUSH,
                                NULL, 0, NULL, 0);
     if (result >= 0)
-        result = iomanX_lseek(stream->hdd_fd, HDL_STREAM_METADATA_OFFSET,
-                              FIO_SEEK_SET);
-    if (result == HDL_STREAM_METADATA_OFFSET)
-        result = iomanX_read(stream->hdd_fd, verify,
-                             HDL_STREAM_METADATA_SIZE);
-    if (result == HDL_STREAM_METADATA_SIZE)
+        result = read_metadata(stream, verify, HDL_STREAM_METADATA_SIZE);
+    if (result == 0)
         result = memcmp(metadata, verify, HDL_STREAM_METADATA_SIZE) == 0 ?
                  0 : -EIO;
-    else if (result >= 0)
-        result = -EIO;
     FreeSysMemory(verify);
     return result;
 }
@@ -352,6 +363,11 @@ static int stream_ioctl2(iomanX_iop_file_t *file, int command,
                              NULL, 0, NULL, 0);
     if (command == HDL_STREAM_IOCTL2_COMMIT_METADATA)
         return commit_metadata(stream, argument, argument_length);
+    if (command == HDL_STREAM_IOCTL2_READ_METADATA) {
+        if (buffer == NULL || buffer_length < HDL_STREAM_METADATA_SIZE)
+            return -EINVAL;
+        return read_metadata(stream, buffer, HDL_STREAM_METADATA_SIZE);
+    }
     return -EINVAL;
 }
 
