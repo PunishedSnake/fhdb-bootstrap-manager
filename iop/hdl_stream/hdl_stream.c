@@ -30,14 +30,18 @@
 #define HDL_STREAM_DEVICE "hdl"
 #define HDL_STREAM_BDM_MAX_DEVICES 20u
 #define HDL_STREAM_MAX_SOURCE_FRAGMENTS 4096u
+#define HDL_STREAM_USB_SECTOR_SIZE 512u
+#define HDL_STREAM_USB_SECTOR_SHIFT 9u
 
-IRX_ID("hdl_stream", 1, 2);
+IRX_ID("hdl_stream", 1, 3);
 
 typedef struct {
     int source_fd;
     struct block_device *bd;
     bd_fragment_t *fragments;
     uint32_t fragment_count;
+    uint32_t cursor_fragment;
+    uint64_t cursor_base;
 } hdl_source_map_t;
 
 typedef struct {
@@ -101,6 +105,8 @@ static void source_map_reset(hdl_stream_file_t *stream)
         FreeSysMemory(stream->source.fragments);
     stream->source.fragments = NULL;
     stream->source.fragment_count = 0;
+    stream->source.cursor_fragment = 0;
+    stream->source.cursor_base = 0;
     stream->source.bd = NULL;
     stream->source.source_fd = -1;
 }
@@ -160,11 +166,13 @@ static int source_map_prepare(hdl_stream_file_t *stream, int source_fd)
 
         if (bd != NULL && bd->parNr == 0 && bd->devNr == device_number &&
             bd->name != NULL && strcmp(bd->name, driver_name) == 0 &&
-            bd->read != NULL && bd->sectorSize != 0) {
+            bd->read != NULL && bd->sectorSize == HDL_STREAM_USB_SECTOR_SIZE) {
             stream->source.source_fd = source_fd;
             stream->source.bd = bd;
             stream->source.fragments = fragments;
             stream->source.fragment_count = (uint32_t)fragment_count;
+            stream->source.cursor_fragment = 0;
+            stream->source.cursor_base = 0;
             return 0;
         }
     }
@@ -173,7 +181,41 @@ static int source_map_prepare(hdl_stream_file_t *stream, int source_fd)
     return -ENOTSUP;
 }
 
-static int source_map_read(const hdl_source_map_t *source, uint64_t sector,
+/*
+ * Locate the fragment that contains a logical source sector. ISO reads are
+ * overwhelmingly sequential, so keep the last fragment and its logical base
+ * instead of re-scanning a potentially thousands-entry FAT fragment list for
+ * every 64 KiB block. A backwards seek resets the cursor and still behaves
+ * correctly for resume/hash passes.
+ */
+static int source_map_locate(hdl_source_map_t *source, uint64_t logical,
+                             uint32_t *index, uint64_t *base)
+{
+    uint32_t i = source->cursor_fragment;
+    uint64_t current = source->cursor_base;
+
+    if (i >= source->fragment_count || logical < current) {
+        i = 0;
+        current = 0;
+    }
+
+    while (i < source->fragment_count) {
+        uint64_t end = current + source->fragments[i].count;
+
+        if (logical < end) {
+            source->cursor_fragment = i;
+            source->cursor_base = current;
+            *index = i;
+            *base = current;
+            return 0;
+        }
+        current = end;
+        i++;
+    }
+    return -EIO;
+}
+
+static int source_map_read(hdl_source_map_t *source, uint64_t sector,
                            void *buffer, uint16_t count)
 {
     uint64_t logical = sector;
@@ -181,33 +223,32 @@ static int source_map_read(const hdl_source_map_t *source, uint64_t sector,
     unsigned char *cursor = buffer;
 
     while (left != 0) {
-        uint64_t base = 0;
-        bd_fragment_t *fragment = NULL;
+        uint64_t base;
+        uint64_t end;
+        uint32_t index;
+        bd_fragment_t *fragment;
         uint16_t chunk;
-        unsigned int i;
 
-        for (i = 0; i < source->fragment_count; i++) {
-            bd_fragment_t *candidate = &source->fragments[i];
-
-            if (logical >= base && logical < base + candidate->count) {
-                fragment = candidate;
-                break;
-            }
-            base += candidate->count;
-        }
-        if (fragment == NULL)
+        if (source_map_locate(source, logical, &index, &base) < 0)
             return -EIO;
+        fragment = &source->fragments[index];
+        end = base + fragment->count;
 
         chunk = left;
-        if ((uint64_t)chunk > base + fragment->count - logical)
-            chunk = (uint16_t)(base + fragment->count - logical);
+        if ((uint64_t)chunk > end - logical)
+            chunk = (uint16_t)(end - logical);
         if (source->bd->read(source->bd,
                              fragment->sector + (logical - base),
                              cursor, chunk) != chunk)
             return -EIO;
         logical += chunk;
         left -= chunk;
-        cursor += (unsigned int)chunk * source->bd->sectorSize;
+        cursor += (unsigned int)chunk * HDL_STREAM_USB_SECTOR_SIZE;
+
+        if (logical == end && index + 1u < source->fragment_count) {
+            source->cursor_fragment = index + 1u;
+            source->cursor_base = end;
+        }
     }
     return count;
 }
@@ -235,19 +276,24 @@ static int source_read_fallback(int source_fd, uint64_t offset,
 static int source_read_at(hdl_stream_file_t *stream, int source_fd,
                           uint64_t offset, void *buffer, unsigned int bytes)
 {
-    if (source_map_prepare(stream, source_fd) == 0) {
-        uint32_t sector_size = stream->source.bd->sectorSize;
+    /*
+     * The stock usbmass BDM intentionally caps one SCSI request at 128 512-byte
+     * sectors (64 KiB), and HDL_STREAM_IOP_STAGE_BYTES matches that exactly.
+     * Requiring 512-byte BDM sectors lets the IOP use shifts/masks here instead
+     * of libgcc 64-bit divide/mod helpers on the 37.5 MHz R3000A. Devices with
+     * another logical sector size simply use the safe iomanX fallback.
+     */
+    if (source_map_prepare(stream, source_fd) == 0 &&
+        (offset & (HDL_STREAM_USB_SECTOR_SIZE - 1u)) == 0 &&
+        (bytes & (HDL_STREAM_USB_SECTOR_SIZE - 1u)) == 0 &&
+        (bytes >> HDL_STREAM_USB_SECTOR_SHIFT) <= UINT16_MAX) {
+        int result = source_map_read(
+            &stream->source, offset >> HDL_STREAM_USB_SECTOR_SHIFT, buffer,
+            (uint16_t)(bytes >> HDL_STREAM_USB_SECTOR_SHIFT));
 
-        if (sector_size != 0 && offset % sector_size == 0 &&
-            bytes % sector_size == 0 &&
-            bytes / sector_size <= UINT16_MAX) {
-            int result = source_map_read(&stream->source,
-                                         offset / sector_size, buffer,
-                                         (uint16_t)(bytes / sector_size));
-            if (result >= 0)
-                return (int)bytes;
-            source_map_reset(stream);
-        }
+        if (result >= 0)
+            return (int)bytes;
+        source_map_reset(stream);
     }
     return source_read_fallback(source_fd, offset, buffer, bytes);
 }
