@@ -83,6 +83,12 @@ static int hdl_transaction_guard_checked;
 static int hdl_transaction_guard_found;
 static int hdl_transaction_guard_lookup_consumed;
 
+/* Keep the one hdl0: descriptor owned by execute_transaction visible to the
+ * final metadata verification wrapper. Re-opening hdd0:<target> while hdl0:
+ * already owns the same APA file slot returns EBUSY in ps2hdd, which is exactly
+ * what dev15 hit after a successful METADATA_COMMITTED journal transition. */
+static int hdl_active_target_fd = -1;
+
 static void hdl_transaction_guard_disarm(void)
 {
     hdl_transaction_guard_target[0] = '\0';
@@ -320,6 +326,8 @@ static int hdl_transaction_recheck_disk(uint32_t *max_partition_sectors,
  */
 static int hdl_status_fileXioOpen(const char *path, int flags, int mode)
 {
+    int result;
+
     if (path != NULL && strncmp(path, "hdd0:", 5) == 0 &&
         flags == FIO_O_RDONLY && hdl_transaction_guard_active &&
         hdl_transaction_guard_checked && !hdl_transaction_guard_found &&
@@ -352,7 +360,22 @@ static int hdl_status_fileXioOpen(const char *path, int flags, int mode)
         disk_status_phase_at("Rechecking target collision before allocation",
                              "APA partition-name lookup");
     }
-    return fileXioOpen(path, flags, mode);
+
+    result = fileXioOpen(path, flags, mode);
+    if (result >= 0 && path != NULL && strncmp(path, "hdl0:", 5) == 0) {
+        hdl_active_target_fd = result;
+        session_log_line("HDL active stream opened fd=%d path=%s", result, path);
+    }
+    return result;
+}
+
+static int hdl_status_fileXioClose(int fd)
+{
+    if (fd == hdl_active_target_fd) {
+        session_log_line("HDL active stream closed fd=%d", fd);
+        hdl_active_target_fd = -1;
+    }
+    return fileXioClose(fd);
 }
 
 static int hdl_status_fileXioIoctl2(int fd, int command,
@@ -365,9 +388,46 @@ static int hdl_status_fileXioIoctl2(int fd, int command,
     else if (command == HIOCFLUSH ||
              command == HDL_STREAM_IOCTL2_FLUSH)
         disk_status_io(DISK_STATUS_FLUSH, 0, 0, 0, 0);
+    else if (command == HDL_STREAM_IOCTL2_READ_METADATA)
+        disk_status_io(DISK_STATUS_VERIFY, 0, 2u, 0, 0);
 
     return fileXioIoctl2(fd, command, argument, argument_length,
                          buffer, buffer_length);
+}
+
+static int hdl_target_metadata_matches_active(
+    const char *target, const unsigned char expected[HDL_METADATA_SIZE])
+{
+    unsigned char actual[HDL_METADATA_SIZE] __attribute__((aligned(64)));
+    int result;
+    int matches;
+
+    /* Keep the old helper referenced, but do not call it here: it re-opens the
+     * same hdd0: APA ID while hdl0: already owns that ps2hdd file slot. */
+    (void)target_metadata_matches;
+
+    if (hdl_active_target_fd < 0) {
+        session_log_line("HDL final metadata readback missing active stream target=%s",
+                         target != NULL ? target : "(null)");
+        return 0;
+    }
+
+    disk_status_phase_at("Reading back committed HDL metadata",
+                         "Existing hdl0: stream / no second APA open");
+    result = fileXioIoctl2(hdl_active_target_fd,
+                           HDL_STREAM_IOCTL2_READ_METADATA,
+                           NULL, 0, actual, sizeof(actual));
+    if (result < 0) {
+        session_log_line("HDL final metadata readback target=%s fd=%d result=%d",
+                         target != NULL ? target : "(null)",
+                         hdl_active_target_fd, result);
+        return 0;
+    }
+    matches = memcmp(actual, expected, sizeof(actual)) == 0;
+    session_log_line("HDL final metadata readback target=%s fd=%d match=%d",
+                     target != NULL ? target : "(null)",
+                     hdl_active_target_fd, matches);
+    return matches;
 }
 
 static int hdl_status_fileXioRemove(const char *path)
@@ -393,13 +453,17 @@ static int hdl_status_fileXioRemove(const char *path)
 }
 
 #define fileXioOpen hdl_status_fileXioOpen
+#define fileXioClose hdl_status_fileXioClose
 #define fileXioIoctl2 hdl_status_fileXioIoctl2
 #define fileXioRemove hdl_status_fileXioRemove
+#define target_metadata_matches(...) hdl_target_metadata_matches_active(__VA_ARGS__)
 #define recheck_disk(...) hdl_transaction_recheck_disk(__VA_ARGS__)
 #include "hdl_tools/transaction.inc"
 #undef recheck_disk
+#undef target_metadata_matches
 #undef fileXioRemove
 #undef fileXioIoctl2
+#undef fileXioClose
 #undef fileXioOpen
 
 static int hdl_execute_transaction_guarded(hdl_transaction_t *transaction)
@@ -408,6 +472,7 @@ static int hdl_execute_transaction_guarded(hdl_transaction_t *transaction)
                   transaction->stage == HDL_TRANSACTION_STAGE_PLANNED;
     int result;
 
+    hdl_active_target_fd = -1;
     if (planned)
         hdl_transaction_guard_arm(transaction->target);
     else
@@ -419,6 +484,7 @@ static int hdl_execute_transaction_guarded(hdl_transaction_t *transaction)
     disk_status_set_write_intent(1);
     result = execute_transaction(transaction);
     disk_status_set_write_intent(0);
+    hdl_active_target_fd = -1;
     hdl_transaction_guard_disarm();
     return result;
 }
