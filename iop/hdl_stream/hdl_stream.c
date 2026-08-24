@@ -1,21 +1,26 @@
 /*
  * Sequential HDL payload transport for the IOP.
  *
- * This driver deliberately delegates all disk access to ps2hdd. It exposes
- * only the data areas of an already-created APA main/sub set and keeps the
- * attribute-area metadata commit behind a separate verified operation.
+ * This driver deliberately delegates disk writes to ps2hdd. Besides the
+ * ordinary hdl0: stream it now owns a small high-throughput staging path for
+ * USB installs: source bytes can stay on the IOP, be written directly to the
+ * HDL target and be DMAed to EE only once for R5900-side SHA-256. This avoids
+ * the old mass: -> IOP -> EE -> IOP -> HDD bounce for every payload block.
  */
 
+#include <bdm.h>
 #include <errno.h>
 #include <hdd-ioctl.h>
 #include <iomanX.h>
 #include <irx.h>
 #include <loadcore.h>
+#include <sifman.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/fcntl.h>
 #include <sysclib.h>
 #include <sysmem.h>
+#include <usbhdfsd-common.h>
 
 #include "hdl_stream_rpc.h"
 
@@ -23,8 +28,17 @@
 #define HDL_STREAM_SUB_SKIP 0x0800u
 #define HDL_STREAM_METADATA_OFFSET 0x100000
 #define HDL_STREAM_DEVICE "hdl"
+#define HDL_STREAM_BDM_MAX_DEVICES 20u
+#define HDL_STREAM_MAX_SOURCE_FRAGMENTS 4096u
 
-IRX_ID("hdl_stream", 1, 1);
+IRX_ID("hdl_stream", 1, 2);
+
+typedef struct {
+    int source_fd;
+    struct block_device *bd;
+    bd_fragment_t *fragments;
+    uint32_t fragment_count;
+} hdl_source_map_t;
 
 typedef struct {
     int hdd_fd;
@@ -34,6 +48,9 @@ typedef struct {
     uint32_t starts[HDL_STREAM_MAX_PARTITIONS];
     uint64_t capacity_bytes;
     uint64_t position;
+    void *stage_allocation;
+    unsigned char *stage;
+    hdl_source_map_t source;
 } hdl_stream_file_t;
 
 static int stream_init(iomanX_iop_device_t *device)
@@ -85,10 +102,194 @@ static int ioctl_u32_result(int raw, uint32_t *value)
     return 0;
 }
 
+static void source_map_reset(hdl_stream_file_t *stream)
+{
+    if (stream->source.fragments != NULL)
+        FreeSysMemory(stream->source.fragments);
+    stream->source.fragments = NULL;
+    stream->source.fragment_count = 0;
+    stream->source.bd = NULL;
+    stream->source.source_fd = -1;
+}
+
+static int source_map_prepare(hdl_stream_file_t *stream, int source_fd)
+{
+    struct block_device *devices[HDL_STREAM_BDM_MAX_DEVICES];
+    bd_fragment_t *fragments;
+    char driver_name[16];
+    uint32_t device_number;
+    int fragment_count;
+    int result;
+    unsigned int i;
+
+    if (stream->source.source_fd == source_fd && stream->source.bd != NULL &&
+        stream->source.fragments != NULL)
+        return 0;
+
+    source_map_reset(stream);
+    fragment_count = iomanX_ioctl2(source_fd, USBMASS_IOCTL_GET_FRAGLIST,
+                                   NULL, 0, NULL, 0);
+    if (fragment_count <= 0 ||
+        (uint32_t)fragment_count > HDL_STREAM_MAX_SOURCE_FRAGMENTS)
+        return -ENOTSUP;
+
+    fragments = AllocSysMemory(ALLOC_FIRST,
+                               (unsigned int)fragment_count * sizeof(*fragments),
+                               NULL);
+    if (fragments == NULL)
+        return -ENOMEM;
+    result = iomanX_ioctl2(source_fd, USBMASS_IOCTL_GET_FRAGLIST,
+                           NULL, 0, fragments,
+                           (unsigned int)fragment_count * sizeof(*fragments));
+    if (result != fragment_count) {
+        FreeSysMemory(fragments);
+        return -ENOTSUP;
+    }
+
+    memset(driver_name, 0, sizeof(driver_name));
+    result = iomanX_ioctl2(source_fd, USBMASS_IOCTL_GET_DEVICE_NUMBER,
+                           NULL, 0, &device_number, sizeof(device_number));
+    if (result < 0) {
+        FreeSysMemory(fragments);
+        return -ENOTSUP;
+    }
+    result = iomanX_ioctl2(source_fd, USBMASS_IOCTL_GET_DRIVERNAME,
+                           NULL, 0, driver_name, sizeof(driver_name));
+    if (result < 0 || driver_name[0] == '\0') {
+        FreeSysMemory(fragments);
+        return -ENOTSUP;
+    }
+
+    memset(devices, 0, sizeof(devices));
+    bdm_get_bd(devices, HDL_STREAM_BDM_MAX_DEVICES);
+    for (i = 0; i < HDL_STREAM_BDM_MAX_DEVICES; i++) {
+        struct block_device *bd = devices[i];
+
+        if (bd != NULL && bd->parNr == 0 && bd->devNr == device_number &&
+            bd->name != NULL && strcmp(bd->name, driver_name) == 0 &&
+            bd->read != NULL && bd->sectorSize != 0) {
+            stream->source.source_fd = source_fd;
+            stream->source.bd = bd;
+            stream->source.fragments = fragments;
+            stream->source.fragment_count = (uint32_t)fragment_count;
+            return 0;
+        }
+    }
+
+    FreeSysMemory(fragments);
+    return -ENOTSUP;
+}
+
+/* Read logical file sectors directly from the underlying USB BDM device by
+ * walking the fragment map supplied by bdmfs_fatfs. The fragment LBAs are
+ * absolute because bdmfs adds the mounted partition's sectorOffset. */
+static int source_map_read(const hdl_source_map_t *source, uint64_t sector,
+                           void *buffer, uint16_t count)
+{
+    uint64_t logical = sector;
+    uint16_t left = count;
+    unsigned char *cursor = buffer;
+
+    while (left != 0) {
+        uint64_t base = 0;
+        bd_fragment_t *fragment = NULL;
+        uint16_t chunk;
+        unsigned int i;
+
+        for (i = 0; i < source->fragment_count; i++) {
+            bd_fragment_t *candidate = &source->fragments[i];
+
+            if (logical >= base && logical < base + candidate->count) {
+                fragment = candidate;
+                break;
+            }
+            base += candidate->count;
+        }
+        if (fragment == NULL)
+            return -EIO;
+
+        chunk = left;
+        if ((uint64_t)chunk > base + fragment->count - logical)
+            chunk = (uint16_t)(base + fragment->count - logical);
+        if (source->bd->read(source->bd,
+                             fragment->sector + (logical - base),
+                             cursor, chunk) != chunk)
+            return -EIO;
+        logical += chunk;
+        left -= chunk;
+        cursor += (unsigned int)chunk * source->bd->sectorSize;
+    }
+    return count;
+}
+
+static int source_read_fallback(int source_fd, uint64_t offset,
+                                void *buffer, unsigned int bytes)
+{
+    unsigned int complete = 0;
+    s64 position = iomanX_lseek64(source_fd, (s64)offset, FIO_SEEK_SET);
+
+    if (position != (s64)offset)
+        return position < 0 ? (int)position : -EIO;
+    while (complete < bytes) {
+        int result = iomanX_read(source_fd,
+                                 (unsigned char *)buffer + complete,
+                                 bytes - complete);
+
+        if (result <= 0)
+            return result < 0 ? result : -EIO;
+        complete += (unsigned int)result;
+    }
+    return (int)bytes;
+}
+
+static int source_read_at(hdl_stream_file_t *stream, int source_fd,
+                          uint64_t offset, void *buffer, unsigned int bytes)
+{
+    if (source_map_prepare(stream, source_fd) == 0) {
+        uint32_t sector_size = stream->source.bd->sectorSize;
+
+        if (sector_size != 0 && offset % sector_size == 0 &&
+            bytes % sector_size == 0 &&
+            bytes / sector_size <= UINT16_MAX) {
+            int result = source_map_read(&stream->source,
+                                         offset / sector_size, buffer,
+                                         (uint16_t)(bytes / sector_size));
+            if (result >= 0)
+                return (int)bytes;
+            /* A removable device can be re-enumerated underneath a cached BDM
+             * pointer. Drop the direct map and fall back to the still-open
+             * filesystem descriptor instead of trusting stale topology. */
+            source_map_reset(stream);
+        }
+    }
+    return source_read_fallback(source_fd, offset, buffer, bytes);
+}
+
+static int dma_to_ee(uint32_t ee_address, const void *source,
+                     unsigned int bytes)
+{
+    SifDmaTransfer_t transfer;
+    int id;
+
+    if (ee_address == 0 || bytes == 0 || (ee_address & 0x3fu) != 0 ||
+        (bytes & 0x3fu) != 0)
+        return -EINVAL;
+    transfer.src = (void *)source;
+    transfer.dest = (void *)(uintptr_t)ee_address;
+    transfer.size = (int)bytes;
+    transfer.attr = 0;
+    id = sceSifSetDma(&transfer, 1);
+    if (id <= 0)
+        return -EIO;
+    while (sceSifDmaStat(id) >= 0) {}
+    return 0;
+}
+
 static int stream_open(iomanX_iop_file_t *file, const char *name,
                        int flags, int mode)
 {
     hdl_stream_file_t *stream;
+    uintptr_t aligned;
     char path[38];
     int sub_count;
     unsigned int i;
@@ -102,9 +303,20 @@ static int stream_open(iomanX_iop_file_t *file, const char *name,
     if (stream == NULL)
         return -ENOMEM;
     memset(stream, 0, sizeof(*stream));
+    stream->source.source_fd = -1;
+    stream->stage_allocation = AllocSysMemory(
+        ALLOC_FIRST, HDL_STREAM_IOP_STAGE_BYTES + 63u, NULL);
+    if (stream->stage_allocation == NULL) {
+        FreeSysMemory(stream);
+        return -ENOMEM;
+    }
+    aligned = ((uintptr_t)stream->stage_allocation + 63u) & ~(uintptr_t)63u;
+    stream->stage = (unsigned char *)aligned;
+
     stream->hdd_fd = iomanX_open(path, flags, 0);
     if (stream->hdd_fd < 0) {
         result = stream->hdd_fd;
+        FreeSysMemory(stream->stage_allocation);
         FreeSysMemory(stream);
         return result;
     }
@@ -114,6 +326,7 @@ static int stream_open(iomanX_iop_file_t *file, const char *name,
     if (sub_count < 0 || sub_count >= (int)HDL_STREAM_MAX_PARTITIONS) {
         result = sub_count < 0 ? sub_count : -EFBIG;
         iomanX_close(stream->hdd_fd);
+        FreeSysMemory(stream->stage_allocation);
         FreeSysMemory(stream);
         return result;
     }
@@ -131,6 +344,7 @@ static int stream_open(iomanX_iop_file_t *file, const char *name,
         result = ioctl_u32_result(raw_length, &length);
         if (result < 0) {
             iomanX_close(stream->hdd_fd);
+            FreeSysMemory(stream->stage_allocation);
             FreeSysMemory(stream);
             return result;
         }
@@ -139,6 +353,7 @@ static int stream_open(iomanX_iop_file_t *file, const char *name,
             if (result >= 0)
                 result = -EINVAL;
             iomanX_close(stream->hdd_fd);
+            FreeSysMemory(stream->stage_allocation);
             FreeSysMemory(stream);
             return result;
         }
@@ -157,7 +372,9 @@ static int stream_close(iomanX_iop_file_t *file)
 
     if (stream == NULL)
         return -EBADF;
+    source_map_reset(stream);
     result = iomanX_close(stream->hdd_fd);
+    FreeSysMemory(stream->stage_allocation);
     FreeSysMemory(stream);
     file->privdata = NULL;
     return result;
@@ -337,6 +554,55 @@ static int commit_metadata(hdl_stream_file_t *stream, const void *metadata,
     return result;
 }
 
+static int fast_source_to_ee(iomanX_iop_file_t *file,
+                             const hdl_stream_source_io_t *request,
+                             unsigned int request_size, int pump)
+{
+    hdl_stream_file_t *stream = file->privdata;
+    uint64_t offset;
+    int result;
+
+    if (stream == NULL || request == NULL ||
+        request_size != sizeof(*request) || request->source_fd < 0 ||
+        request->bytes == 0 || request->bytes > HDL_STREAM_IOP_STAGE_BYTES ||
+        (request->bytes & 0x1ffu) != 0)
+        return -EINVAL;
+    offset = (uint64_t)request->source_offset_low |
+             ((uint64_t)request->source_offset_high << 32);
+    result = source_read_at(stream, request->source_fd, offset,
+                            stream->stage, request->bytes);
+    if (result != (int)request->bytes)
+        return result < 0 ? result : -EIO;
+    if (pump) {
+        result = stream_transfer(file, stream->stage, request->bytes,
+                                 APA_IO_MODE_WRITE);
+        if (result != (int)request->bytes)
+            return result < 0 ? result : -EIO;
+    }
+    result = dma_to_ee(request->ee_address, stream->stage, request->bytes);
+    return result < 0 ? result : (int)request->bytes;
+}
+
+static int fast_target_to_ee(iomanX_iop_file_t *file,
+                             const hdl_stream_target_io_t *request,
+                             unsigned int request_size)
+{
+    hdl_stream_file_t *stream = file->privdata;
+    int result;
+
+    if (stream == NULL || request == NULL ||
+        request_size != sizeof(*request) || request->bytes == 0 ||
+        request->bytes > HDL_STREAM_IOP_STAGE_BYTES ||
+        (request->bytes & 0x1ffu) != 0)
+        return -EINVAL;
+    result = stream_transfer(file, stream->stage, request->bytes,
+                             APA_IO_MODE_READ);
+    if (result != (int)request->bytes)
+        return result < 0 ? result : -EIO;
+    result = dma_to_ee(request->ee_address, stream->stage, request->bytes);
+    return result < 0 ? result : (int)request->bytes;
+}
+
 static int stream_ioctl2(iomanX_iop_file_t *file, int command,
                          void *argument, unsigned int argument_length,
                          void *buffer, unsigned int buffer_length)
@@ -368,6 +634,12 @@ static int stream_ioctl2(iomanX_iop_file_t *file, int command,
             return -EINVAL;
         return read_metadata(stream, buffer, HDL_STREAM_METADATA_SIZE);
     }
+    if (command == HDL_STREAM_IOCTL2_SOURCE_TO_EE)
+        return fast_source_to_ee(file, argument, argument_length, 0);
+    if (command == HDL_STREAM_IOCTL2_PUMP_TO_EE)
+        return fast_source_to_ee(file, argument, argument_length, 1);
+    if (command == HDL_STREAM_IOCTL2_TARGET_TO_EE)
+        return fast_target_to_ee(file, argument, argument_length);
     return -EINVAL;
 }
 
@@ -382,6 +654,7 @@ static iomanX_iop_device_ops_t stream_ops = {
     &stream_read,
     &stream_write,
     &stream_seek,
+    IOMANX_RETURN_VALUE(EPERM),
     IOMANX_RETURN_VALUE(EPERM),
     IOMANX_RETURN_VALUE(EPERM),
     IOMANX_RETURN_VALUE(EPERM),
