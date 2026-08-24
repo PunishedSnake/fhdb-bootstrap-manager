@@ -21,9 +21,24 @@
 #include "ui_theme_ps2.h"
 #include "video_mode.h"
 
-static void build_dashboard_status(char *buffer, unsigned int capacity,
-                                   const unsigned char header[APA_HEADER_SIZE],
-                                   const boot_chain_info_t *boot_chain)
+/*
+ * With whole-program LTO GCC used to inline nearly the complete interactive
+ * menu graph into manager_menu_run(). The resulting function was 15,572 bytes,
+ * essentially the whole 16 KiB R5900 instruction cache. These screens execute
+ * at human input speed, so saving a handful of JALs is worthless compared with
+ * keeping each selected path local in the I-cache. Keep the graph explicitly
+ * separated while still allowing normal -O2 optimization inside every leaf.
+ */
+#if defined(__GNUC__)
+#define UI_NOINLINE __attribute__((noinline))
+#else
+#define UI_NOINLINE
+#endif
+
+static UI_NOINLINE void build_dashboard_status(
+    char *buffer, unsigned int capacity,
+    const unsigned char header[APA_HEADER_SIZE],
+    const boot_chain_info_t *boot_chain)
 {
     unsigned int start = read_le32(header + APA_OSD_START_OFFSET);
     unsigned int size = read_le32(header + APA_OSD_SIZE_OFFSET);
@@ -36,8 +51,8 @@ static void build_dashboard_status(char *buffer, unsigned int capacity,
              boot_report_session_last_save_result() == 0 ? "saved" : "pending");
 }
 
-static void bootstrap_menu(unsigned char header[APA_HEADER_SIZE],
-                           boot_chain_info_t *boot_chain)
+static UI_NOINLINE void bootstrap_menu(unsigned char header[APA_HEADER_SIZE],
+                                       boot_chain_info_t *boot_chain)
 {
     unsigned int selected = 0;
 
@@ -83,8 +98,8 @@ static void bootstrap_menu(unsigned char header[APA_HEADER_SIZE],
     }
 }
 
-static void diagnostics_menu(unsigned char header[APA_HEADER_SIZE],
-                             boot_chain_info_t *boot_chain)
+static UI_NOINLINE void diagnostics_menu(unsigned char header[APA_HEADER_SIZE],
+                                         boot_chain_info_t *boot_chain)
 {
     static const app_ui_menu_item_t items[] = {
         {"Boot-chain inspection", "Refresh evidence and save BOOTCHAIN.TXT/HDDMAN.LOG", 1},
@@ -109,8 +124,8 @@ static void diagnostics_menu(unsigned char header[APA_HEADER_SIZE],
     }
 }
 
-static void run_deterministic_repair(unsigned char header[APA_HEADER_SIZE],
-                                     boot_chain_info_t *boot_chain)
+static UI_NOINLINE void run_deterministic_repair(
+    unsigned char header[APA_HEADER_SIZE], boot_chain_info_t *boot_chain)
 {
     int result = repair_controller_health(header, boot_chain);
 
@@ -124,8 +139,8 @@ static void run_deterministic_repair(unsigned char header[APA_HEADER_SIZE],
         app_ui_fatal_screen("HDD health analysis failed closed.", result);
 }
 
-static void recovery_menu(unsigned char header[APA_HEADER_SIZE],
-                          boot_chain_info_t *boot_chain)
+static UI_NOINLINE void recovery_menu(unsigned char header[APA_HEADER_SIZE],
+                                      boot_chain_info_t *boot_chain)
 {
     static const app_ui_menu_item_t items[] = {
         {"Deterministic structure health / repair",
@@ -146,8 +161,8 @@ static void recovery_menu(unsigned char header[APA_HEADER_SIZE],
     }
 }
 
-static void backup_storage_menu(unsigned char header[APA_HEADER_SIZE],
-                                boot_chain_info_t *boot_chain)
+static UI_NOINLINE void backup_storage_menu(
+    unsigned char header[APA_HEADER_SIZE], boot_chain_info_t *boot_chain)
 {
     static const app_ui_menu_item_t items[] = {
         {"Create full rescue backup", "Save header plus active payload when enabled", 1},
@@ -167,7 +182,7 @@ static void backup_storage_menu(unsigned char header[APA_HEADER_SIZE],
     }
 }
 
-static void controller_status_screen(void)
+static UI_NOINLINE void controller_status_screen(void)
 {
     scr_clear();
     scr_printf("Controller activity indication\n\n");
@@ -181,7 +196,7 @@ static void controller_status_screen(void)
     app_ui_wait_to_return();
 }
 
-static void ui_theme_menu(void)
+static UI_NOINLINE void ui_theme_menu(void)
 {
     static const char *const hints[UI_THEME_COUNT] = {
         "Cool cyan / blue default with high-contrast status colors",
@@ -228,7 +243,7 @@ static void ui_theme_menu(void)
     app_ui_wait_to_return();
 }
 
-static void ui_font_menu(void)
+static UI_NOINLINE void ui_font_menu(void)
 {
     static const char *const hints[UI_FONT_COUNT] = {
         "Original PS2SDK 8x8 bitmap raster",
@@ -292,7 +307,7 @@ static const char *const video_mode_hints[VIDEO_MODE_COUNT] = {
     "Guarded 1920x1080 FRAME output from two 640x540x32 buffers"
 };
 
-static int confirm_video_mode(video_mode_id_t mode, int startup)
+static UI_NOINLINE int confirm_video_mode(video_mode_id_t mode, int startup)
 {
     unsigned int remaining;
     char title[96];
@@ -325,7 +340,7 @@ static int confirm_video_mode(video_mode_id_t mode, int startup)
     return 0;
 }
 
-static int save_video_preference(video_mode_id_t mode)
+static UI_NOINLINE int save_video_preference(video_mode_id_t mode)
 {
     video_mode_id_t previous = app_config_video_mode();
     int result;
@@ -338,7 +353,8 @@ static int save_video_preference(video_mode_id_t mode)
     return result;
 }
 
-static void show_video_preference_result(video_mode_id_t mode, int save_result)
+static UI_NOINLINE void show_video_preference_result(video_mode_id_t mode,
+                                                      int save_result)
 {
     char config_path[STORAGE_LAUNCH_PATH_SIZE];
 
@@ -355,7 +371,7 @@ static void show_video_preference_result(video_mode_id_t mode, int save_result)
     app_ui_wait_to_return();
 }
 
-static void video_mode_menu(void)
+static UI_NOINLINE void video_mode_menu(void)
 {
     app_ui_menu_item_t items[VIDEO_MODE_COUNT];
     unsigned int selected = (unsigned int)gs_ui_video_mode_current();
@@ -412,7 +428,7 @@ static void video_mode_menu(void)
                      video_mode_name((video_mode_id_t)choice));
 }
 
-static void apply_startup_video_preference(void)
+static UI_NOINLINE void apply_startup_video_preference(void)
 {
     video_mode_id_t mode = app_config_video_mode();
     int result;
@@ -442,7 +458,7 @@ static void apply_startup_video_preference(void)
                      save_result);
 }
 
-static void system_menu(void)
+static UI_NOINLINE void system_menu(void)
 {
     static const app_ui_menu_item_t items[] = {
         {"Controller / activity indicator", "Inspect ANALOG-lamp capability and behavior", 1},
