@@ -4,6 +4,7 @@ I_iomanX_close
 I_iomanX_read
 I_iomanX_write
 I_iomanX_lseek
+I_iomanX_lseek64
 I_iomanX_ioctl2
 I_iomanX_AddDrv
 I_iomanX_DelDrv
@@ -14,6 +15,7 @@ I_memcmp
 I_memchr
 I_memcpy
 I_memset
+I_strcmp
 I_strlen
 sysclib_IMPORTS_end
 
@@ -21,3 +23,12 @@ sysmem_IMPORTS_start
 I_AllocSysMemory
 I_FreeSysMemory
 sysmem_IMPORTS_end
+
+sifman_IMPORTS_start
+I_sceSifSetDma
+I_sceSifDmaStat
+sifman_IMPORTS_end
+
+bdm_IMPORTS_start
+I_bdm_get_bd
+bdm_IMPORTS_end
