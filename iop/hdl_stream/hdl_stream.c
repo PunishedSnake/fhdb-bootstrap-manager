@@ -85,13 +85,6 @@ static int make_hdd_path(const char *name, char destination[38])
     return 0;
 }
 
-/*
- * Several ps2hdd ioctl2 commands return a raw u32 through the signed int
- * return channel. On disks whose APA partition starts have bit 31 set, a
- * perfectly valid LBA therefore looks like a huge negative number to C code.
- * Small negative values are real errno results; everything else is the
- * driver's u32 payload and must be preserved bit-for-bit.
- */
 static int ioctl_u32_result(int raw, uint32_t *value)
 {
     if (value == NULL)
@@ -180,9 +173,6 @@ static int source_map_prepare(hdl_stream_file_t *stream, int source_fd)
     return -ENOTSUP;
 }
 
-/* Read logical file sectors directly from the underlying USB BDM device by
- * walking the fragment map supplied by bdmfs_fatfs. The fragment LBAs are
- * absolute because bdmfs adds the mounted partition's sectorOffset. */
 static int source_map_read(const hdl_source_map_t *source, uint64_t sector,
                            void *buffer, uint16_t count)
 {
@@ -256,9 +246,6 @@ static int source_read_at(hdl_stream_file_t *stream, int source_fd,
                                          (uint16_t)(bytes / sector_size));
             if (result >= 0)
                 return (int)bytes;
-            /* A removable device can be re-enumerated underneath a cached BDM
-             * pointer. Drop the direct map and fall back to the still-open
-             * filesystem descriptor instead of trusting stale topology. */
             source_map_reset(stream);
         }
     }
@@ -646,34 +633,33 @@ static int stream_ioctl2(iomanX_iop_file_t *file, int command,
 IOMANX_RETURN_VALUE_IMPL(EPERM);
 
 static iomanX_iop_device_ops_t stream_ops = {
-    &stream_init,
-    &stream_deinit,
-    IOMANX_RETURN_VALUE(EPERM),
-    &stream_open,
-    &stream_close,
-    &stream_read,
-    &stream_write,
-    &stream_seek,
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    &stream_seek64,
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    IOMANX_RETURN_VALUE(EPERM),
-    &stream_ioctl2
+    .init = &stream_init,
+    .deinit = &stream_deinit,
+    .format = IOMANX_RETURN_VALUE(EPERM),
+    .open = &stream_open,
+    .close = &stream_close,
+    .read = &stream_read,
+    .write = &stream_write,
+    .lseek = &stream_seek,
+    .ioctl = IOMANX_RETURN_VALUE(EPERM),
+    .remove = IOMANX_RETURN_VALUE(EPERM),
+    .mkdir = IOMANX_RETURN_VALUE(EPERM),
+    .rmdir = IOMANX_RETURN_VALUE(EPERM),
+    .dopen = IOMANX_RETURN_VALUE(EPERM),
+    .dclose = IOMANX_RETURN_VALUE(EPERM),
+    .dread = IOMANX_RETURN_VALUE(EPERM),
+    .getstat = IOMANX_RETURN_VALUE(EPERM),
+    .chstat = IOMANX_RETURN_VALUE(EPERM),
+    .rename = IOMANX_RETURN_VALUE(EPERM),
+    .chdir = IOMANX_RETURN_VALUE(EPERM),
+    .sync = IOMANX_RETURN_VALUE(EPERM),
+    .mount = IOMANX_RETURN_VALUE(EPERM),
+    .umount = IOMANX_RETURN_VALUE(EPERM),
+    .lseek64 = &stream_seek64,
+    .devctl = IOMANX_RETURN_VALUE(EPERM),
+    .symlink = IOMANX_RETURN_VALUE(EPERM),
+    .readlink = IOMANX_RETURN_VALUE(EPERM),
+    .ioctl2 = &stream_ioctl2
 };
 
 static iomanX_iop_device_t stream_device = {
