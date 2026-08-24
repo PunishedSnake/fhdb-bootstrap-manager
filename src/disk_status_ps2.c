@@ -7,6 +7,7 @@
 
 #include "disk_status_ps2.h"
 #include "gs_ui_ps2.h"
+#include "platform.h"
 
 #define STATUS_STACK_DEPTH 6u
 /* Raw forensic scanning can generate ~15k READ events on a 2 TB disk. Waiting
@@ -20,6 +21,7 @@ static const char *phase_stack[STATUS_STACK_DEPTH];
 static const char *location_stack[STATUS_STACK_DEPTH];
 static unsigned char write_intent_stack[STATUS_STACK_DEPTH];
 static unsigned int status_depth;
+static unsigned int status_overflow_depth;
 static unsigned int read_events_since_render;
 
 static const char *kind_name(disk_status_kind_t kind)
@@ -113,11 +115,20 @@ static void render(disk_status_kind_t kind, unsigned int lba,
 void disk_status_begin_at(const char *operation, const char *phase,
                           const char *location)
 {
-    unsigned int slot = status_depth < STATUS_STACK_DEPTH
-                            ? status_depth : STATUS_STACK_DEPTH - 1u;
+    unsigned int slot;
 
-    if (status_depth < STATUS_STACK_DEPTH)
-        status_depth++;
+    if (status_depth < STATUS_STACK_DEPTH) {
+        /* The controller's ANALOG lamp is our physical I/O activity LED. Keep
+         * it tied to the same scoped status lifetime used by every HDD path,
+         * including HDL catalogue, preflight, copy, verify and cleanup. The
+         * platform helper is nesting-safe, so older callers that explicitly
+         * bracketed an operation remain harmlessly compatible. */
+        pad_activity_begin();
+        slot = status_depth++;
+    } else {
+        status_overflow_depth++;
+        slot = STATUS_STACK_DEPTH - 1u;
+    }
     operation_stack[slot] = operation;
     phase_stack[slot] = phase;
     location_stack[slot] = location;
@@ -192,8 +203,13 @@ void disk_status_io(disk_status_kind_t kind, unsigned int lba,
 void disk_status_end(void)
 {
     read_events_since_render = 0;
+    if (status_overflow_depth != 0) {
+        status_overflow_depth--;
+        return;
+    }
     if (status_depth != 0) {
         write_intent_stack[status_depth - 1u] = 0u;
         status_depth--;
+        pad_activity_end();
     }
 }
