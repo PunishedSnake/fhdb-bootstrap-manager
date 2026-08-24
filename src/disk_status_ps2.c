@@ -16,16 +16,17 @@
  * high-rate reads. */
 #define STATUS_READ_RENDER_DIVISOR 32u
 
-/* Bulk HDL transfers are 64 KiB per event. Rendering every block can insert a
- * framebuffer/VBlank wait between otherwise back-to-back USB requests, which
- * is exactly the kind of tiny UI tax that becomes a large throughput loss on a
- * 12 Mbit/s bus. Keep destructive metadata writes immediate, but coalesce only
- * large semantic streaming events. Copy remains visibly live at roughly every
- * 256 KiB; HDD-only verification updates every 2 MiB. The final event is
- * always rendered regardless of the divisor. */
+/* Bulk HDL transfers are 64 KiB per event and every rendered GS frame waits for
+ * VBlank before it can become visible. Rendering each block therefore inserts
+ * display latency directly into the storage timing loop. Keep small/destructive
+ * metadata events immediate, but make bulk copy telemetry deliberately coarse:
+ * one frame per 1 MiB of USB copy and one per 4 MiB of HDD-only verification.
+ * At USB 1.1 rates this still updates about once per second while reducing the
+ * display tax to a low single-digit percentage. The final event is always
+ * rendered regardless of the divisor. */
 #define STATUS_STREAM_MIN_SECTORS 64u
-#define STATUS_WRITE_RENDER_DIVISOR 4u
-#define STATUS_VERIFY_RENDER_DIVISOR 32u
+#define STATUS_WRITE_RENDER_DIVISOR 16u
+#define STATUS_VERIFY_RENDER_DIVISOR 64u
 
 static const char *operation_stack[STATUS_STACK_DEPTH];
 static const char *phase_stack[STATUS_STACK_DEPTH];
