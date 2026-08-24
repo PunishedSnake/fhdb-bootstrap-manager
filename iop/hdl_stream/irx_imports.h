@@ -5,5 +5,7 @@
 #include <iomanX.h>
 #include <sysclib.h>
 #include <sysmem.h>
+#include <sifman.h>
+#include <bdm.h>
 
 #endif
