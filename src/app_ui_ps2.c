@@ -23,6 +23,16 @@
 #define APP_UI_DASHBOARD_COLUMNS 3u
 #define APP_UI_DASHBOARD_MAX_ITEMS 6u
 
+/* Menu selectors spend almost all of their lifetime waiting for a controller
+ * edge. LTO inlining them into every controller duplicates sizeable render and
+ * navigation loops without reducing any meaningful latency. One canonical
+ * implementation is better for the R5900's 16 KiB I-cache. */
+#if defined(__GNUC__)
+#define UI_NOINLINE __attribute__((noinline))
+#else
+#define UI_NOINLINE
+#endif
+
 static void print_error_details(app_error_domain_t fallback_domain,
                                 int code, int consume)
 {
@@ -52,15 +62,12 @@ static void print_error_details(app_error_domain_t fallback_domain,
         app_error_clear();
 }
 
-void app_ui_restart_to_browser(void)
+UI_NOINLINE void app_ui_restart_to_browser(void)
 {
     static char *browser_args[] = {"BootBrowser", NULL};
 
     session_log_line("Restart to PS2 Browser requested");
     session_log_flush(storage_selected());
-    /* The ANALOG lamp is tied to controller main mode, not an independent LED.
-       Restore the user's initial mode before leaving this application's pad
-       ownership rather than leaking our activity-indicator mode into OSD. */
     pad_activity_restore();
     gs_ui_render_message("Restarting",
                          "Returning control to the PS2 Browser.",
@@ -70,7 +77,7 @@ void app_ui_restart_to_browser(void)
     ExecOSD(1, browser_args);
 }
 
-static void app_ui_shutdown_console(void)
+static UI_NOINLINE void app_ui_shutdown_console(void)
 {
     session_log_line("Controlled power-off requested");
     session_log_flush(storage_selected());
@@ -82,7 +89,7 @@ static void app_ui_shutdown_console(void)
     SleepThread();
 }
 
-void app_ui_power_menu(void)
+UI_NOINLINE void app_ui_power_menu(void)
 {
     static const app_ui_menu_item_t items[] = {
         {"Restart to PS2 Browser", "Return through ExecOSD", 1},
@@ -102,7 +109,7 @@ void app_ui_power_menu(void)
     }
 }
 
-void app_ui_fatal_screen(const char *message, int code)
+UI_NOINLINE void app_ui_fatal_screen(const char *message, int code)
 {
     session_log_line("FATAL: %s (code %d)", message, code);
     session_log_flush(storage_selected());
@@ -122,7 +129,7 @@ void app_ui_fatal_screen(const char *message, int code)
     }
 }
 
-void app_ui_wait_to_return(void)
+UI_NOINLINE void app_ui_wait_to_return(void)
 {
     app_error_record_t record;
 
@@ -130,9 +137,6 @@ void app_ui_wait_to_return(void)
         print_error_details(record.domain, record.code, 1);
     scr_printf("\nPress X to return.\n");
     while (!(wait_for_press() & PAD_CROSS)) {}
-    /* wait_for_press() presents the accumulated compatibility screen. Once
-       X has acknowledged it, retaining those bytes only lets the next visit
-       append another copy of the footer behind the ordinary GS menus. */
     gs_ui_console_discard();
 }
 
@@ -175,10 +179,10 @@ static unsigned int dashboard_move_vertical(unsigned int current,
     return target;
 }
 
-int app_ui_dashboard_select(const char *title, const char *status,
-                            const app_ui_menu_item_t *items,
-                            unsigned int item_count,
-                            unsigned int *selection)
+UI_NOINLINE int app_ui_dashboard_select(const char *title, const char *status,
+                                        const app_ui_menu_item_t *items,
+                                        unsigned int item_count,
+                                        unsigned int *selection)
 {
     const char *labels[APP_UI_MAX_MENU_ITEMS];
     const char *hints[APP_UI_MAX_MENU_ITEMS];
@@ -222,10 +226,10 @@ int app_ui_dashboard_select(const char *title, const char *status,
     }
 }
 
-int app_ui_menu_select(const char *title, const char *status,
-                       const app_ui_menu_item_t *items,
-                       unsigned int item_count,
-                       unsigned int *selection)
+UI_NOINLINE int app_ui_menu_select(const char *title, const char *status,
+                                   const app_ui_menu_item_t *items,
+                                   unsigned int item_count,
+                                   unsigned int *selection)
 {
     const char *labels[APP_UI_MAX_MENU_ITEMS];
     const char *hints[APP_UI_MAX_MENU_ITEMS];
@@ -273,7 +277,7 @@ void app_ui_activity_message(const char *title, const char *message)
                          GS_UI_TONE_INFO);
 }
 
-void app_ui_choose_storage(void)
+UI_NOINLINE void app_ui_choose_storage(void)
 {
     unsigned int choice = storage_selected();
 
@@ -305,7 +309,7 @@ void app_ui_choose_storage(void)
     }
 }
 
-int app_ui_choose_signing_card(void)
+UI_NOINLINE int app_ui_choose_signing_card(void)
 {
     static const app_ui_menu_item_t items[] = {
         {"mc0", "Use PS2 memory card in slot 1", 1},
