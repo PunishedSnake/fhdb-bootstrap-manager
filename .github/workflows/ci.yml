@@ -26,6 +26,7 @@ jobs:
         run: >-
           docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
           sh -c 'apk add --no-cache make python3 >/dev/null &&
+          sh tools/r5900_toolchain_audit.sh GCC_R5900_TARGET.txt &&
           make clean && make &&
           python3 tools/optimization_audit.py
           --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF
@@ -40,6 +41,7 @@ jobs:
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
             OPTIMIZATION_AUDIT.txt
+            GCC_R5900_TARGET.txt
             HDDMAN.CFG
             LICENSE
             THIRD_PARTY_NOTICES.md
