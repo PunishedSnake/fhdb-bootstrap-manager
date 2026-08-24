@@ -1,3 +1,5 @@
+#include <timer.h>
+
 /*
  * EE-side glue for the dev20 IOP payload pump.
  *
@@ -17,6 +19,8 @@ static int hdl_fast_source_fd = -1;
 static uint64_t hdl_fast_source_position;
 static uint64_t hdl_fast_source_seek_value;
 static uint64_t hdl_fast_source_total;
+static uint64_t hdl_fast_copy_start_ticks;
+static uint64_t hdl_fast_copy_bytes;
 static int hdl_fast_source_position_valid;
 static int hdl_fast_source_seek_pending;
 static int hdl_fast_pump_mode;
@@ -24,6 +28,7 @@ static int hdl_fast_pump_ack;
 static unsigned int hdl_fast_pump_ack_bytes;
 static int hdl_fast_path_logged;
 static int hdl_fast_stats_logged;
+static int hdl_fast_rate_logged;
 
 static void hdl_fast_io_reset(void)
 {
@@ -31,6 +36,8 @@ static void hdl_fast_io_reset(void)
     hdl_fast_source_position = 0;
     hdl_fast_source_seek_value = 0;
     hdl_fast_source_total = 0;
+    hdl_fast_copy_start_ticks = 0;
+    hdl_fast_copy_bytes = 0;
     hdl_fast_source_position_valid = 0;
     hdl_fast_source_seek_pending = 0;
     hdl_fast_pump_mode = 0;
@@ -38,6 +45,7 @@ static void hdl_fast_io_reset(void)
     hdl_fast_pump_ack_bytes = 0;
     hdl_fast_path_logged = 0;
     hdl_fast_stats_logged = 0;
+    hdl_fast_rate_logged = 0;
 }
 
 static int hdl_fast_resolve_source_total(int source_fd)
@@ -86,6 +94,41 @@ static void hdl_fast_io_log_stats(int target_fd)
         stats.fallback_reads, stats.prefetch_hits, stats.prefetch_misses,
         stats.pumped_chunks, stats.pumped_sectors, stats.source_dma_chunks);
     hdl_fast_stats_logged = 1;
+}
+
+static void hdl_fast_io_log_rate(void)
+{
+    u64 elapsed;
+    u32 seconds;
+    u32 microseconds;
+    uint64_t total_us;
+    uint64_t bytes_per_second;
+    uint64_t kib_per_second;
+    uint64_t raw_usb_permille;
+
+    if (hdl_fast_rate_logged || hdl_fast_copy_start_ticks == 0 ||
+        hdl_fast_copy_bytes == 0)
+        return;
+    elapsed = GetTimerSystemTime() - hdl_fast_copy_start_ticks;
+    TimerBusClock2USec(elapsed, &seconds, &microseconds);
+    total_us = (uint64_t)seconds * 1000000u + microseconds;
+    if (total_us == 0)
+        return;
+
+    bytes_per_second = (hdl_fast_copy_bytes * 1000000u) / total_us;
+    kib_per_second = bytes_per_second / 1024u;
+    /* USB 1.1 Full Speed is 12 Mbit/s = 1,500,000 raw bytes/s before packet,
+     * protocol and host-controller overhead. This percentage is intentionally
+     * labelled raw-bus utilization rather than attainable payload efficiency. */
+    raw_usb_permille = (bytes_per_second * 1000u) / 1500000u;
+    session_log_line(
+        "HDL fast copy measured bytes=%llu usec=%llu rate=%llu KiB/s raw-usb11=%llu.%llu%%",
+        (unsigned long long)hdl_fast_copy_bytes,
+        (unsigned long long)total_us,
+        (unsigned long long)kib_per_second,
+        (unsigned long long)(raw_usb_permille / 10u),
+        (unsigned long long)(raw_usb_permille % 10u));
+    hdl_fast_rate_logged = 1;
 }
 
 static s64 hdl_fast_fileXioLseek64(int fd, s64 offset, int whence)
@@ -175,6 +218,9 @@ static int hdl_fast_fileXioRead(int fd, void *buffer, int size)
                           ? HDL_STREAM_IOCTL2_PUMP_TO_EE
                           : HDL_STREAM_IOCTL2_SOURCE_TO_EE;
 
+        if (command == HDL_STREAM_IOCTL2_PUMP_TO_EE &&
+            hdl_fast_copy_start_ticks == 0)
+            hdl_fast_copy_start_ticks = GetTimerSystemTime();
         result = hdl_fast_dma_read(command, fd, buffer, (unsigned int)size);
         if (result != INT_MIN) {
             hdl_fast_source_seek_pending = 0;
@@ -183,6 +229,7 @@ static int hdl_fast_fileXioRead(int fd, void *buffer, int size)
             if (result == size && command == HDL_STREAM_IOCTL2_PUMP_TO_EE) {
                 hdl_fast_pump_ack = 1;
                 hdl_fast_pump_ack_bytes = (unsigned int)size;
+                hdl_fast_copy_bytes += (unsigned int)size;
                 if (!hdl_fast_path_logged) {
                     session_log_line(
                         "HDL IOP fast pump active: double-buffered USB source -> ps2hdd + one IOP->EE SHA DMA, chunk=%u",
@@ -193,9 +240,6 @@ static int hdl_fast_fileXioRead(int fd, void *buffer, int size)
                 hdl_fast_pump_ack = 0;
                 hdl_fast_pump_ack_bytes = 0;
             }
-            if (result == size && hdl_fast_source_total != 0 &&
-                hdl_fast_source_position == hdl_fast_source_total)
-                hdl_fast_io_log_stats(hdl_active_target_fd);
             return result;
         }
     }
@@ -229,6 +273,11 @@ static int hdl_fast_fileXioWrite(int fd, const void *buffer, int size)
             (unsigned int)size == hdl_fast_pump_ack_bytes) {
             hdl_fast_pump_ack = 0;
             hdl_fast_pump_ack_bytes = 0;
+            if (hdl_fast_source_total != 0 &&
+                hdl_fast_source_position == hdl_fast_source_total) {
+                hdl_fast_io_log_rate();
+                hdl_fast_io_log_stats(hdl_active_target_fd);
+            }
             return size;
         }
         /* Never fall back after PUMP_TO_EE already advanced the target. A
