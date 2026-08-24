@@ -89,6 +89,46 @@ static int hdl_transaction_guard_lookup_consumed;
  * what dev15 hit after a successful METADATA_COMMITTED journal transition. */
 static int hdl_active_target_fd = -1;
 
+/*
+ * APA deletion does not erase the old partition payload. If the allocator
+ * later reuses the same physical extent for another HDL install, a valid
+ * 0xDEADFEED block from the deleted game can therefore still be sitting in the
+ * new main partition's metadata area. Invalidate that area immediately after
+ * FIO_O_CREAT succeeds, before any payload is copied or the journal advances
+ * to PARTITIONS_CREATED. This restores the core invariant that incomplete HDL
+ * allocations never look like completed games to OPL or the cleanup guard.
+ */
+static unsigned char hdl_zero_metadata[HDL_METADATA_SIZE]
+    __attribute__((aligned(64)));
+
+static int hdl_invalidate_created_metadata(int fd)
+{
+    unsigned char verify[4] __attribute__((aligned(64)));
+    int result;
+
+    disk_status_phase_at("Invalidating stale HDL metadata",
+                         "New main partition attribute area before payload copy");
+    disk_status_io(DISK_STATUS_WRITE, 0, 2u, 0, 0);
+    result = fileXioLseek(fd, 0x100000, FIO_SEEK_SET);
+    if (result != 0x100000)
+        return HDL_INSTALL_CREATE_FAILED;
+    result = fileXioWrite(fd, hdl_zero_metadata, sizeof(hdl_zero_metadata));
+    if (result != (int)sizeof(hdl_zero_metadata))
+        return HDL_INSTALL_CREATE_FAILED;
+    result = fileXioIoctl2(fd, HIOCFLUSH, NULL, 0, NULL, 0);
+    if (result < 0)
+        return HDL_INSTALL_CREATE_FAILED;
+    result = fileXioLseek(fd, 0x100000, FIO_SEEK_SET);
+    if (result != 0x100000)
+        return HDL_INSTALL_CREATE_FAILED;
+    result = fileXioRead(fd, verify, sizeof(verify));
+    if (result != (int)sizeof(verify) || verify[0] != 0 || verify[1] != 0 ||
+        verify[2] != 0 || verify[3] != 0)
+        return HDL_INSTALL_CREATE_FAILED;
+    session_log_line("HDL new target stale metadata invalidated and read back");
+    return 0;
+}
+
 static void hdl_transaction_guard_disarm(void)
 {
     hdl_transaction_guard_target[0] = '\0';
@@ -327,6 +367,8 @@ static int hdl_transaction_recheck_disk(uint32_t *max_partition_sectors,
 static int hdl_status_fileXioOpen(const char *path, int flags, int mode)
 {
     int result;
+    int created_hdd = path != NULL && strncmp(path, "hdd0:", 5) == 0 &&
+                      (flags & FIO_O_CREAT) != 0;
 
     if (path != NULL && strncmp(path, "hdd0:", 5) == 0 &&
         flags == FIO_O_RDONLY && hdl_transaction_guard_active &&
@@ -345,8 +387,7 @@ static int hdl_status_fileXioOpen(const char *path, int flags, int mode)
         }
     }
 
-    if (path != NULL && strncmp(path, "hdd0:", 5) == 0 &&
-        (flags & FIO_O_CREAT) != 0) {
+    if (created_hdd) {
         /* apaOpen() performs its own ID walk as part of the actual create. The
          * raw post-confirm guard above has just proven the target absent; from
          * this point the stock call is the allocator itself, not a third
@@ -362,6 +403,23 @@ static int hdl_status_fileXioOpen(const char *path, int flags, int mode)
     }
 
     result = fileXioOpen(path, flags, mode);
+    if (result >= 0 && created_hdd) {
+        int invalidate = hdl_invalidate_created_metadata(result);
+
+        if (invalidate < 0) {
+            char cleanup[64];
+
+            fileXioClose(result);
+            if (hdl_transaction_guard_target[0] != '\0') {
+                snprintf(cleanup, sizeof(cleanup), "hdd0:%s",
+                         hdl_transaction_guard_target);
+                (void)fileXioRemove(cleanup);
+            }
+            session_log_line("HDL new target metadata invalidation failed result=%d",
+                             invalidate);
+            return HDL_INSTALL_CREATE_FAILED;
+        }
+    }
     if (result >= 0 && path != NULL && strncmp(path, "hdl0:", 5) == 0) {
         hdl_active_target_fd = result;
         session_log_line("HDL active stream opened fd=%d path=%s", result, path);
@@ -452,6 +510,59 @@ static int hdl_status_fileXioRemove(const char *path)
     return result;
 }
 
+/*
+ * dev18 exposed a cleanup trap after reinstalling a game into sectors that had
+ * previously held the same title. APA deletion leaves payload bytes untouched,
+ * so the freshly-created but incomplete allocation could inherit a valid old
+ * HDL metadata block and the legacy cleanup guard returned TARGET_EXISTS.
+ *
+ * For pre-dev19 journals, accept such a block only when it parses to the exact
+ * game identity recorded by the still-incomplete journal. Different metadata
+ * means the target changed underneath us and remains protected. New dev19
+ * allocations are invalidated immediately at creation, so this compatibility
+ * path should only be needed to clean up already-existing interrupted tests.
+ */
+static int hdl_remove_incomplete_target_journal(const char *target)
+{
+    hdl_transaction_t transaction;
+    unsigned char metadata[HDL_METADATA_SIZE];
+    hdl_metadata_info_t parsed;
+    char path[64];
+    int result;
+    int has_magic;
+
+    result = journal_load(&transaction);
+    if (result < 0)
+        return HDL_INSTALL_JOURNAL_INVALID;
+    if (target == NULL || strcmp(transaction.target, target) != 0 ||
+        transaction.stage < HDL_TRANSACTION_STAGE_PARTITIONS_CREATED ||
+        transaction.stage >= HDL_TRANSACTION_STAGE_METADATA_COMMITTED)
+        return HDL_INSTALL_TARGET_CHANGED;
+
+    result = read_target_metadata(target, metadata);
+    if (result < 0)
+        return result;
+    has_magic = metadata[0] == 0xed && metadata[1] == 0xfe &&
+                metadata[2] == 0xad && metadata[3] == 0xde;
+    if (has_magic) {
+        result = hdl_metadata_parse(metadata, &parsed);
+        if (result < 0 || strcmp(parsed.startup, transaction.startup) != 0 ||
+            strcmp(parsed.game_title, transaction.game_title) != 0 ||
+            parsed.disc_type != transaction.disc_type ||
+            parsed.partition_count != transaction.partition_count) {
+            session_log_line("HDL incomplete cleanup refused foreign metadata target=%s",
+                             target);
+            return HDL_INSTALL_TARGET_CHANGED;
+        }
+        session_log_line("HDL incomplete cleanup accepted stale matching metadata target=%s stage=%u",
+                         target, (unsigned int)transaction.stage);
+    }
+
+    if (target_path("hdd0:", target, path, sizeof(path)) < 0)
+        return HDL_INSTALL_LAYOUT_MISMATCH;
+    return hdl_status_fileXioRemove(path);
+}
+
 #define fileXioOpen hdl_status_fileXioOpen
 #define fileXioClose hdl_status_fileXioClose
 #define fileXioIoctl2 hdl_status_fileXioIoctl2
@@ -498,7 +609,9 @@ static int hdl_execute_transaction_guarded(hdl_transaction_t *transaction)
 #define recheck_disk(...) hdl_install_recheck_disk(__VA_ARGS__)
 #define target_exists(...) hdl_cached_target_exists(__VA_ARGS__)
 #define execute_transaction(...) hdl_execute_transaction_guarded(__VA_ARGS__)
+#define remove_incomplete_target(...) hdl_remove_incomplete_target_journal(__VA_ARGS__)
 #include "hdl_tools/install_ui.inc"
+#undef remove_incomplete_target
 #undef execute_transaction
 #undef target_exists
 #undef recheck_disk
