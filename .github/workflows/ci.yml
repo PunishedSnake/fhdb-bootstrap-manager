@@ -42,6 +42,7 @@ jobs:
           path: |
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER.map
             OPTIMIZATION_AUDIT.txt
             CORPUS_V2_PROJECT_AUDIT.txt
             GCC_R5900_TARGET.txt
