@@ -14,11 +14,22 @@
  * fopen/open/stat-based file access. Therefore this build does not need fileXio
  * to replace Newlib's generic POSIX pathname backend.
  *
- * Keep these symbols tiny and strong so fileXioInit()/Exit() retain their RPC,
- * semaphore and reset semantics while the optional POSIX adapter objects remain
- * unreferenced. Any future application use of fopen/open/stat/opendir/FILE I/O
- * must remove this policy or provide an explicitly reviewed equivalent path.
+ * The startup libcglue backend still installs the older fio POSIX adapter for
+ * stdin/stdout/stderr. Its generic __fioGetstatHelper() performs the same costly
+ * mktime conversion even though this application never consumes POSIX file
+ * timestamps. Keep mode and size semantics for incidental library probes, but
+ * deliberately report zero timestamps. CI rejects application fopen/open/stat
+ * call sites, so a future consumer cannot silently depend on this reduced
+ * timestamp contract.
  */
+
+#include <errno.h>
+#define NEWLIB_PORT_AWARE
+#include <fileio.h>
+#include <io_common.h>
+#include <iox_stat.h>
+#include <string.h>
+#include <sys/stat.h>
 
 void _ps2sdk_fileXio_init(void)
 {
@@ -26,4 +37,50 @@ void _ps2sdk_fileXio_init(void)
 
 void _ps2sdk_fileXio_deinit(void)
 {
+}
+
+static mode_t fio_mode_to_posix(unsigned int mode)
+{
+    mode_t result = 0;
+
+    if (mode & FIO_SO_IFREG)
+        result |= S_IFREG;
+    if (mode & FIO_SO_IFDIR)
+        result |= S_IFDIR;
+    if (mode & FIO_SO_IROTH)
+        result |= S_IRUSR | S_IRGRP | S_IROTH;
+    if (mode & FIO_SO_IWOTH)
+        result |= S_IWUSR | S_IWGRP | S_IWOTH;
+    if (mode & FIO_SO_IXOTH)
+        result |= S_IXUSR | S_IXGRP | S_IXOTH;
+    return result;
+}
+
+int __fioGetstatHelper(const char *path, struct stat *status)
+{
+    io_stat_t iop_status;
+
+    if (path == NULL || status == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (strncmp(path, "tty", 3) == 0 && path[3] >= '0' && path[3] <= '9' &&
+        path[4] == ':') {
+        memset(status, 0, sizeof(*status));
+        status->st_mode = S_IFCHR;
+        return 0;
+    }
+
+    if (fioGetstat(path, &iop_status) < 0) {
+        errno = ENOENT;
+        return -1;
+    }
+
+    memset(status, 0, sizeof(*status));
+    status->st_mode = fio_mode_to_posix(iop_status.mode);
+    status->st_size = ((off_t)iop_status.hisize << 32) | (off_t)iop_status.size;
+    status->st_blksize = 16 * 1024;
+    status->st_blocks = status->st_size / 512;
+    return 0;
 }
