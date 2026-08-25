@@ -44,7 +44,8 @@ static int hdl_fast_pump_mode;
 static int hdl_fast_pump_ack;
 static unsigned int hdl_fast_pump_ack_bytes;
 static int hdl_fast_path_logged;
-static int hdl_fast_stats_logged;
+static int hdl_fast_copy_iop_stats_logged;
+static int hdl_fast_verify_iop_stats_logged;
 static int hdl_fast_rate_logged;
 static int hdl_fast_copy_profile_logged;
 static int hdl_fast_target_profile_logged;
@@ -108,6 +109,24 @@ static uint32_t hdl_fast_latency_percentile(const hdl_fast_latency_stats_t *stat
     return 1u << (HDL_FAST_LATENCY_BUCKETS - 1u);
 }
 
+static uint32_t hdl_fast_iop_latency_percentile(
+    const hdl_stream_iop_latency_t *stats, unsigned int percentile)
+{
+    uint32_t threshold;
+    uint32_t cumulative = 0;
+    unsigned int bucket;
+
+    if (stats->samples == 0 || percentile == 0 || percentile > 100u)
+        return 0;
+    threshold = (stats->samples * percentile + 99u) / 100u;
+    for (bucket = 0; bucket < HDL_STREAM_IOP_LATENCY_BUCKETS; bucket++) {
+        cumulative += stats->buckets[bucket];
+        if (cumulative >= threshold)
+            return 1u << bucket;
+    }
+    return 1u << (HDL_STREAM_IOP_LATENCY_BUCKETS - 1u);
+}
+
 static HDL_FAST_COLD void hdl_fast_latency_log(
     const char *name, const hdl_fast_latency_stats_t *stats)
 {
@@ -119,6 +138,20 @@ static HDL_FAST_COLD void hdl_fast_latency_log(
         hdl_fast_latency_percentile(stats, 50u),
         hdl_fast_latency_percentile(stats, 95u),
         hdl_fast_latency_percentile(stats, 99u),
+        stats->maximum_us);
+}
+
+static HDL_FAST_COLD void hdl_fast_iop_latency_log(
+    const char *name, const hdl_stream_iop_latency_t *stats)
+{
+    if (stats->samples == 0)
+        return;
+    session_log_line(
+        "HDL IOP perf %s samples=%u p50<=%uus p95<=%uus p99<=%uus max=%uus",
+        name, stats->samples,
+        hdl_fast_iop_latency_percentile(stats, 50u),
+        hdl_fast_iop_latency_percentile(stats, 95u),
+        hdl_fast_iop_latency_percentile(stats, 99u),
         stats->maximum_us);
 }
 
@@ -186,7 +219,8 @@ static HDL_FAST_NOINLINE void hdl_fast_io_reset(void)
     hdl_fast_pump_ack = 0;
     hdl_fast_pump_ack_bytes = 0;
     hdl_fast_path_logged = 0;
-    hdl_fast_stats_logged = 0;
+    hdl_fast_copy_iop_stats_logged = 0;
+    hdl_fast_verify_iop_stats_logged = 0;
     hdl_fast_rate_logged = 0;
     hdl_fast_copy_profile_logged = 0;
     hdl_fast_target_profile_logged = 0;
@@ -222,27 +256,45 @@ static HDL_FAST_NOINLINE int hdl_fast_resolve_source_total(int source_fd)
     return 0;
 }
 
-static HDL_FAST_COLD void hdl_fast_io_log_stats(int target_fd)
+static HDL_FAST_COLD void hdl_fast_io_log_stats(int target_fd,
+                                                 int verify_phase)
 {
     hdl_stream_fast_stats_t stats;
+    const char *phase = verify_phase ? "verify-final" : "copy-final";
+    int *logged = verify_phase ? &hdl_fast_verify_iop_stats_logged
+                               : &hdl_fast_copy_iop_stats_logged;
     int result;
 
-    if (target_fd < 0 || hdl_fast_stats_logged)
+    if (target_fd < 0 || *logged)
         return;
     memset(&stats, 0, sizeof(stats));
     result = fileXioIoctl2(target_fd, HDL_STREAM_IOCTL2_GET_FAST_STATS,
                            NULL, 0, &stats, sizeof(stats));
     if (result < 0) {
-        session_log_line("HDL fast I/O stats unavailable fd=%d result=%d",
-                         target_fd, result);
+        session_log_line("HDL fast I/O stats unavailable phase=%s fd=%d result=%d",
+                         phase, target_fd, result);
         return;
     }
     session_log_line(
-        "HDL fast I/O source stats flags=0x%08x fragments=%u direct=%u fallback=%u prefetch-hit=%u miss=%u pump=%u sectors=%u src-dma=%u",
-        stats.flags, stats.fragment_count, stats.direct_reads,
+        "HDL fast I/O snapshot phase=%s flags=0x%08x fragments=%u direct=%u fallback=%u prefetch-hit=%u miss=%u pump=%u sectors=%u src-dma=%u target-dma=%u",
+        phase, stats.flags, stats.fragment_count, stats.direct_reads,
         stats.fallback_reads, stats.prefetch_hits, stats.prefetch_misses,
-        stats.pumped_chunks, stats.pumped_sectors, stats.source_dma_chunks);
-    hdl_fast_stats_logged = 1;
+        stats.pumped_chunks, stats.pumped_sectors, stats.source_dma_chunks,
+        stats.target_dma_chunks);
+    session_log_line(
+        "HDL IOP traffic phase=%s direct-src-sectors=%u fallback-src-sectors=%u hdd-write-sectors=%u hdd-read-sectors=%u sif-dma-sectors=%u",
+        phase, stats.direct_source_sectors, stats.fallback_source_sectors,
+        stats.hdd_write_sectors, stats.hdd_read_sectors,
+        stats.sif_dma_sectors);
+    if ((stats.flags & HDL_STREAM_FAST_FLAG_IOP_TIMING) != 0) {
+        hdl_fast_iop_latency_log("usb-direct-read", &stats.direct_source_latency);
+        hdl_fast_iop_latency_log("source-fallback-read", &stats.fallback_source_latency);
+        hdl_fast_iop_latency_log("prefetch-consumer-wait", &stats.prefetch_wait_latency);
+        hdl_fast_iop_latency_log("hdd-write", &stats.hdd_write_latency);
+        hdl_fast_iop_latency_log("hdd-read", &stats.hdd_read_latency);
+        hdl_fast_iop_latency_log("sif-dma-completion", &stats.sif_dma_latency);
+    }
+    *logged = 1;
 }
 
 static HDL_FAST_COLD void hdl_fast_io_log_rate(void)
@@ -384,8 +436,10 @@ static HDL_FAST_NOINLINE int hdl_fast_fileXioRead(int fd, void *buffer,
                 hdl_fast_target_bytes += (unsigned int)result;
                 hdl_fast_target_consumer_start_ticks = GetTimerSystemTime();
                 if (hdl_fast_source_total != 0 &&
-                    hdl_fast_target_bytes >= hdl_fast_source_total)
+                    hdl_fast_target_bytes >= hdl_fast_source_total) {
+                    hdl_fast_io_log_stats(hdl_active_target_fd, 1);
                     hdl_fast_log_target_profile();
+                }
             }
             return result;
         }
@@ -470,7 +524,7 @@ static HDL_FAST_NOINLINE int hdl_fast_fileXioWrite(int fd,
             if (hdl_fast_source_total != 0 &&
                 hdl_fast_source_position == hdl_fast_source_total) {
                 hdl_fast_io_log_rate();
-                hdl_fast_io_log_stats(hdl_active_target_fd);
+                hdl_fast_io_log_stats(hdl_active_target_fd, 0);
                 hdl_fast_log_copy_profile();
             }
             return size;
