@@ -19,6 +19,10 @@ jobs:
         run: python3 tools/hardware_fault_injector.py selftest
       - name: Self-test HDL performance log parser
         run: python3 tools/parse_hdl_perf.py --selftest
+      - name: Enforce direct-fileXio runtime policy
+        run: |
+          python3 tools/check_filexio_fdman_policy.py --selftest
+          python3 tools/check_filexio_fdman_policy.py
 
   ps2-build:
     runs-on: ubuntu-latest
