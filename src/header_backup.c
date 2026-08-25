@@ -20,6 +20,31 @@ static void backup_path_for_slot(char *path, unsigned int capacity,
                  slot == 0 ? "HDDMBR.BIN" : "HDDMBR2.BIN");
 }
 
+/*
+ * Probe only the property this policy actually needs: whether a readable file
+ * already occupies the backup slot and, if so, its byte size. fileXioGetStat
+ * would also convert atime/mtime/ctime through the current PS2SDK POSIX glue,
+ * pulling mktime/tzset/scanf machinery into the EE image even though backup
+ * policy never consumes timestamps or POSIX mode bits.
+ */
+static int backup_file_size(const char *path, int *size_out)
+{
+    int fd;
+    int size;
+
+    if (path == NULL || size_out == NULL)
+        return -1;
+    fd = fileXioOpen(path, FIO_O_RDONLY, 0);
+    if (fd < 0)
+        return fd;
+    size = fileXioLseek(fd, 0, FIO_SEEK_END);
+    fileXioClose(fd);
+    if (size < 0)
+        return size;
+    *size_out = size;
+    return 0;
+}
+
 const char *header_backup_save(
     unsigned int storage,
     const unsigned char current_header[APA_HEADER_SIZE],
@@ -40,13 +65,12 @@ const char *header_backup_save(
     }
 
     for (i = 0; i < HEADER_BACKUP_SLOT_COUNT; i++) {
-        iox_stat_t existing_stat;
+        int existing_size = 0;
 
-        memset(&existing_stat, 0, sizeof(existing_stat));
         diagnostics->read_result[i] =
-            fileXioGetStat(diagnostics->path[i], &existing_stat);
+            backup_file_size(diagnostics->path[i], &existing_size);
         if (diagnostics->read_result[i] >= 0) {
-            if (existing_stat.size == APA_HEADER_SIZE &&
+            if (existing_size == APA_HEADER_SIZE &&
                 read_exact_file(diagnostics->path[i], backup_scratch,
                                 APA_HEADER_SIZE) == 0 &&
                 is_standard_apa_header(backup_scratch) &&
