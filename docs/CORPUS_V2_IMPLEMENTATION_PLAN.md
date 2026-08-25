@@ -80,15 +80,63 @@ device sector/transfer unit, VIF/GIF packet, or another explicit contract.
 
 Goal: establish evidence before altering architecture.
 
-- [ ] Record exact PS2SDK/toolchain/build flags automatically in benchmark logs.
-- [ ] Record console SCPH/hardware revision, adapters, active IRX and workload.
-- [ ] Add per-stage HDL fast-path timing for source I/O, prefetch wait, HDD,
-      SIF DMA and EE consumer work.
-- [ ] Record useful bytes, DMA bytes, CPU-copy bytes and cache-maintenance bytes.
-- [ ] Add p50/p95/p99/max reporting for I/O latency, not just average throughput.
-- [ ] Keep hot-path logging binary/counter based; format only outside the path.
-- [ ] Add R5900 performance-counter harness with companion non-instrumented run.
-- [ ] Preserve linker map, symbol sizes and optimization audit in CI artifacts.
+- [x] Record project SHA/ref, pinned PS2SDK source ref/SHA, toolchain identity and
+      build flags automatically in `BENCHMARK_PROVENANCE.yml`.
+- [ ] Record console SCPH/hardware revision, adapters, runtime active IRX and
+      workload during a real-hardware benchmark. Build CI intentionally leaves
+      those fields `UNRECORDED` rather than inferring them.
+- [x] Add per-stage HDL fast-path timing for direct/fallback source I/O,
+      prefetch consumer wait, HDD read/write, SIF DMA and EE consumer work.
+- [x] Record useful bytes, SIF DMA bytes, HDD/source sectors, fallback bytes and
+      EE cache-maintenance bytes.
+- [x] Add p50/p95/p99/max reporting for I/O latency, not just average throughput.
+- [x] Keep hot-path logging counter/histogram based; format only at phase exit.
+- [x] Add an R5900 performance-counter harness using the EE Core Manual event
+      table and dedicated `mfpc/mtpc/mfps/mtps` instructions. The harness
+      preserves/restores prior counter state and has passed current-toolchain CI.
+- [x] Preserve linker map, symbol sizes and optimization audit in CI artifacts.
+- [x] Add a host parser that converts `HDDMAN.LOG` corpus-v2 performance records
+      to stable JSON and self-tests in CI.
+- [ ] Add a same-source profiling-on/profiling-off build pair for authoritative
+      instrumentation-overhead A/B on real hardware.
+- [ ] Exercise the R5900 counter harness in a bounded hardware benchmark and
+      measure empty-scope overhead before instrumenting application kernels.
+
+### Phase-0 implementation notes
+
+The first EE profiler pass increased `execute_transaction()` from the audited
+6420 B baseline to 7492 B under LTO. This was rejected. Profiling helpers were
+then isolated with selective `noinline` and report paths with `cold,noinline`.
+The instrumented transaction body became 6176 B, smaller than baseline, while
+retaining the counters. This proves only static footprint, not runtime overhead.
+
+The IOP path now records logarithmic microsecond latency histograms without
+`printf` in the hot path. Current categories are:
+
+```text
+usb-direct-read
+source-fallback-read
+prefetch-consumer-wait
+hdd-write
+hdd-read
+sif-dma-completion
+```
+
+EE-side companion categories are:
+
+```text
+pump-ioctl
+source-ioctl
+target-ioctl
+copy-ee-consumer
+verify-ee-consumer
+```
+
+The pinned `ps2dev/ps2dev:v2.0.0` image is tied to the `ps2dev` v2.0.0 build
+bundle. Its tagged build passes `v2.0.0` to the PS2SDK build script, which checks
+out PS2SDK `v2.0.0`; that annotated tag resolves to commit
+`b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b`. CI records that exact source
+provenance rather than substituting current PS2SDK master.
 
 Exit gate: measurements are reproducible on at least one real console and the
 instrumented build has a documented overhead A/B against an uninstrumented build.
@@ -139,7 +187,8 @@ commit safety.
 
 ## Phase 4: IOP/SIF service architecture
 
-- [ ] Measure queue/service/transport/completion latency separately.
+- [x] Instrument queue-adjacent prefetch wait, service/device work and SIF
+      completion independently enough to locate the dominant 64 KiB stage.
 - [ ] Maintain the IOP-local producer path where the final device consumer is on
       the IOP; do not bounce payload through EE without a consumer requirement.
 - [ ] Keep control metadata coarse-grained and bulk payload on DMA/data-plane paths.
