@@ -3,15 +3,23 @@ set -eu
 
 OUT=${1:-BENCHMARK_PROVENANCE.yml}
 CC=${EE_CC:-mips64r5900el-ps2-elf-gcc}
-GIT_SHA=$(git rev-parse HEAD 2>/dev/null || printf 'unavailable')
-GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unavailable')
+GIT_SHA=${PROJECT_GIT_SHA:-$(git rev-parse HEAD 2>/dev/null || printf 'unavailable')}
+GIT_REF=${PROJECT_GIT_REF:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unavailable')}
 CC_TARGET=$($CC -dumpmachine 2>/dev/null || printf 'unavailable')
 CC_VERSION=$($CC -dumpfullversion -dumpversion 2>/dev/null || printf 'unavailable')
-PS2SDK_SHA=unavailable
 PS2SDK_PATH_VALUE=${PS2SDK:-unavailable}
+PS2SDK_REF=${PS2SDK_SOURCE_REF:-unavailable}
+PS2SDK_SHA=${PS2SDK_SOURCE_SHA:-unavailable}
+PS2DEV_BUNDLE_REF=${PS2DEV_BUNDLE_REF:-unavailable}
 
+# A development environment may preserve the ps2sdk .git directory. Prefer the
+# exact installed checkout when available. Tagged ps2dev Docker images strip
+# source metadata after installation, so CI passes the source ref/SHA that the
+# image build scripts selected instead of pretending an absent .git means an
+# unknown software stack.
 if [ "${PS2SDK:-}" != "" ] && git -C "$PS2SDK" rev-parse HEAD >/dev/null 2>&1; then
     PS2SDK_SHA=$(git -C "$PS2SDK" rev-parse HEAD)
+    PS2SDK_REF=$(git -C "$PS2SDK" describe --always --tags 2>/dev/null || printf '%s' "$PS2SDK_REF")
 fi
 
 cat > "$OUT" <<EOF
@@ -20,13 +28,15 @@ cat > "$OUT" <<EOF
 # run supplies them. Never infer an SCPH or adapter from the build machine.
 project: fhdb-bootstrap-manager
 project_git_sha: "$GIT_SHA"
-project_git_branch: "$GIT_BRANCH"
+project_git_ref: "$GIT_REF"
 console_scp: UNRECORDED
 hardware_revision: UNRECORDED
 romver: UNRECORDED
 network_adapter: UNRECORDED
 storage_adapter: UNRECORDED
+ps2dev_bundle_ref: "$PS2DEV_BUNDLE_REF"
 ps2sdk_path: "$PS2SDK_PATH_VALUE"
+ps2sdk_ref: "$PS2SDK_REF"
 ps2sdk_commit: "$PS2SDK_SHA"
 toolchain_target: "$CC_TARGET"
 toolchain_gcc: "$CC_VERSION"
