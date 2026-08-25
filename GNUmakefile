@@ -1,13 +1,15 @@
 # Corpus-v2 build overlay.
 #
-# GNU make prefers GNUmakefile over Makefile. Define the non-LTO UI primitive
-# object as an override before loading the normal project build so the object is
-# present in EE_OBJS while Makefile.eeglobal constructs the final link rule.
-# The rest of the project's build remains in Makefile.
-
-override EE_OBJS += gs_ui_draw_minimal_ps2.o
+# GNU make prefers GNUmakefile over Makefile. Load the normal project build
+# first, then append the one link-layout experiment object. Adding a prerequisite
+# to the already-defined EE target keeps the normal dependency graph intact;
+# Makefile.eeglobal expands EE_OBJS when it executes the link recipe, so the
+# appended object is also present in the explicit link list before libdraw.a.
 
 include Makefile
+
+EE_OBJS += gs_ui_draw_minimal_ps2.o
+$(EE_BIN): gs_ui_draw_minimal_ps2.o
 
 # Keep this compatibility object out of LTO on purpose. With a normal object in
 # the explicit link list, BFD ld can resolve the five draw2d symbols before it
