@@ -292,13 +292,28 @@ int read_bounded_file(const char *path, unsigned int maximum_size,
     return 0;
 }
 
-/* Return a boolean existence result without exposing driver-specific errors. */
+/*
+ * The app only needs a boolean answer for its small current configuration
+ * file. Do not call fileXioGetStat here: current PS2SDK's POSIX stat glue also
+ * converts three IOP timestamps through mktime(), which drags timezone/scanf
+ * machinery into this standalone ELF for data we never consume.
+ *
+ * Opening read-only preserves the useful contract for this call site: a
+ * readable current config exists, so a malformed current file must not be
+ * hidden by silently falling back to a legacy filename. The close is performed
+ * immediately and no file data is transferred.
+ */
 int path_exists(const char *path)
 {
-    iox_stat_t status;
+    int fd;
 
-    memset(&status, 0, sizeof(status));
-    return fileXioGetStat(path, &status) >= 0;
+    if (path == NULL || path[0] == '\0')
+        return 0;
+    fd = fileXioOpen(path, FIO_O_RDONLY, 0);
+    if (fd < 0)
+        return 0;
+    fileXioClose(fd);
+    return 1;
 }
 
 /* Load a small configuration file and always provide a trailing NUL byte. */
