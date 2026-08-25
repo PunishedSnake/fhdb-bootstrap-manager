@@ -39,7 +39,7 @@
 #define HDL_STREAM_PREFETCH_STACK 0x1000u
 #define HDL_STREAM_PREFETCH_PRIORITY 0x30u
 
-IRX_ID("hdl_stream", 1, 4);
+IRX_ID("hdl_stream", 1, 5);
 
 typedef struct {
     int source_fd;
@@ -79,6 +79,46 @@ typedef struct {
     hdl_source_map_t source;
     hdl_stream_fast_stats_t stats;
 } hdl_stream_file_t;
+
+/*
+ * Phase-0 corpus-v2 profiling deliberately stores only compact histograms in
+ * the IOP hot path. Formatting/logging remains on the EE after a bulk phase.
+ * GetSystemTime/SysClock2USec are current ThreadMan services and the same clock
+ * conversion pattern is used by PS2SDK itself. Hardware A/B still decides
+ * whether this instrumentation remains enabled in performance builds.
+ */
+static uint32_t iop_elapsed_us(const iop_sys_clock_t *start,
+                               const iop_sys_clock_t *end)
+{
+    iop_sys_clock_t diff;
+    uint32_t seconds = 0;
+    uint32_t usec = 0;
+
+    diff.lo = end->lo - start->lo;
+    diff.hi = end->hi - start->hi - (start->lo > end->lo);
+    SysClock2USec(&diff, &seconds, &usec);
+    if (seconds > 4294u)
+        return 0xffffffffu;
+    return seconds * 1000000u + usec;
+}
+
+static void iop_latency_record(hdl_stream_iop_latency_t *stats,
+                               const iop_sys_clock_t *start,
+                               const iop_sys_clock_t *end)
+{
+    uint32_t usec = iop_elapsed_us(start, end);
+    uint32_t bound = 1u;
+    unsigned int bucket = 0u;
+
+    while (bucket + 1u < HDL_STREAM_IOP_LATENCY_BUCKETS && usec > bound) {
+        bound <<= 1;
+        bucket++;
+    }
+    stats->buckets[bucket]++;
+    stats->samples++;
+    if (usec > stats->maximum_us)
+        stats->maximum_us = usec;
+}
 
 static int stream_init(iomanX_iop_device_t *device)
 {
@@ -325,6 +365,9 @@ static int source_read_fallback(int source_fd, uint64_t offset,
 static int source_read_at(hdl_stream_file_t *stream, int source_fd,
                           uint64_t offset, void *buffer, unsigned int bytes)
 {
+    iop_sys_clock_t start;
+    iop_sys_clock_t end;
+
     /*
      * The stock usbmass BDM intentionally caps one SCSI request at 128 512-byte
      * sectors (64 KiB), and HDL_STREAM_IOP_STAGE_BYTES matches that exactly.
@@ -336,19 +379,34 @@ static int source_read_at(hdl_stream_file_t *stream, int source_fd,
         (offset & (HDL_STREAM_USB_SECTOR_SIZE - 1u)) == 0 &&
         (bytes & (HDL_STREAM_USB_SECTOR_SIZE - 1u)) == 0 &&
         (bytes >> HDL_STREAM_USB_SECTOR_SHIFT) <= UINT16_MAX) {
-        int result = source_map_read(
+        int result;
+
+        GetSystemTime(&start);
+        result = source_map_read(
             &stream->source, offset >> HDL_STREAM_USB_SECTOR_SHIFT, buffer,
             (uint16_t)(bytes >> HDL_STREAM_USB_SECTOR_SHIFT));
+        GetSystemTime(&end);
+        iop_latency_record(&stream->stats.direct_source_latency, &start, &end);
 
         if (result >= 0) {
             stream->stats.direct_reads++;
+            stream->stats.direct_source_sectors += bytes >> 9;
             return (int)bytes;
         }
         source_map_disable(stream, source_fd);
     }
 
     stream->stats.fallback_reads++;
-    return source_read_fallback(source_fd, offset, buffer, bytes);
+    GetSystemTime(&start);
+    {
+        int result = source_read_fallback(source_fd, offset, buffer, bytes);
+
+        GetSystemTime(&end);
+        iop_latency_record(&stream->stats.fallback_source_latency, &start, &end);
+        if (result > 0)
+            stream->stats.fallback_source_sectors += (unsigned int)result >> 9;
+        return result;
+    }
 }
 
 static void prefetch_worker(void *arg)
@@ -438,11 +496,16 @@ fail:
 
 static int prefetch_wait(hdl_stream_file_t *stream)
 {
+    iop_sys_clock_t start;
+    iop_sys_clock_t end;
     int result;
 
     if (!stream->prefetch_active)
         return 0;
+    GetSystemTime(&start);
     result = WaitSema(stream->prefetch_done_sema);
+    GetSystemTime(&end);
+    iop_latency_record(&stream->stats.prefetch_wait_latency, &start, &end);
     if (result < 0)
         return result;
     stream->prefetch_active = 0;
@@ -510,10 +573,12 @@ static void prefetch_shutdown(hdl_stream_file_t *stream)
     prefetch_delete_semas(stream);
 }
 
-static int dma_to_ee(uint32_t ee_address, const void *source,
-                     unsigned int bytes)
+static int dma_to_ee(hdl_stream_file_t *stream, uint32_t ee_address,
+                     const void *source, unsigned int bytes)
 {
     SifDmaTransfer_t transfer;
+    iop_sys_clock_t start;
+    iop_sys_clock_t end;
     int id;
 
     if (ee_address == 0 || bytes == 0 || (ee_address & 0x3fu) != 0 ||
@@ -523,10 +588,14 @@ static int dma_to_ee(uint32_t ee_address, const void *source,
     transfer.dest = (void *)(uintptr_t)ee_address;
     transfer.size = (int)bytes;
     transfer.attr = 0;
+    GetSystemTime(&start);
     id = sceSifSetDma(&transfer, 1);
     if (id <= 0)
         return -EIO;
     while (sceSifDmaStat(id) >= 0) {}
+    GetSystemTime(&end);
+    iop_latency_record(&stream->stats.sif_dma_latency, &start, &end);
+    stream->stats.sif_dma_sectors += bytes >> 9;
     return 0;
 }
 
@@ -548,6 +617,7 @@ static int stream_open(iomanX_iop_file_t *file, const char *name,
     if (stream == NULL)
         return -ENOMEM;
     memset(stream, 0, sizeof(*stream));
+    stream->stats.flags = HDL_STREAM_FAST_FLAG_IOP_TIMING;
     stream->source.source_fd = -1;
     stream->prefetch_thread = -1;
     stream->prefetch_request_sema = -1;
@@ -685,6 +755,8 @@ static int stream_transfer(iomanX_iop_file_t *file, void *buffer,
 
     while (remaining > 0) {
         hddIoctl2Transfer_t transfer;
+        iop_sys_clock_t start;
+        iop_sys_clock_t end;
         uint64_t available;
         uint32_t part;
         uint32_t sector;
@@ -703,8 +775,19 @@ static int stream_transfer(iomanX_iop_file_t *file, void *buffer,
         transfer.size = (uint32_t)chunk >> 9;
         transfer.mode = direction;
         transfer.buffer = cursor;
+        GetSystemTime(&start);
         result = iomanX_ioctl2(stream->hdd_fd, HIOCTRANSFER,
                                &transfer, sizeof(transfer), NULL, 0);
+        GetSystemTime(&end);
+        if (direction == APA_IO_MODE_WRITE) {
+            iop_latency_record(&stream->stats.hdd_write_latency, &start, &end);
+            if (result >= 0)
+                stream->stats.hdd_write_sectors += transfer.size;
+        } else {
+            iop_latency_record(&stream->stats.hdd_read_latency, &start, &end);
+            if (result >= 0)
+                stream->stats.hdd_read_sectors += transfer.size;
+        }
         if (result < 0)
             return result;
         stream->position += (uint32_t)chunk;
@@ -881,7 +964,7 @@ static int fast_source_to_ee(iomanX_iop_file_t *file,
         stream->stats.pumped_chunks++;
         stream->stats.pumped_sectors += request->bytes >> 9;
     }
-    result = dma_to_ee(request->ee_address, stage, request->bytes);
+    result = dma_to_ee(stream, request->ee_address, stage, request->bytes);
     if (result < 0)
         return result;
     stream->stats.source_dma_chunks++;
@@ -904,7 +987,8 @@ static int fast_target_to_ee(iomanX_iop_file_t *file,
                              APA_IO_MODE_READ);
     if (result != (int)request->bytes)
         return result < 0 ? result : -EIO;
-    result = dma_to_ee(request->ee_address, stream->stage[0], request->bytes);
+    result = dma_to_ee(stream, request->ee_address, stream->stage[0],
+                       request->bytes);
     if (result < 0)
         return result;
     stream->stats.target_dma_chunks++;
