@@ -17,6 +17,8 @@ jobs:
         run: make test-host
       - name: Self-test guarded hardware fault injector
         run: python3 tools/hardware_fault_injector.py selftest
+      - name: Self-test HDL performance log parser
+        run: python3 tools/parse_hdl_perf.py --selftest
 
   ps2-build:
     runs-on: ubuntu-latest
