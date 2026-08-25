@@ -25,6 +25,13 @@ int app_ui_menu_select(const char *title, const char *status,
                        unsigned int item_count,
                        unsigned int *selection);
 
+/* Root dashboard navigation. LEFT/RIGHT select a card in the current row,
+ * UP/DOWN move between rows, X opens and TRIANGLE returns -1. */
+int app_ui_dashboard_select(const char *title, const char *status,
+                            const app_ui_menu_item_t *items,
+                            unsigned int item_count,
+                            unsigned int *selection);
+
 void app_ui_activity_message(const char *title, const char *message);
 
 #endif

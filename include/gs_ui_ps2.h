@@ -43,6 +43,16 @@ void gs_ui_render_menu(const char *title,
                        unsigned int item_count,
                        unsigned int selected);
 
+/* Root-only card dashboard. It keeps the short section descriptions without
+ * forcing six two-line entries into the ordinary vertical-menu geometry. */
+void gs_ui_render_dashboard(const char *title,
+                            const char *status,
+                            const char *const *labels,
+                            const char *const *hints,
+                            const unsigned char *enabled,
+                            unsigned int item_count,
+                            unsigned int selected);
+
 void gs_ui_render_message(const char *title,
                           const char *body,
                           const char *footer,
@@ -52,6 +62,9 @@ void gs_ui_render_message(const char *title,
  * incrementally. Linker wrappers route historical scr_* calls here, so the
  * real libdebug renderer is used only as an initialization-failure fallback. */
 void gs_ui_console_clear(void);
+/* Drop an already-presented compatibility screen without scheduling a blank
+ * replacement frame. This prevents prompts from surviving behind GS menus. */
+void gs_ui_console_discard(void);
 void gs_ui_console_printf(const char *format, ...)
     __attribute__((format(printf, 1, 2)));
 void gs_ui_console_vprintf(const char *format, va_list arguments);

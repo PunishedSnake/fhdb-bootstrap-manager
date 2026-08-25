@@ -22,10 +22,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build stripped PS2 ELF with PS2DEV v2.0.0
+      - name: Build, audit and strip PS2 ELF with PS2DEV v2.0.0
         run: >-
           docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
-          sh -c 'apk add --no-cache make >/dev/null && make clean && make release'
+          sh -c 'apk add --no-cache make python3 >/dev/null &&
+          sh tools/r5900_toolchain_audit.sh GCC_R5900_TARGET.txt &&
+          python3 tools/corpus_v2_project_audit.py
+          --output CORPUS_V2_PROJECT_AUDIT.txt &&
+          make clean && make &&
+          python3 tools/optimization_audit.py
+          --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF
+          --output OPTIMIZATION_AUDIT.txt &&
+          make release'
       - name: Record artifact checksum
         run: sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
       - uses: actions/upload-artifact@v4
@@ -34,6 +42,10 @@ jobs:
           path: |
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER.map
+            OPTIMIZATION_AUDIT.txt
+            CORPUS_V2_PROJECT_AUDIT.txt
+            GCC_R5900_TARGET.txt
             HDDMAN.CFG
             LICENSE
             THIRD_PARTY_NOTICES.md

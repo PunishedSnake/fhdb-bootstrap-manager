@@ -73,17 +73,23 @@ New recovery algorithms, snapshot formats, write loops, UI sections, or device p
 
 ## Hierarchical UI contract
 
-Michishirube no longer uses one global controller button per feature. The dashboard exposes five sections:
+Michishirube no longer uses one global controller button per feature. The
+root dashboard exposes six cards:
 
 ```text
 Bootstrap
 Diagnostics
 Recovery
+HDL Tools
 Backup & Storage
 System
 ```
 
-Normal navigation is `UP/DOWN`, `X`, `TRIANGLE`. Destructive operations still use explicit confirmation chords after a preview/snapshot stage.
+The root uses the directional pad to move through a two-by-three card grid and
+keeps the selected card's short description in a separate panel. Ordinary
+submenus retain `UP/DOWN`, `X`, and `TRIANGLE` list navigation. Destructive
+operations still use explicit confirmation chords after a preview/snapshot
+stage.
 
 An unavailable operation remains visible with a reason. This prevents feature growth from consuming additional controller buttons and makes application state explicit.
 
