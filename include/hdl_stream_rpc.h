@@ -54,6 +54,21 @@ typedef struct {
 
 #define HDL_STREAM_FAST_FLAG_DOUBLE_BUFFER 0x00000001u
 #define HDL_STREAM_FAST_FLAG_DIRECT_BDM 0x00000002u
+#define HDL_STREAM_FAST_FLAG_IOP_TIMING 0x00000004u
+
+/*
+ * Corpus-v2 profiling uses logarithmic microsecond buckets on the IOP instead
+ * of formatting trace lines in the hot service path. 24 buckets cover 1 us
+ * through multi-second stalls while keeping the RPC snapshot compact enough
+ * for a single control-plane read after a bulk phase.
+ */
+#define HDL_STREAM_IOP_LATENCY_BUCKETS 24u
+
+typedef struct {
+    uint32_t samples;
+    uint32_t maximum_us;
+    uint32_t buckets[HDL_STREAM_IOP_LATENCY_BUCKETS];
+} hdl_stream_iop_latency_t;
 
 typedef struct {
     uint32_t flags;
@@ -66,6 +81,21 @@ typedef struct {
     uint32_t pumped_sectors;
     uint32_t source_dma_chunks;
     uint32_t target_dma_chunks;
+
+    /* Transport accounting is kept in 512-byte sectors to avoid cross-ABI
+     * uint64_t layout assumptions and to cover any practical PS2 workload. */
+    uint32_t direct_source_sectors;
+    uint32_t fallback_source_sectors;
+    uint32_t hdd_write_sectors;
+    uint32_t hdd_read_sectors;
+    uint32_t sif_dma_sectors;
+
+    hdl_stream_iop_latency_t direct_source_latency;
+    hdl_stream_iop_latency_t fallback_source_latency;
+    hdl_stream_iop_latency_t prefetch_wait_latency;
+    hdl_stream_iop_latency_t hdd_write_latency;
+    hdl_stream_iop_latency_t hdd_read_latency;
+    hdl_stream_iop_latency_t sif_dma_latency;
 } hdl_stream_fast_stats_t;
 
 /*
