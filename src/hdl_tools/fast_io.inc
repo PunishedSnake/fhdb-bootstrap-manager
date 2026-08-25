@@ -16,6 +16,8 @@
  * staging/copy layer.
  */
 #define HDL_FAST_LATENCY_BUCKETS 24u
+#define HDL_FAST_NOINLINE __attribute__((noinline))
+#define HDL_FAST_COLD __attribute__((cold, noinline))
 
 typedef struct {
     uint32_t samples;
@@ -68,8 +70,8 @@ static uint32_t hdl_fast_elapsed_us(u64 start, u64 end)
     return seconds * 1000000u + microseconds;
 }
 
-static void hdl_fast_latency_record(hdl_fast_latency_stats_t *stats,
-                                    u64 start, u64 end)
+static HDL_FAST_NOINLINE void hdl_fast_latency_record(
+    hdl_fast_latency_stats_t *stats, u64 start, u64 end)
 {
     uint32_t usec;
     uint32_t bound = 1u;
@@ -106,8 +108,8 @@ static uint32_t hdl_fast_latency_percentile(const hdl_fast_latency_stats_t *stat
     return 1u << (HDL_FAST_LATENCY_BUCKETS - 1u);
 }
 
-static void hdl_fast_latency_log(const char *name,
-                                 const hdl_fast_latency_stats_t *stats)
+static HDL_FAST_COLD void hdl_fast_latency_log(
+    const char *name, const hdl_fast_latency_stats_t *stats)
 {
     if (stats->samples == 0)
         return;
@@ -120,7 +122,8 @@ static void hdl_fast_latency_log(const char *name,
         stats->maximum_us);
 }
 
-static void hdl_fast_record_ioctl_latency(int command, u64 start, u64 end)
+static HDL_FAST_NOINLINE void hdl_fast_record_ioctl_latency(
+    int command, u64 start, u64 end)
 {
     if (command == HDL_STREAM_IOCTL2_PUMP_TO_EE)
         hdl_fast_latency_record(&hdl_fast_pump_ioctl_latency, start, end);
@@ -130,7 +133,7 @@ static void hdl_fast_record_ioctl_latency(int command, u64 start, u64 end)
         hdl_fast_latency_record(&hdl_fast_target_ioctl_latency, start, end);
 }
 
-static void hdl_fast_log_copy_profile(void)
+static HDL_FAST_COLD void hdl_fast_log_copy_profile(void)
 {
     if (hdl_fast_copy_profile_logged)
         return;
@@ -146,7 +149,7 @@ static void hdl_fast_log_copy_profile(void)
     hdl_fast_copy_profile_logged = 1;
 }
 
-static void hdl_fast_log_target_profile(void)
+static HDL_FAST_COLD void hdl_fast_log_target_profile(void)
 {
     if (hdl_fast_target_profile_logged)
         return;
@@ -162,7 +165,7 @@ static void hdl_fast_log_target_profile(void)
     hdl_fast_target_profile_logged = 1;
 }
 
-static void hdl_fast_io_reset(void)
+static HDL_FAST_NOINLINE void hdl_fast_io_reset(void)
 {
     hdl_fast_source_fd = -1;
     hdl_fast_source_position = 0;
@@ -194,7 +197,7 @@ static void hdl_fast_io_reset(void)
     hdl_fast_latency_reset(&hdl_fast_target_consumer_latency);
 }
 
-static int hdl_fast_resolve_source_total(int source_fd)
+static HDL_FAST_NOINLINE int hdl_fast_resolve_source_total(int source_fd)
 {
     s64 end;
     s64 restore;
@@ -219,7 +222,7 @@ static int hdl_fast_resolve_source_total(int source_fd)
     return 0;
 }
 
-static void hdl_fast_io_log_stats(int target_fd)
+static HDL_FAST_COLD void hdl_fast_io_log_stats(int target_fd)
 {
     hdl_stream_fast_stats_t stats;
     int result;
@@ -242,7 +245,7 @@ static void hdl_fast_io_log_stats(int target_fd)
     hdl_fast_stats_logged = 1;
 }
 
-static void hdl_fast_io_log_rate(void)
+static HDL_FAST_COLD void hdl_fast_io_log_rate(void)
 {
     u64 elapsed;
     u32 seconds;
@@ -277,7 +280,8 @@ static void hdl_fast_io_log_rate(void)
     hdl_fast_rate_logged = 1;
 }
 
-static s64 hdl_fast_fileXioLseek64(int fd, s64 offset, int whence)
+static HDL_FAST_NOINLINE s64 hdl_fast_fileXioLseek64(int fd, s64 offset,
+                                                      int whence)
 {
     s64 result = fileXioLseek64(fd, offset, whence);
 
@@ -301,8 +305,9 @@ static s64 hdl_fast_fileXioLseek64(int fd, s64 offset, int whence)
     return result;
 }
 
-static int hdl_fast_dma_read(int command, int source_fd, void *buffer,
-                             unsigned int bytes)
+static HDL_FAST_NOINLINE int hdl_fast_dma_read(int command, int source_fd,
+                                                void *buffer,
+                                                unsigned int bytes)
 {
     u64 call_start;
     u64 call_end;
@@ -354,7 +359,8 @@ static int hdl_fast_dma_read(int command, int source_fd, void *buffer,
     return result;
 }
 
-static int hdl_fast_fileXioRead(int fd, void *buffer, int size)
+static HDL_FAST_NOINLINE int hdl_fast_fileXioRead(int fd, void *buffer,
+                                                   int size)
 {
     int result;
 
@@ -446,7 +452,9 @@ static int hdl_fast_fileXioRead(int fd, void *buffer, int size)
     return result;
 }
 
-static int hdl_fast_fileXioWrite(int fd, const void *buffer, int size)
+static HDL_FAST_NOINLINE int hdl_fast_fileXioWrite(int fd,
+                                                    const void *buffer,
+                                                    int size)
 {
     if (hdl_fast_pump_ack) {
         if (fd == hdl_active_target_fd && size > 0 &&
@@ -478,3 +486,6 @@ static int hdl_fast_fileXioWrite(int fd, const void *buffer, int size)
     hdl_stream_tune_filexio_once();
     return fileXioWrite(fd, buffer, size);
 }
+
+#undef HDL_FAST_COLD
+#undef HDL_FAST_NOINLINE
