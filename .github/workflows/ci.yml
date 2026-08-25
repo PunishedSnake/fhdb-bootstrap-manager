@@ -26,7 +26,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build, audit and strip PS2 ELF with PS2DEV v2.0.0
         run: >-
-          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          docker run --rm
+          -e PROJECT_GIT_SHA="$GITHUB_SHA"
+          -e PROJECT_GIT_REF="$GITHUB_REF"
+          -e PS2DEV_BUNDLE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_SHA="b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b"
+          -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
           sh -c 'apk add --no-cache make python3 >/dev/null &&
           sh tools/r5900_toolchain_audit.sh GCC_R5900_TARGET.txt &&
           sh tools/build_benchmark_provenance.sh BENCHMARK_PROVENANCE.yml &&
