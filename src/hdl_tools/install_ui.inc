@@ -30,14 +30,16 @@ static int choose_media_type(uint32_t suggested)
     return choice < 0 ? -1 : (choice == 0 ? 0x12 : 0x14);
 }
 
-static int preconfirm_target_exists(const char *target)
+static int planned_failure_is_preallocation(int result)
 {
-    iox_stat_t stat;
-    char path[64];
-
-    if (target_path("hdd0:", target, path, sizeof(path)) < 0)
-        return 1;
-    return fileXioGetStat(path, &stat) >= 0;
+    return result == HDL_INSTALL_DISK_UNSAFE ||
+           result == HDL_INSTALL_DISK_TOO_LARGE ||
+           result == HDL_INSTALL_NO_SPACE ||
+           result == HDL_INSTALL_TARGET_EXISTS ||
+           result == HDL_INSTALL_SOURCE_CHANGED ||
+           result == HDL_INSTALL_LAYOUT_MISMATCH ||
+           result == HDL_INSTALL_MEMORY_FAILED ||
+           result == HDL_INSTALL_CHAIN_INVALID;
 }
 
 static HDL_INSTALL_UI_STAGE void show_result(const hdl_transaction_t *transaction,
@@ -66,12 +68,20 @@ static HDL_INSTALL_UI_STAGE void show_result(const hdl_transaction_t *transactio
         return;
     }
 
-    snprintf(body, sizeof(body),
-             "Operation stopped with code %d.\n\n"
-             "No game metadata is exposed unless the journal reaches "
-             "METADATA_COMMITTED. The journal is preserved for review or "
-             "a guarded resume.",
-             result);
+    if (!path_exists(HDL_INSTALL_JOURNAL) &&
+        !path_exists(HDL_INSTALL_JOURNAL_NEW)) {
+        snprintf(body, sizeof(body),
+                 "Operation stopped with code %d before an HDD allocation "
+                 "became recovery-owned.\n\nNo transaction journal remains.",
+                 result);
+    } else {
+        snprintf(body, sizeof(body),
+                 "Operation stopped with code %d.\n\n"
+                 "No game metadata is exposed unless the journal reaches "
+                 "METADATA_COMMITTED. The journal is preserved for review or "
+                 "a guarded resume.",
+                 result);
+    }
     hdl_status_wait("HDL installation stopped", body, GS_UI_TONE_DANGER);
 }
 
@@ -193,10 +203,10 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     }
 
     /* Pre-confirmation only needs enough live device state to describe the
-     * planned partition layout. Exact free-space accounting in current ps2hdd
-     * itself walks APA, so doing it here and again after arbitrary user think
-     * time merely duplicates the expensive scan. execute_transaction() retains
-     * the authoritative whole-chain/free-space recheck after confirmation. */
+     * partition geometry. HDIOC_MAXSECTOR is cached in current ps2hdd, while
+     * exact free-space and name lookup both walk APA metadata. Those expensive
+     * checks are therefore deferred to the one authoritative post-confirm raw
+     * scan in execute_transaction(). */
     result = fileXioDevctl("hdd0:", HDIOC_STATUS, NULL, 0, NULL, 0);
     if (result == 0) {
         maximum_value = fileXioDevctl("hdd0:", HDIOC_MAXSECTOR,
@@ -208,15 +218,8 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     }
     if (result == 0)
         result = hdl_partition_plan(transaction.source_bytes, maximum, &plan);
-    if (result == 0) {
+    if (result == 0)
         transaction.partition_count = plan.count;
-        /* Keep collision feedback before the destructive chord for now, but
-         * bypass the retired combined-scan cache. Current ps2hdd getstat uses
-         * apaFindPartition(), so this remaining APA lookup is the next Phase 3
-         * candidate rather than being silently mistaken for a cheap query. */
-        if (preconfirm_target_exists(transaction.target))
-            result = HDL_INSTALL_TARGET_EXISTS;
-    }
     if (result < 0) {
         show_result(&transaction, result);
         return;
@@ -231,8 +234,8 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
                  "Source     : %llu MiB\n"
                  "Allocation : %llu MiB in %u partition%s\n"
                  "Target     : %s\n\n"
-                 "No HDD write has happened yet. Live APA chain and exact "
-                 "free space are revalidated immediately before allocation.",
+                 "No HDD write has happened yet. Target collision, live APA "
+                 "chain and exact free space are revalidated after confirmation.",
                  transaction.game_title,
                  transaction.startup,
                  (unsigned long long)(transaction.source_bytes /
@@ -252,13 +255,19 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
         return;
 
     /* Durable PLANNED must exist before execute_transaction() can reach the
-     * first APA allocator write. The authoritative post-confirm disk/source
-     * preflight still runs inside execute_transaction(), so a failed preflight
-     * leaves only a harmless journal that the incomplete-transaction UI can
-     * review or discard rather than an unjournaled allocation. */
+     * first APA allocator write. The one authoritative whole-chain scan lives
+     * inside execute_transaction(). If that scan/source preflight fails before
+     * allocation, remove the fresh journal because there is nothing to resume. */
     result = journal_save(&transaction);
     if (result == 0)
         result = execute_transaction(&transaction);
+    if (result < 0 && transaction.stage == HDL_TRANSACTION_STAGE_PLANNED &&
+        planned_failure_is_preallocation(result)) {
+        session_log_line(
+            "HDL discarded PLANNED journal after pre-allocation failure result=%d",
+            result);
+        journal_remove();
+    }
     show_result(&transaction, result);
 }
 
