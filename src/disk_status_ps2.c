@@ -66,9 +66,10 @@ static const char *automatic_location(unsigned int lba,
     return buffer;
 }
 
-static void render(disk_status_kind_t kind, unsigned int lba,
-                   unsigned int sectors, unsigned int current,
-                   unsigned int total)
+static __attribute__((optimize("Os"))) void render(
+    disk_status_kind_t kind, unsigned int lba,
+    unsigned int sectors, unsigned int current,
+    unsigned int total)
 {
     const char *operation = status_depth != 0
                                 ? operation_stack[status_depth - 1u]
