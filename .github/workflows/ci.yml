@@ -57,6 +57,7 @@ jobs:
           HDL_PROFILE=1 sh tools/build_benchmark_provenance.sh
           BENCHMARK_PROVENANCE_PROFILE_ON.yml &&
           make clean && make HDL_PROFILE=1 &&
+          cp hdl_stream.irx HDL_STREAM_PROFILE_ON.irx &&
           python3 tools/optimization_audit.py
           --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF
           --output OPTIMIZATION_AUDIT_PROFILE_ON.txt &&
@@ -68,6 +69,7 @@ jobs:
           HDL_PROFILE=0 sh tools/build_benchmark_provenance.sh
           BENCHMARK_PROVENANCE_PROFILE_OFF.yml &&
           make clean && make HDL_PROFILE=0 &&
+          cp hdl_stream.irx HDL_STREAM_PROFILE_OFF.irx &&
           python3 tools/optimization_audit.py
           --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF
           --output OPTIMIZATION_AUDIT_PROFILE_OFF.txt &&
@@ -80,8 +82,14 @@ jobs:
           PS2_HDD_BOOTSTRAP_MANAGER.ELF &&
           cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
           PS2_HDD_BOOTSTRAP_MANAGER.map'
-      - name: Record artifact checksums
+      - name: Validate PROFILE split and record checksums
         run: |
+          if cmp -s HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx; then
+            echo "::error::PROFILE ON/OFF embedded hdl_stream IRX files are byte-identical"
+            exit 1
+          fi
+          sha256sum HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx | tee HDL_STREAM_PROFILE_PAIR.sha256
+          wc -c HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx | tee HDL_STREAM_PROFILE_PAIR.sizes
           sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
           sha256sum PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF | tee HDL_PROFILE_PAIR.sha256
       - uses: actions/upload-artifact@v4
@@ -96,6 +104,10 @@ jobs:
             PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
             PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.map
             HDL_PROFILE_PAIR.sha256
+            HDL_STREAM_PROFILE_ON.irx
+            HDL_STREAM_PROFILE_OFF.irx
+            HDL_STREAM_PROFILE_PAIR.sha256
+            HDL_STREAM_PROFILE_PAIR.sizes
             OPTIMIZATION_AUDIT_PROFILE_ON.txt
             OPTIMIZATION_AUDIT_PROFILE_OFF.txt
             CORPUS_V2_PROJECT_AUDIT.txt
