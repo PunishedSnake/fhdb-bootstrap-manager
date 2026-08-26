@@ -5,6 +5,10 @@ EE_LIBS = -ldebug -ldraw -lgraph -lpacket -ldma -lm -lpad -lfileXio -lpatches -l
 # LTO lets the R5900 compiler optimize across the deliberately small modules
 # while section GC still removes unused recovery/UI helpers from the final ELF.
 EE_CFLAGS = -O2 -flto -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
+# Phase 2 experiment: use size optimization only for controller code that is
+# explicitly off the steady-state path. This preserves -O2 for normal runtime
+# while testing whether cold recovery/UI code can buy back I-cache footprint.
+EE_COLD_CFLAGS = $(filter-out -O2,$(EE_CFLAGS)) -Os
 # Keep a linker map for every build. The R5900 has a 16 KiB I-cache, so archive
 # provenance, section growth and final placement are performance data, not just
 # link-time trivia. This also lets CI explain why heavyweight Newlib routines
@@ -175,7 +179,7 @@ diagnostics_controller_ps2.o: src/diagnostics_controller_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 forensic_controller_ps2.o: src/forensic_controller_ps2.c
-	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+	$(EE_CC) $(EE_COLD_CFLAGS) $(EE_INCS) -c $< -o $@
 
 platform.o: src/platform.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
