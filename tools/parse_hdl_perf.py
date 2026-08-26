@@ -49,6 +49,11 @@ EE_VERIFY_TRAFFIC_RE = re.compile(
     + r"HDL perf verify traffic target=(\d+) sif-dma-total=(\d+) ee-cache-maint-total=(\d+) "
       r"fallback-target=(\d+) consumer-samples=(\d+) final-chunk-excluded=(\d+)"
 )
+JOURNAL_RE = re.compile(
+    PREFIX
+    + r"HDL journal save stage=(\d+) progress=(\d+)/(\d+) record=(\d+) us=(\d+) "
+      r"count=(\d+) total_us=(\d+) max_us=(\d+) result=(-?\d+)"
+)
 
 
 def _latency(match: re.Match[str]) -> dict[str, int]:
@@ -61,6 +66,14 @@ def _latency(match: re.Match[str]) -> dict[str, int]:
     }
 
 
+def _percentile_nearest_rank(values: list[int], percentile: int) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    rank = (percentile * len(ordered) + 99) // 100
+    return ordered[max(0, rank - 1)]
+
+
 def parse_log(text: str) -> dict[str, object]:
     result: dict[str, object] = {
         "copy_rate": None,
@@ -69,6 +82,8 @@ def parse_log(text: str) -> dict[str, object]:
         "snapshots": {},
         "iop_traffic": {},
         "ee_traffic": {},
+        "journal_saves": [],
+        "journal_summary": None,
     }
 
     for line in text.splitlines():
@@ -140,6 +155,39 @@ def parse_log(text: str) -> dict[str, object]:
                 "consumer_samples": int(match.group(5)),
                 "final_chunk_excluded": int(match.group(6)),
             }
+            continue
+
+        match = JOURNAL_RE.search(line)
+        if match:
+            result["journal_saves"].append({  # type: ignore[union-attr]
+                "stage": int(match.group(1)),
+                "progress_sectors": int(match.group(2)),
+                "total_sectors": int(match.group(3)),
+                "record_bytes": int(match.group(4)),
+                "usec": int(match.group(5)),
+                "runtime_count": int(match.group(6)),
+                "runtime_total_us": int(match.group(7)),
+                "runtime_max_us": int(match.group(8)),
+                "result": int(match.group(9)),
+            })
+
+    journal_saves = result["journal_saves"]
+    if isinstance(journal_saves, list) and journal_saves:
+        successful = [
+            int(sample["usec"])
+            for sample in journal_saves
+            if isinstance(sample, dict) and sample.get("result") == 0
+        ]
+        result["journal_summary"] = {
+            "samples": len(journal_saves),
+            "successful": len(successful),
+            "failures": len(journal_saves) - len(successful),
+            "p50_us": _percentile_nearest_rank(successful, 50),
+            "p95_us": _percentile_nearest_rank(successful, 95),
+            "p99_us": _percentile_nearest_rank(successful, 99),
+            "max_us": max(successful) if successful else 0,
+            "total_us": sum(successful),
+        }
 
     return result
 
@@ -152,6 +200,10 @@ def selftest() -> None:
 [0045] HDL fast I/O snapshot phase=copy-final flags=0x00000007 fragments=1 direct=16 fallback=0 prefetch-hit=15 miss=0 pump=16 sectors=2048 src-dma=16 target-dma=0
 [0046] HDL IOP traffic phase=copy-final direct-src-sectors=2048 fallback-src-sectors=0 hdd-write-sectors=2048 hdd-read-sectors=0 sif-dma-sectors=2048
 [0047] HDL perf copy traffic useful=1048576 sif-dma=1048576 ee-cache-maint=2097152 fallback-source=0
+[0048] HDL journal save stage=3 progress=16384/100000 record=544 us=3100 count=1 total_us=3100 max_us=3100 result=0
+[0049] HDL journal save stage=3 progress=32768/100000 record=544 us=7900 count=2 total_us=11000 max_us=7900 result=0
+[0050] HDL journal save stage=3 progress=49152/100000 record=544 us=5200 count=3 total_us=16200 max_us=7900 result=0
+[0051] HDL journal save stage=3 progress=65536/100000 record=544 us=9000 count=4 total_us=25200 max_us=9000 result=-5
 """
     parsed = parse_log(sample)
     assert parsed["copy_rate"]["kib_per_second"] == 1024  # type: ignore[index]
@@ -160,6 +212,12 @@ def selftest() -> None:
     assert parsed["snapshots"]["copy-final"]["flags"] == 7  # type: ignore[index]
     assert parsed["iop_traffic"]["copy-final"]["hdd_write_sectors"] == 2048  # type: ignore[index]
     assert parsed["ee_traffic"]["copy"]["ee_cache_maintenance_bytes"] == 2097152  # type: ignore[index]
+    assert parsed["journal_saves"][0]["record_bytes"] == 544  # type: ignore[index]
+    assert parsed["journal_summary"]["samples"] == 4  # type: ignore[index]
+    assert parsed["journal_summary"]["successful"] == 3  # type: ignore[index]
+    assert parsed["journal_summary"]["p50_us"] == 5200  # type: ignore[index]
+    assert parsed["journal_summary"]["p95_us"] == 7900  # type: ignore[index]
+    assert parsed["journal_summary"]["max_us"] == 7900  # type: ignore[index]
 
 
 def main() -> int:
