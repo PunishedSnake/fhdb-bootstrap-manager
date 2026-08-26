@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Audit application printf-family format contracts.
 
-This is a Phase-1 evidence tool, not a formatter replacement.  It scans the
-runtime source tree, extracts direct calls to libc/debug/application formatting
-APIs, classifies literal conversion specifiers and reports dynamic format
-arguments that require manual call-graph review before an integer-only formatter
-policy can be adopted.
+This is a Phase-1 evidence tool, not a formatter replacement. It scans runtime
+source, extracts direct calls to libc/debug/application formatting APIs and also
+follows the small local variadic append bridges whose format argument is passed
+through to vsnprintf(). The goal is to establish the actual conversion contract
+before any integer-only Newlib path is considered.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOTS = ("src", "include", "iop")
-SUFFIXES = {".c", ".h", ".inc", ".S", ".s"}
+ROOTS = ("src", "iop")
+SUFFIXES = {".c", ".inc", ".S", ".s"}
 
 # value = zero-based index of the format argument
 FORMAT_APIS = {
@@ -42,7 +42,15 @@ FORMAT_APIS = {
     "gs_ui_console_printf": 0,
     "gs_ui_console_vprintf": 0,
     "session_log_line": 0,
-    "append_text": 3,
+}
+
+# Static local wrappers with different signatures but the same name are keyed by
+# file. These are intentionally explicit so a new bridge appears as an unresolved
+# dynamic vsnprintf site instead of being silently guessed by the audit.
+FILE_FORMAT_APIS = {
+    ("src/session_log.c", "append_text"): 3,
+    ("src/boot_report.c", "report_append"): 3,
+    ("src/forensic_controller_ps2.c", "report_append"): 1,
 }
 
 FLOAT_CONVERSIONS = set("aAeEfFgG")
@@ -58,6 +66,7 @@ class Site:
     api: str
     format_expr: str
     literal: str | None
+    fragment_text: str
     conversions: tuple[str, ...]
 
 
@@ -191,6 +200,15 @@ def split_args(text: str) -> list[str]:
     return args
 
 
+def string_token_bodies(expr: str) -> list[str]:
+    bodies: list[str] = []
+    for token in STRING_TOKEN.finditer(expr):
+        raw = token.group(0)
+        quote = raw.find('"')
+        bodies.append(raw[quote + 1:-1])
+    return bodies
+
+
 def literal_string(expr: str) -> str | None:
     pos = 0
     chunks: list[str] = []
@@ -202,10 +220,7 @@ def literal_string(expr: str) -> str | None:
             return None
         token = match.group(0)
         quote = token.find('"')
-        body = token[quote + 1:-1]
-        # Percent signs and conversion letters are ASCII, so decoding C escapes
-        # is unnecessary for the contract audit. Preserve escaped percent text.
-        chunks.append(body)
+        chunks.append(token[quote + 1:-1])
         pos = match.end()
     return "".join(chunks)
 
@@ -251,10 +266,11 @@ def conversions(fmt: str) -> tuple[str, ...]:
 def scan_file(path: Path, root: Path) -> list[Site]:
     raw = path.read_text(encoding="utf-8", errors="replace")
     text = mask_comments(raw)
+    rel = str(path.relative_to(root))
     sites: list[Site] = []
     for match in IDENT.finditer(text):
         api = match.group(0)
-        fmt_index = FORMAT_APIS.get(api)
+        fmt_index = FILE_FORMAT_APIS.get((rel, api), FORMAT_APIS.get(api))
         if fmt_index is None:
             continue
         pos = match.end()
@@ -265,18 +281,30 @@ def scan_file(path: Path, root: Path) -> list[Site]:
         closing = matching_paren(text, pos)
         if closing is None:
             continue
+
+        # Function definitions are not calls. Excluding them removes the most
+        # misleading kind of dynamic-format noise without trying to parse all C.
+        after = closing + 1
+        while after < len(text) and text[after].isspace():
+            after += 1
+        if after < len(text) and text[after] == "{":
+            continue
+
         args = split_args(text[pos + 1:closing])
         if fmt_index >= len(args):
             continue
         expr = args[fmt_index]
         lit = literal_string(expr)
+        fragments = "".join(string_token_bodies(expr))
+        conv_source = lit if lit is not None else fragments
         sites.append(Site(
-            str(path.relative_to(root)),
+            rel,
             raw.count("\n", 0, match.start()) + 1,
             api,
             " ".join(expr.split()),
             lit,
-            conversions(lit) if lit is not None else (),
+            fragments,
+            conversions(conv_source),
         ))
     return sites
 
@@ -284,7 +312,8 @@ def scan_file(path: Path, root: Path) -> list[Site]:
 def selftest() -> None:
     assert literal_string('"x=%08x"') == "x=%08x"
     assert literal_string('"a" "b%llu"') == "ab%llu"
-    assert literal_string("format") is None
+    assert literal_string('APP_NAME " %s"') is None
+    assert string_token_bodies('APP_NAME " %s"') == [" %s"]
     assert conversions("x=%08x %% %llu %s") == ("x", "u", "s")
     assert conversions("%7.2f %.*g") == ("f", "g")
     assert conversions("%zu %p %c") == ("u", "p", "c")
@@ -307,45 +336,55 @@ def main() -> int:
     conv_counts = Counter(c for site in sites for c in site.conversions)
     literal_sites = [site for site in sites if site.literal is not None]
     dynamic_sites = [site for site in sites if site.literal is None]
-    float_sites = [site for site in literal_sites
+    float_sites = [site for site in sites
                    if any(c in FLOAT_CONVERSIONS for c in site.conversions)]
-    malformed_sites = [site for site in literal_sites if "?" in site.conversions]
+    malformed_sites = [site for site in sites if "?" in site.conversions]
+    opaque_dynamic = [site for site in dynamic_sites if not site.fragment_text]
 
     lines = [
         "PS2 HDD Bootstrap Manager - printf-family format contract audit",
         "",
         "Epistemic status",
-        "  CURRENT IMPLEMENTATION: direct source-level formatter call inventory.",
-        "  INFERENCJA: integer-only policy is safe only after dynamic bridges are",
-        "             traced to their callers and hardware correctness is tested.",
+        "  CURRENT IMPLEMENTATION: source-level formatter and local bridge inventory.",
+        "  INFERENCJA: integer-only policy is safe only after opaque dynamic bridges",
+        "             are traced to callers and hardware correctness is tested.",
         "",
         f"formatter call sites: {len(sites)}",
-        f"literal format sites: {len(literal_sites)}",
-        f"dynamic format sites: {len(dynamic_sites)}",
-        f"literal floating-conversion sites: {len(float_sites)}",
-        f"malformed/unknown literal conversions: {len(malformed_sites)}",
+        f"fully literal format sites: {len(literal_sites)}",
+        f"dynamic/macro format sites: {len(dynamic_sites)}",
+        f"opaque dynamic format sites: {len(opaque_dynamic)}",
+        f"floating-conversion sites in visible string tokens: {len(float_sites)}",
+        f"malformed/unknown visible conversions: {len(malformed_sites)}",
         "",
         "API counts",
     ]
     lines += [f"  {name:28s} {count}" for name, count in sorted(api_counts.items())]
-    lines += ["", "Literal conversion counts"]
+    lines += ["", "Visible conversion counts"]
     lines += [f"  %{name:3s} {count}" for name, count in sorted(conv_counts.items())]
 
-    lines += ["", "Floating literal format sites"]
+    lines += ["", "Floating conversion sites"]
     if float_sites:
         for site in float_sites:
             lines.append(f"  {site.path}:{site.line}: {site.api}({site.format_expr})")
     else:
         lines.append("  none")
 
-    lines += ["", "Dynamic format sites requiring caller review"]
-    if dynamic_sites:
-        for site in dynamic_sites:
+    lines += ["", "Opaque dynamic format sites requiring caller review"]
+    if opaque_dynamic:
+        for site in opaque_dynamic:
             lines.append(f"  {site.path}:{site.line}: {site.api}({site.format_expr})")
     else:
         lines.append("  none")
 
-    lines += ["", "Malformed/unknown literal conversion sites"]
+    lines += ["", "Macro/partially literal format sites"]
+    partial = [site for site in dynamic_sites if site.fragment_text]
+    if partial:
+        for site in partial:
+            lines.append(f"  {site.path}:{site.line}: {site.api}({site.format_expr})")
+    else:
+        lines.append("  none")
+
+    lines += ["", "Malformed/unknown visible conversion sites"]
     if malformed_sites:
         for site in malformed_sites:
             lines.append(f"  {site.path}:{site.line}: {site.api}({site.format_expr})")
@@ -353,7 +392,7 @@ def main() -> int:
         lines.append("  none")
 
     Path(args.output).write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print("\n".join(lines[:12]))
+    print("\n".join(lines[:14]))
     return 0
 
 
