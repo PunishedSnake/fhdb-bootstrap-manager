@@ -54,6 +54,12 @@ JOURNAL_RE = re.compile(
     + r"HDL journal save stage=(\d+) progress=(\d+)/(\d+) record=(\d+) us=(\d+) "
       r"count=(\d+) total_us=(\d+) max_us=(\d+) result=(-?\d+)"
 )
+COPY_CHECKPOINT_RE = re.compile(
+    PREFIX + r"HDL COPY restored SHA checkpoint bytes=(\d+) sectors=(\d+)"
+)
+APA_SCAN_RE = re.compile(
+    PREFIX + r"HDL APA catalogue scan result=(-?\d+) games=(\d+) seconds=(\d+) usec=(\d+)"
+)
 
 
 def _latency(match: re.Match[str]) -> dict[str, int]:
@@ -84,6 +90,8 @@ def parse_log(text: str) -> dict[str, object]:
         "ee_traffic": {},
         "journal_saves": [],
         "journal_summary": None,
+        "copy_resume_checkpoints": [],
+        "apa_catalog_scans": [],
     }
 
     for line in text.splitlines():
@@ -170,6 +178,25 @@ def parse_log(text: str) -> dict[str, object]:
                 "runtime_max_us": int(match.group(8)),
                 "result": int(match.group(9)),
             })
+            continue
+
+        match = COPY_CHECKPOINT_RE.search(line)
+        if match:
+            result["copy_resume_checkpoints"].append({  # type: ignore[union-attr]
+                "avoided_usb_prefix_bytes": int(match.group(1)),
+                "completed_sectors": int(match.group(2)),
+            })
+            continue
+
+        match = APA_SCAN_RE.search(line)
+        if match:
+            seconds = int(match.group(3))
+            microseconds = int(match.group(4))
+            result["apa_catalog_scans"].append({  # type: ignore[union-attr]
+                "result": int(match.group(1)),
+                "games": int(match.group(2)),
+                "usec": seconds * 1_000_000 + microseconds,
+            })
 
     journal_saves = result["journal_saves"]
     if isinstance(journal_saves, list) and journal_saves:
@@ -204,6 +231,8 @@ def selftest() -> None:
 [0049] HDL journal save stage=3 progress=32768/100000 record=544 us=7900 count=2 total_us=11000 max_us=7900 result=0
 [0050] HDL journal save stage=3 progress=49152/100000 record=544 us=5200 count=3 total_us=16200 max_us=7900 result=0
 [0051] HDL journal save stage=3 progress=65536/100000 record=544 us=9000 count=4 total_us=25200 max_us=9000 result=-5
+[0052] HDL COPY restored SHA checkpoint bytes=2147483648 sectors=1048576
+[0053] HDL APA catalogue scan result=0 games=87 seconds=1 usec=250000
 """
     parsed = parse_log(sample)
     assert parsed["copy_rate"]["kib_per_second"] == 1024  # type: ignore[index]
@@ -218,6 +247,9 @@ def selftest() -> None:
     assert parsed["journal_summary"]["p50_us"] == 5200  # type: ignore[index]
     assert parsed["journal_summary"]["p95_us"] == 7900  # type: ignore[index]
     assert parsed["journal_summary"]["max_us"] == 7900  # type: ignore[index]
+    assert parsed["copy_resume_checkpoints"][0]["avoided_usb_prefix_bytes"] == 2147483648  # type: ignore[index]
+    assert parsed["apa_catalog_scans"][0]["games"] == 87  # type: ignore[index]
+    assert parsed["apa_catalog_scans"][0]["usec"] == 1250000  # type: ignore[index]
 
 
 def main() -> int:
