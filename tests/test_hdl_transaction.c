@@ -3,6 +3,9 @@
 #include <string.h>
 
 #include "hdl_transaction.h"
+#include "sha256.h"
+
+#define HDL_TRANSACTION_TEST_HASH_OFFSET 480u
 
 static hdl_transaction_t planned_transaction(void)
 {
@@ -29,6 +32,14 @@ static hdl_transaction_t planned_transaction(void)
     return transaction;
 }
 
+static void resign_record(unsigned char record[HDL_TRANSACTION_RECORD_SIZE])
+{
+    unsigned char digest[32];
+
+    sha256_buffer(record, HDL_TRANSACTION_TEST_HASH_OFFSET, digest);
+    memcpy(record + HDL_TRANSACTION_TEST_HASH_OFFSET, digest, sizeof(digest));
+}
+
 static void test_record_round_trip_and_corruption(void)
 {
     hdl_transaction_t transaction = planned_transaction();
@@ -37,6 +48,7 @@ static void test_record_round_trip_and_corruption(void)
 
     assert(hdl_transaction_encode(&transaction, record) == 0);
     assert(hdl_transaction_decode(record, &decoded) == 0);
+    assert(decoded.record_version == HDL_TRANSACTION_RECORD_VERSION_CURRENT);
     assert(decoded.stage == transaction.stage);
     assert(decoded.source_bytes == transaction.source_bytes);
     assert(decoded.total_sectors == transaction.total_sectors);
@@ -58,6 +70,42 @@ static void test_record_round_trip_and_corruption(void)
     record[90] ^= 0x80;
     assert(hdl_transaction_decode(record, &decoded) ==
            HDL_TRANSACTION_HASH_MISMATCH);
+}
+
+static void test_legacy_v2_record_remains_readable(void)
+{
+    hdl_transaction_t transaction = planned_transaction();
+    hdl_transaction_t decoded;
+    unsigned char record[HDL_TRANSACTION_RECORD_SIZE];
+
+    assert(hdl_transaction_encode(&transaction, record) == 0);
+    record[8] = HDL_TRANSACTION_RECORD_VERSION_LEGACY;
+    record[9] = 0;
+    record[10] = 0;
+    record[11] = 0;
+    resign_record(record);
+
+    assert(hdl_transaction_decode(record, &decoded) == 0);
+    assert(decoded.record_version == HDL_TRANSACTION_RECORD_VERSION_LEGACY);
+    assert(decoded.stage == transaction.stage);
+    assert(memcmp(decoded.source_fingerprint,
+                  transaction.source_fingerprint, 32) == 0);
+}
+
+static void test_unknown_record_version_fails_closed(void)
+{
+    hdl_transaction_t transaction = planned_transaction();
+    hdl_transaction_t decoded;
+    unsigned char record[HDL_TRANSACTION_RECORD_SIZE];
+
+    assert(hdl_transaction_encode(&transaction, record) == 0);
+    record[8] = 99u;
+    record[9] = 0;
+    record[10] = 0;
+    record[11] = 0;
+    resign_record(record);
+    assert(hdl_transaction_decode(record, &decoded) ==
+           HDL_TRANSACTION_INVALID_RECORD);
 }
 
 static void test_every_record_byte_is_authenticated(void)
@@ -147,6 +195,8 @@ static void test_verified_requires_complete_payload(void)
 int main(void)
 {
     test_record_round_trip_and_corruption();
+    test_legacy_v2_record_remains_readable();
+    test_unknown_record_version_fails_closed();
     test_every_record_byte_is_authenticated();
     test_size_and_sector_count_must_agree();
     test_legal_install_sequence();
