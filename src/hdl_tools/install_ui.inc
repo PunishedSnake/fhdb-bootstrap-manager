@@ -230,7 +230,15 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     }
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_CROSS))
         return;
-    result = execute_transaction(&transaction);
+
+    /* Durable PLANNED must exist before execute_transaction() can reach the
+     * first APA allocator write. The authoritative post-confirm disk/source
+     * preflight still runs inside execute_transaction(), so a failed preflight
+     * leaves only a harmless journal that the incomplete-transaction UI can
+     * review or discard rather than an unjournaled allocation. */
+    result = journal_save(&transaction);
+    if (result == 0)
+        result = execute_transaction(&transaction);
     show_result(&transaction, result);
 }
 
