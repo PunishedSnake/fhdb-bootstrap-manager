@@ -23,6 +23,8 @@ jobs:
         run: python3 tools/compare_hdl_profile_ab.py --selftest
       - name: Self-test Phase-0 frozen pair preflight
         run: python3 tools/phase0_profile_pair_preflight.py --selftest
+      - name: Self-test R5900 calibration disassembly guard
+        run: python3 tools/check_r5900_calibration_disasm.py --selftest
       - name: Enforce direct-fileXio runtime policy
         run: |
           python3 tools/check_filexio_fdman_policy.py --selftest
@@ -109,6 +111,8 @@ jobs:
             --profile-off PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF \
             --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
             --output-template PHASE0_AB_SAMPLES_TEMPLATE.json
+          python3 tools/check_r5900_calibration_disasm.py \
+            --disasm bench/r5900_calibration/R5900_COUNTER_CALIBRATION.disasm
           echo "--- R5900 calibration ELF ---"
           cat bench/r5900_calibration/R5900_COUNTER_CALIBRATION.sections
           cat bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF.sha256
