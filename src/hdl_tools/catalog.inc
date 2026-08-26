@@ -194,15 +194,41 @@ static int load_game_metadata(hdl_game_entry_t *game, uint32_t total_sectors)
 
 static void load_page_metadata(hdl_catalog_t *catalog, unsigned int selected)
 {
+    unsigned int pending[HDL_BROWSER_PAGE_SIZE];
     unsigned int page = selected / HDL_BROWSER_PAGE_SIZE;
     unsigned int start = page * HDL_BROWSER_PAGE_SIZE;
     unsigned int shown = catalog->count - start;
+    unsigned int pending_count = 0;
     unsigned int i;
 
     if (shown > HDL_BROWSER_PAGE_SIZE)
         shown = HDL_BROWSER_PAGE_SIZE;
-    for (i = 0; i < shown; i++)
-        (void)load_game_metadata(&catalog->games[start + i],
+
+    /* The visible list stays alphabetically sorted, but metadata is physical
+     * HDD data. Read only the still-missing records and order that tiny batch
+     * by main-partition LBA so a mechanical disk does not seek in title order.
+     * HDL_BROWSER_PAGE_SIZE is six for this consumer, making insertion sort
+     * cheaper and simpler than allocating or invoking qsort again. */
+    for (i = 0; i < shown; i++) {
+        unsigned int index = start + i;
+
+        if (catalog->games[index].metadata_state == HDL_METADATA_NOT_LOADED)
+            pending[pending_count++] = index;
+    }
+    for (i = 1; i < pending_count; i++) {
+        unsigned int key = pending[i];
+        unsigned int position = i;
+
+        while (position > 0 &&
+               catalog->games[pending[position - 1u]].main_lba >
+                   catalog->games[key].main_lba) {
+            pending[position] = pending[position - 1u];
+            position--;
+        }
+        pending[position] = key;
+    }
+    for (i = 0; i < pending_count; i++)
+        (void)load_game_metadata(&catalog->games[pending[i]],
                                  catalog->total_sectors);
 }
 
