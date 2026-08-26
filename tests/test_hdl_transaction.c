@@ -6,7 +6,6 @@
 #include "sha256.h"
 
 #define HDL_TRANSACTION_TEST_LEGACY_HASH_OFFSET 480u
-#define HDL_TRANSACTION_TEST_RECORD_FLAGS_OFFSET 476u
 #define HDL_TRANSACTION_TEST_CURRENT_HASH_OFFSET 512u
 
 static hdl_transaction_t planned_transaction(void)
@@ -180,14 +179,11 @@ static void test_v5_allocation_ownership_round_trip(void)
     assert(decoded.allocation_armed);
     assert(!decoded.source_hash_checkpoint_valid);
 
-    /* An armed PLANNED record is deliberately not allowed to become
-     * PARTITIONS_CREATED until the caller explicitly clears the ownership bit. */
-    assert(hdl_transaction_set_stage(
-               &decoded, HDL_TRANSACTION_STAGE_PARTITIONS_CREATED, 0) ==
-           HDL_TRANSACTION_PROGRESS_INVALID);
-    decoded.allocation_armed = 0;
+    /* Successful creation transfers ownership from the PLANNED allocator
+     * window to the PARTITIONS_CREATED stage in one portable state transition. */
     assert(hdl_transaction_set_stage(
                &decoded, HDL_TRANSACTION_STAGE_PARTITIONS_CREATED, 0) == 0);
+    assert(!decoded.allocation_armed);
 
     decoded.allocation_armed = 1;
     assert(hdl_transaction_encode(&decoded, record) ==
