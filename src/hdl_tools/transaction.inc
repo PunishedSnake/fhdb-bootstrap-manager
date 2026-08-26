@@ -459,6 +459,7 @@ static int execute_transaction(hdl_transaction_t *transaction)
     int target_fd = -1;
     int verified_this_run = 0;
     int source_digest_valid = 0;
+    int metadata_valid = 0;
     int result;
 
     source.fd = -1;
@@ -591,6 +592,7 @@ static int execute_transaction(hdl_transaction_t *transaction)
                                     &metadata_options, metadata);
         if (result < 0)
             goto done;
+        metadata_valid = 1;
         disk_status_phase_at("Committing verified game metadata last",
                              "Main partition attribute area / HDL metadata");
         disk_status_io(DISK_STATUS_WRITE,
@@ -613,18 +615,27 @@ static int execute_transaction(hdl_transaction_t *transaction)
         }
     }
     if (transaction->stage == HDL_TRANSACTION_STAGE_METADATA_COMMITTED) {
-        metadata_options.game_title = transaction->game_title;
-        metadata_options.startup = transaction->startup;
-        metadata_options.disc_type = transaction->disc_type;
-        metadata_options.layer1_start = transaction->layer1_start;
-        metadata_options.hdl_compat_flags = transaction->hdl_compat_flags;
-        metadata_options.opl_compat_flags = transaction->opl_compat_flags;
-        metadata_options.dma_type = transaction->dma_type;
-        metadata_options.dma_mode = transaction->dma_mode;
-        result = hdl_metadata_build(&plan, layout.starts, layout.count,
-                                    &metadata_options, metadata);
-        if (result < 0 ||
-            !target_metadata_matches(transaction->target, metadata)) {
+        /* A stage-4 -> stage-5 transition in this invocation already built the
+         * exact canonical block that was committed. Keep using that same
+         * transaction-owned buffer for read-back comparison. Only a resumed
+         * stage-5 transaction needs to reconstruct it. */
+        if (!metadata_valid) {
+            metadata_options.game_title = transaction->game_title;
+            metadata_options.startup = transaction->startup;
+            metadata_options.disc_type = transaction->disc_type;
+            metadata_options.layer1_start = transaction->layer1_start;
+            metadata_options.hdl_compat_flags = transaction->hdl_compat_flags;
+            metadata_options.opl_compat_flags = transaction->opl_compat_flags;
+            metadata_options.dma_type = transaction->dma_type;
+            metadata_options.dma_mode = transaction->dma_mode;
+            result = hdl_metadata_build(&plan, layout.starts, layout.count,
+                                        &metadata_options, metadata);
+            if (result < 0) {
+                result = HDL_INSTALL_METADATA_FAILED;
+                goto done;
+            }
+        }
+        if (!target_metadata_matches(transaction->target, metadata)) {
             result = HDL_INSTALL_METADATA_FAILED;
             goto done;
         }
