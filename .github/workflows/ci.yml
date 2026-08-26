@@ -112,6 +112,9 @@ jobs:
           echo "--- R5900 calibration ELF ---"
           cat bench/r5900_calibration/R5900_COUNTER_CALIBRATION.sections
           cat bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF.sha256
+          echo "--- calibration_integer_loop disassembly ---"
+          awk '/<calibration_integer_loop>:/ {show=1; count=0} show {print; count++} show && count >= 12 {exit}' \
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.disasm
           echo "--- PROFILE ON provenance ---"
           cat BENCHMARK_PROVENANCE_PROFILE_ON.yml
           echo "--- PROFILE OFF provenance ---"
