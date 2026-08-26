@@ -2,8 +2,10 @@
 """Verify the frozen Phase-0 PROFILE ON/OFF ELF pair before hardware testing.
 
 This is deliberately a host-side guard. It does not instrument or modify the
-benchmark binaries. The frozen pair is the CI #666 same-source build documented
-in docs/PHASE0_HARDWARE_AB_PROTOCOL.md.
+benchmark binaries. Frozen identity is the exact ON/OFF ELF hash pair from CI
+#666; later documentation/host-tool commits may rebuild byte-identical ELFs from
+a newer repository head, so the run record keeps that artifact's project SHA
+separate from the binary identity.
 """
 
 from __future__ import annotations
@@ -15,15 +17,17 @@ import sys
 import tempfile
 from pathlib import Path
 
-PROJECT_GIT_SHA = "7875b14d837d6332f5edc37f1c12a55527d7dd87"
+FROZEN_SOURCE_GIT_SHA = "7875b14d837d6332f5edc37f1c12a55527d7dd87"
 PAIR = {
     "ON": {
         "bytes": 638388,
         "sha256": "964d5c30613b16e5a160b51d4473000ce6da5740596a785d100d2c68a09686d7",
+        "irx_sha256": "8d3dbeabadbb860888b2c3d2072e8344953bea443faefccefce006b234cdb3db",
     },
     "OFF": {
         "bytes": 632884,
         "sha256": "4d1458ebf158c21759d1acdd3a44ecca094a5f9948c9e4461ef4a4beb8f23916",
+        "irx_sha256": "f0b29957560ce2ef35a53e77fa8250f477d7aa6490037f00cdfe2edc04a39751",
     },
 }
 
@@ -49,13 +53,18 @@ def verify_blob(path: Path, expected_bytes: int, expected_sha256: str) -> tuple[
     return size, digest
 
 
-def sample_template() -> dict[str, object]:
+def sample_template(project_git_sha: str = FROZEN_SOURCE_GIT_SHA) -> dict[str, object]:
+    if not project_git_sha:
+        raise ValueError("project_git_sha must be non-empty")
+
     samples: list[dict[str, object]] = []
     for index, mode in enumerate(DEFAULT_ORDER, start=1):
         samples.append({
             "run": index,
             "mode": mode,
-            "project_git_sha": PROJECT_GIT_SHA,
+            "project_git_sha": project_git_sha,
+            "benchmark_elf_sha256": PAIR[mode]["sha256"],
+            "hdl_stream_irx_sha256": PAIR[mode]["irx_sha256"],
             "workload_id": "FILL_ME",
             "correctness_hash": "FILL_ME",
             "source_bytes": 0,
@@ -64,9 +73,11 @@ def sample_template() -> dict[str, object]:
             "verify_us": 0,
         })
     return {
+        "frozen_binary_source_git_sha": FROZEN_SOURCE_GIT_SHA,
         "note": (
             "Replace every FILL_ME/zero measurement before comparison. "
-            "Keep source_bytes and correctness_hash identical across comparable runs."
+            "Keep source_bytes and correctness_hash identical across comparable runs. "
+            "Do not edit the mode-specific ELF/IRX hashes."
         ),
         "samples": samples,
     }
@@ -97,13 +108,18 @@ def selftest() -> None:
         else:
             raise AssertionError("hash mismatch must fail")
 
-    template = sample_template()
+    artifact_sha = "artifact-head-fixture"
+    template = sample_template(artifact_sha)
     samples = template["samples"]
     assert isinstance(samples, list)
     assert len(samples) == 8
     assert sum(sample["mode"] == "ON" for sample in samples) == 4
     assert sum(sample["mode"] == "OFF" for sample in samples) == 4
-    assert all(sample["project_git_sha"] == PROJECT_GIT_SHA for sample in samples)
+    assert all(sample["project_git_sha"] == artifact_sha for sample in samples)
+    assert all(sample["benchmark_elf_sha256"] == PAIR[str(sample["mode"])]["sha256"]
+               for sample in samples)
+    assert all(sample["hdl_stream_irx_sha256"] == PAIR[str(sample["mode"])]["irx_sha256"]
+               for sample in samples)
 
 
 def main() -> int:
@@ -118,6 +134,11 @@ def main() -> int:
         type=Path,
         default=Path("PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF"),
     )
+    parser.add_argument(
+        "--project-git-sha",
+        default=FROZEN_SOURCE_GIT_SHA,
+        help="project SHA recorded by the CI artifact being tested",
+    )
     parser.add_argument("--output-template", type=Path)
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
@@ -126,6 +147,9 @@ def main() -> int:
         selftest()
         print("phase0_profile_pair_preflight selftest: PASS")
         return 0
+
+    if not args.project_git_sha:
+        parser.error("--project-git-sha must be non-empty")
 
     try:
         on_size, on_hash = verify_blob(
@@ -140,10 +164,11 @@ def main() -> int:
 
     print(f"PROFILE ON  PASS  {on_size} B  {on_hash}")
     print(f"PROFILE OFF PASS  {off_size} B  {off_hash}")
-    print(f"project_git_sha    {PROJECT_GIT_SHA}")
+    print(f"artifact git SHA   {args.project_git_sha}")
+    print(f"frozen source SHA  {FROZEN_SOURCE_GIT_SHA}")
 
     if args.output_template:
-        rendered = json.dumps(sample_template(), indent=2) + "\n"
+        rendered = json.dumps(sample_template(args.project_git_sha), indent=2) + "\n"
         args.output_template.write_text(rendered, encoding="utf-8")
         print(f"sample template    {args.output_template}")
 
