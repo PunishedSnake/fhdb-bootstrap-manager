@@ -5,6 +5,53 @@ real PlayStation 2. PCSX2 may be used for correctness/debugging but is not an
 arbiter for EE cache, IOP scheduling, USB service latency, SIF DMA or DEV9
 throughput.
 
+## Frozen hardware-test pair
+
+Until a newer green pair is explicitly recorded here, use the artifacts from CI
+run #666, project head:
+
+```text
+project_git_sha  7875b14d837d6332f5edc37f1c12a55527d7dd87
+project_git_ref  perf/corpus-v2-integration
+ps2sdk_commit    b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b
+toolchain        mips64r5900el-ps2-elf GCC 15.2.0
+container        ps2dev/ps2dev:v2.0.0
+```
+
+PROFILE ON:
+
+```text
+ELF bytes      638388
+ELF SHA-256    964d5c30613b16e5a160b51d4473000ce6da5740596a785d100d2c68a09686d7
+IRX bytes        9861
+IRX text         8595
+IRX data          144
+IRX SHA-256     8d3dbeabadbb860888b2c3d2072e8344953bea443faefccefce006b234cdb3db
+```
+
+PROFILE OFF:
+
+```text
+ELF bytes      632884
+ELF SHA-256    4d1458ebf158c21759d1acdd3a44ecca094a5f9948c9e4461ef4a4beb8f23916
+IRX bytes        8405
+IRX text         7139
+IRX data          144
+IRX SHA-256     f0b29957560ce2ef35a53e77fa8250f477d7aa6490037f00cdfe2edc04a39751
+```
+
+The static footprint delta is evidence that the compiled-out path is real; it is
+**not** a runtime speedup measurement. CI also enforces that the ON/OFF
+`hdl_stream.irx` files are not byte-identical.
+
+An earlier pair through CI #661 is invalid for IOP profiler-overhead measurement:
+PS2SDK's IOP rules place objects under `obj/`, while the old top-level clean did
+not remove that directory. PROFILE OFF therefore reused the previously compiled
+PROFILE ON `hdl_stream.o`. The corrected module Makefile makes the profile mode
+part of the dependency graph with `obj/profile-0/` and `obj/profile-1/`, and its
+own clean removes the entire object tree. Do not use the old OFF ELF/IRX as an
+authoritative profiler-overhead sample.
+
 ## Compared builds
 
 The authoritative instrumentation-overhead comparison is a same-source pair
@@ -48,9 +95,10 @@ This is the diagnostic build and retains:
 - benchmark provenance artifact;
 - linker/ELF audit artifacts.
 
-CI emits both ELFs, linker maps, optimization audits and provenance records from
-one checkout and one toolchain image. The profile mode is written explicitly to
-each provenance file.
+CI emits both ELFs, both embedded `hdl_stream.irx` variants, linker maps,
+optimization audits, binary hashes and provenance records from one checkout and
+one toolchain image. The profile mode and the final ELF/IRX hashes are written
+explicitly to each provenance file.
 
 ### Historical pre-instrumentation reference
 
@@ -74,6 +122,8 @@ toolchain:
 active_irx:
 build_flags:
 hdl_profile_enabled:
+benchmark_elf_sha256:
+hdl_stream_irx_sha256:
 workload:
 direction:
 buffering:
@@ -84,8 +134,12 @@ correctness_hash:
 ```
 
 The CI-generated `BENCHMARK_PROVENANCE_PROFILE_OFF.yml` and
-`BENCHMARK_PROVENANCE_PROFILE_ON.yml` supply build-side fields. Hardware fields
-remain explicit manual measurements rather than guessed metadata.
+`BENCHMARK_PROVENANCE_PROFILE_ON.yml` supply build-side fields, including exact
+ELF/IRX hashes and sizes. Hardware fields remain explicit manual measurements
+rather than guessed metadata.
+
+Before timing, verify the ELF SHA-256 on the medium used to launch each build.
+A filename such as `PROFILE_ON.ELF` is not provenance.
 
 ## Workload contract
 
@@ -134,9 +188,9 @@ For the overhead result report PROFILE ON relative to PROFILE OFF for wall time
 and throughput. Do not fabricate p95/p99 for PROFILE OFF from absent telemetry;
 the point of the OFF build is to remove that instrumentation.
 
-Run at least four complete comparable samples, preferably two in each half of an
-interleaved order, for an initial engineering answer. Add samples if wall time
-or PROFILE ON tail latency is unstable.
+Run at least four complete comparable samples per mode, preferably distributed
+through an interleaved order. Add samples if wall time or PROFILE ON tail latency
+is unstable.
 
 ## Host comparison record
 
@@ -145,7 +199,7 @@ Store the comparable run timings in a JSON array. Every sample must include:
 ```json
 {
   "mode": "OFF",
-  "project_git_sha": "<same CI head SHA for every sample>",
+  "project_git_sha": "7875b14d837d6332f5edc37f1c12a55527d7dd87",
   "workload_id": "<stable workload/device/layout identifier>",
   "correctness_hash": "<same verified result for every sample>",
   "source_bytes": 0,
@@ -174,16 +228,17 @@ PROFILE ON only.
 
 Phase 0 may be marked hardware-complete only when:
 
-1. PROFILE OFF and PROFILE ON are from the same project SHA and pass the same
-   correctness workload;
-2. PROFILE ON produces internally consistent stage counters and traffic
+1. PROFILE OFF and PROFILE ON are from the same project SHA and their recorded
+   ELF/IRX hashes match the selected CI pair;
+2. both builds pass the same correctness workload;
+3. PROFILE ON produces internally consistent stage counters and traffic
    accounting;
-3. the measurement overhead of PROFILE ON is quantified rather than assumed
+4. the measurement overhead of PROFILE ON is quantified rather than assumed
    negligible;
-4. PROFILE ON retains p50/p95/p99/max instead of replacing distributions with
+5. PROFILE ON retains p50/p95/p99/max instead of replacing distributions with
    an average;
-5. the result includes console/toolchain/IRX/workload provenance;
-6. R5900 counter calibration is checked on the real EE before counter-derived
+6. the result includes console/toolchain/IRX/workload provenance;
+7. R5900 counter calibration is checked on the real EE before counter-derived
    optimization claims are made.
 
 If instrumentation materially changes throughput or tail latency, keep
