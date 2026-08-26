@@ -18,4 +18,14 @@ void sha256_final(sha256_context_t *context, unsigned char digest[32]);
 void sha256_buffer(const void *data, size_t size, unsigned char digest[32]);
 void sha256_hex(const unsigned char digest[32], char output[65]);
 
+/* Export/import the eight SHA-256 chaining words only at a complete 64-byte
+ * block boundary. total_bytes is carried separately by the caller, which lets
+ * durable stream checkpoints avoid serializing implementation-local padding or
+ * size_t fields while remaining endian-independent. */
+int sha256_checkpoint_export(const sha256_context_t *context,
+                             unsigned char checkpoint[32]);
+int sha256_checkpoint_import(sha256_context_t *context,
+                             const unsigned char checkpoint[32],
+                             uint64_t total_bytes);
+
 #endif
