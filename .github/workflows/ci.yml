@@ -78,6 +78,8 @@ jobs:
           PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF &&
           cp PS2_HDD_BOOTSTRAP_MANAGER.map
           PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.map &&
+          mipsel-none-elf-size HDL_STREAM_PROFILE_ON.irx
+          HDL_STREAM_PROFILE_OFF.irx > HDL_STREAM_PROFILE_PAIR.sections &&
           cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF
           PS2_HDD_BOOTSTRAP_MANAGER.ELF &&
           cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
@@ -90,6 +92,11 @@ jobs:
           fi
           sha256sum HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx | tee HDL_STREAM_PROFILE_PAIR.sha256
           wc -c HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx | tee HDL_STREAM_PROFILE_PAIR.sizes
+          cat HDL_STREAM_PROFILE_PAIR.sections
+          echo "--- PROFILE ON optimization audit ---"
+          cat OPTIMIZATION_AUDIT_PROFILE_ON.txt
+          echo "--- PROFILE OFF optimization audit ---"
+          cat OPTIMIZATION_AUDIT_PROFILE_OFF.txt
           sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
           sha256sum PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF | tee HDL_PROFILE_PAIR.sha256
       - uses: actions/upload-artifact@v4
@@ -108,6 +115,7 @@ jobs:
             HDL_STREAM_PROFILE_OFF.irx
             HDL_STREAM_PROFILE_PAIR.sha256
             HDL_STREAM_PROFILE_PAIR.sizes
+            HDL_STREAM_PROFILE_PAIR.sections
             OPTIMIZATION_AUDIT_PROFILE_ON.txt
             OPTIMIZATION_AUDIT_PROFILE_OFF.txt
             CORPUS_V2_PROJECT_AUDIT.txt
