@@ -30,18 +30,6 @@ static int choose_media_type(uint32_t suggested)
     return choice < 0 ? -1 : (choice == 0 ? 0x12 : 0x14);
 }
 
-static int planned_failure_is_preallocation(int result)
-{
-    return result == HDL_INSTALL_DISK_UNSAFE ||
-           result == HDL_INSTALL_DISK_TOO_LARGE ||
-           result == HDL_INSTALL_NO_SPACE ||
-           result == HDL_INSTALL_TARGET_EXISTS ||
-           result == HDL_INSTALL_SOURCE_CHANGED ||
-           result == HDL_INSTALL_LAYOUT_MISMATCH ||
-           result == HDL_INSTALL_MEMORY_FAILED ||
-           result == HDL_INSTALL_CHAIN_INVALID;
-}
-
 static HDL_INSTALL_UI_STAGE void show_result(const hdl_transaction_t *transaction,
                                              int result)
 {
@@ -98,12 +86,6 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     int maximum_value;
     int selection;
     int result;
-
-    /* Phase 3 no longer calls the old pre-confirm combined APA scan/cache.
-     * Keep both wrappers referenced for this intermediate commit so -Werror
-     * can validate the dataflow change independently from glue removal. */
-    (void)hdl_install_recheck_disk;
-    (void)hdl_cached_target_exists;
 
     result = scan_mass_images(&images, &count);
     if (result < 0) {
@@ -254,20 +236,11 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_CROSS))
         return;
 
-    /* Durable PLANNED must exist before execute_transaction() can reach the
-     * first APA allocator write. The one authoritative whole-chain scan lives
-     * inside execute_transaction(). If that scan/source preflight fails before
-     * allocation, remove the fresh journal because there is nothing to resume. */
-    result = journal_save(&transaction);
-    if (result == 0)
-        result = execute_transaction(&transaction);
-    if (result < 0 && transaction.stage == HDL_TRANSACTION_STAGE_PLANNED &&
-        planned_failure_is_preallocation(result)) {
-        session_log_line(
-            "HDL discarded PLANNED journal after pre-allocation failure result=%d",
-            result);
-        journal_remove();
-    }
+    /* execute_transaction() begins with read-only live/source preflight. The
+     * v5 wrapper writes PLANNED+allocation_armed only at the final boundary
+     * immediately before the first APA O_CREAT. Thus failed preflight creates
+     * neither an HDD allocation nor a pointless recovery journal. */
+    result = execute_transaction(&transaction);
     show_result(&transaction, result);
 }
 
@@ -283,13 +256,14 @@ static HDL_INSTALL_UI_STAGE void incomplete_menu(hdl_transaction_t *transaction)
     int choice;
     int result;
 
-    items[1].enabled =
-        transaction->stage >= HDL_TRANSACTION_STAGE_PARTITIONS_CREATED &&
-        transaction->stage < HDL_TRANSACTION_STAGE_METADATA_COMMITTED;
-    snprintf(status, sizeof(status), "%s | stage %u | %llu/%llu sectors",
+    items[1].enabled = transaction->allocation_armed ||
+        (transaction->stage >= HDL_TRANSACTION_STAGE_PARTITIONS_CREATED &&
+         transaction->stage < HDL_TRANSACTION_STAGE_METADATA_COMMITTED);
+    snprintf(status, sizeof(status), "%s | stage %u | %llu/%llu sectors%s",
              transaction->target, (unsigned int)transaction->stage,
              (unsigned long long)transaction->completed_sectors,
-             (unsigned long long)transaction->total_sectors);
+             (unsigned long long)transaction->total_sectors,
+             transaction->allocation_armed ? " | allocator armed" : "");
     choice = app_ui_menu_select("Incomplete HDL transaction", status,
                                 items, 3, &selected);
     if (choice == 0) {
