@@ -20,6 +20,9 @@
 #include "disk_status_ps2.h"
 #include "gs_ui_ps2.h"
 #include "hdd_read.h"
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+#include "hdl_hash_checkpoint.h"
+#endif
 #include "hdl_installer_ps2.h"
 #include "hdl_iso.h"
 #include "hdl_partition.h"
@@ -32,6 +35,10 @@
 
 #define HDL_INSTALL_JOURNAL "mass:/HDLINSTALL.TXN"
 #define HDL_INSTALL_JOURNAL_NEW "mass:/HDLINSTALL.NEW"
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+#define HDL_INSTALL_HASH_CHECKPOINT "mass:/HDLINSTALL.SHA"
+#define HDL_INSTALL_HASH_CHECKPOINT_NEW "mass:/HDLINSTALL.SHN"
+#endif
 #define HDL_BROWSER_PAGE_SIZE 8u
 #define HDL_INSTALL_IO_BYTES (64u * 1024u)
 #define HDL_INSTALL_JOURNAL_INTERVAL_SECTORS 16384u
@@ -367,6 +374,57 @@ static int source_identity_matches(hdl_file_source_t *source,
     return 0;
 }
 
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+static void hash_checkpoint_remove(void)
+{
+    (void)fileXioRemove(HDL_INSTALL_HASH_CHECKPOINT);
+    (void)fileXioRemove(HDL_INSTALL_HASH_CHECKPOINT_NEW);
+}
+
+static int hash_checkpoint_save(const hdl_transaction_t *transaction,
+                                const sha256_context_t *context)
+{
+    unsigned char record[HDL_HASH_CHECKPOINT_RECORD_SIZE];
+    unsigned char verify[HDL_HASH_CHECKPOINT_RECORD_SIZE];
+    sha256_context_t restored;
+    int result;
+
+    result = hdl_hash_checkpoint_encode(transaction, context, record);
+    if (result < 0)
+        return result;
+    result = write_whole_file(HDL_INSTALL_HASH_CHECKPOINT_NEW,
+                              record, sizeof(record));
+    if (result < 0)
+        return result;
+    result = read_exact_file(HDL_INSTALL_HASH_CHECKPOINT_NEW,
+                             verify, sizeof(verify));
+    if (result < 0 || memcmp(record, verify, sizeof(record)) != 0 ||
+        hdl_hash_checkpoint_restore(verify, transaction, &restored) < 0)
+        return HDL_INSTALL_JOURNAL_INVALID;
+    (void)fileXioRemove(HDL_INSTALL_HASH_CHECKPOINT);
+    result = fileXioRename(HDL_INSTALL_HASH_CHECKPOINT_NEW,
+                           HDL_INSTALL_HASH_CHECKPOINT);
+    return result < 0 ? result : 0;
+}
+
+static int hash_checkpoint_load(const hdl_transaction_t *transaction,
+                                sha256_context_t *context)
+{
+    unsigned char record[HDL_HASH_CHECKPOINT_RECORD_SIZE];
+    int result;
+
+    result = read_exact_file(HDL_INSTALL_HASH_CHECKPOINT,
+                             record, sizeof(record));
+    if (result == 0)
+        return hdl_hash_checkpoint_restore(record, transaction, context);
+    result = read_exact_file(HDL_INSTALL_HASH_CHECKPOINT_NEW,
+                             record, sizeof(record));
+    if (result < 0)
+        return result;
+    return hdl_hash_checkpoint_restore(record, transaction, context);
+}
+#endif
+
 static int journal_save(const hdl_transaction_t *transaction)
 {
     unsigned char record[HDL_TRANSACTION_RECORD_SIZE];
@@ -374,6 +432,10 @@ static int journal_save(const hdl_transaction_t *transaction)
     hdl_transaction_t decoded;
     int result;
 
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+    if (transaction != NULL && transaction->completed_sectors == 0)
+        hash_checkpoint_remove();
+#endif
     result = hdl_transaction_encode(transaction, record);
     if (result < 0)
         return result;
@@ -407,6 +469,9 @@ static void journal_remove(void)
 {
     (void)fileXioRemove(HDL_INSTALL_JOURNAL);
     (void)fileXioRemove(HDL_INSTALL_JOURNAL_NEW);
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+    hash_checkpoint_remove();
+#endif
 }
 
 static int target_path(const char *prefix, const char *target,
