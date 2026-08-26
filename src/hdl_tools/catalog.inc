@@ -48,8 +48,9 @@ static int catalog_grow(hdl_catalog_t *catalog)
     if (grown == NULL)
         return HDL_INSTALL_MEMORY_FAILED;
     catalog->games = grown;
-    memset(catalog->games + catalog->capacity, 0,
-           (next - catalog->capacity) * sizeof(*grown));
+    /* Slots become owned only when count advances, and every newly-owned game
+     * is initialized immediately below. Do not zero unused reserve capacity
+     * here only to zero the same entry again when it is eventually consumed. */
     catalog->capacity = next;
     return 0;
 }
