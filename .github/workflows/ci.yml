@@ -21,6 +21,8 @@ jobs:
         run: python3 tools/parse_hdl_perf.py --selftest
       - name: Self-test HDL PROFILE A/B comparator
         run: python3 tools/compare_hdl_profile_ab.py --selftest
+      - name: Self-test Phase-0 frozen pair preflight
+        run: python3 tools/phase0_profile_pair_preflight.py --selftest
       - name: Enforce direct-fileXio runtime policy
         run: |
           python3 tools/check_filexio_fdman_policy.py --selftest
@@ -93,6 +95,10 @@ jobs:
           sha256sum HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx | tee HDL_STREAM_PROFILE_PAIR.sha256
           wc -c HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx | tee HDL_STREAM_PROFILE_PAIR.sizes
           cat HDL_STREAM_PROFILE_PAIR.sections
+          python3 tools/phase0_profile_pair_preflight.py \
+            --profile-on PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF \
+            --profile-off PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF \
+            --output-template PHASE0_AB_SAMPLES_TEMPLATE.json
           echo "--- PROFILE ON provenance ---"
           cat BENCHMARK_PROVENANCE_PROFILE_ON.yml
           echo "--- PROFILE OFF provenance ---"
@@ -120,6 +126,7 @@ jobs:
             HDL_STREAM_PROFILE_PAIR.sha256
             HDL_STREAM_PROFILE_PAIR.sizes
             HDL_STREAM_PROFILE_PAIR.sections
+            PHASE0_AB_SAMPLES_TEMPLATE.json
             OPTIMIZATION_AUDIT_PROFILE_ON.txt
             OPTIMIZATION_AUDIT_PROFILE_OFF.txt
             CORPUS_V2_PROJECT_AUDIT.txt
