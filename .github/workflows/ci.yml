@@ -54,26 +54,26 @@ jobs:
           --output CORPUS_V2_PROJECT_AUDIT.txt &&
           python3 tools/printf_format_audit.py
           --output PRINTF_FORMAT_AUDIT.txt &&
-          HDL_PROFILE=1 sh tools/build_benchmark_provenance.sh
-          BENCHMARK_PROVENANCE_PROFILE_ON.yml &&
           make clean && make HDL_PROFILE=1 &&
           cp hdl_stream.irx HDL_STREAM_PROFILE_ON.irx &&
           python3 tools/optimization_audit.py
           --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF
           --output OPTIMIZATION_AUDIT_PROFILE_ON.txt &&
           make HDL_PROFILE=1 release &&
+          HDL_PROFILE=1 sh tools/build_benchmark_provenance.sh
+          BENCHMARK_PROVENANCE_PROFILE_ON.yml &&
           cp PS2_HDD_BOOTSTRAP_MANAGER.ELF
           PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF &&
           cp PS2_HDD_BOOTSTRAP_MANAGER.map
           PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map &&
-          HDL_PROFILE=0 sh tools/build_benchmark_provenance.sh
-          BENCHMARK_PROVENANCE_PROFILE_OFF.yml &&
           make clean && make HDL_PROFILE=0 &&
           cp hdl_stream.irx HDL_STREAM_PROFILE_OFF.irx &&
           python3 tools/optimization_audit.py
           --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF
           --output OPTIMIZATION_AUDIT_PROFILE_OFF.txt &&
           make HDL_PROFILE=0 release &&
+          HDL_PROFILE=0 sh tools/build_benchmark_provenance.sh
+          BENCHMARK_PROVENANCE_PROFILE_OFF.yml &&
           cp PS2_HDD_BOOTSTRAP_MANAGER.ELF
           PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF &&
           cp PS2_HDD_BOOTSTRAP_MANAGER.map
@@ -93,6 +93,10 @@ jobs:
           sha256sum HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx | tee HDL_STREAM_PROFILE_PAIR.sha256
           wc -c HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx | tee HDL_STREAM_PROFILE_PAIR.sizes
           cat HDL_STREAM_PROFILE_PAIR.sections
+          echo "--- PROFILE ON provenance ---"
+          cat BENCHMARK_PROVENANCE_PROFILE_ON.yml
+          echo "--- PROFILE OFF provenance ---"
+          cat BENCHMARK_PROVENANCE_PROFILE_OFF.yml
           echo "--- PROFILE ON optimization audit ---"
           cat OPTIMIZATION_AUDIT_PROFILE_ON.txt
           echo "--- PROFILE OFF optimization audit ---"
