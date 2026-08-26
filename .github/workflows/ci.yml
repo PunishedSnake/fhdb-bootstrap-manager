@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build PROFILE ON/OFF pair with PS2DEV v2.0.0
+      - name: Build PROFILE pair and calibration ELF with PS2DEV v2.0.0
         run: >-
           docker run --rm
           -e PROJECT_GIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
@@ -85,7 +85,16 @@ jobs:
           cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF
           PS2_HDD_BOOTSTRAP_MANAGER.ELF &&
           cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
-          PS2_HDD_BOOTSTRAP_MANAGER.map'
+          PS2_HDD_BOOTSTRAP_MANAGER.map &&
+          make -C bench/r5900_calibration clean all &&
+          mips64r5900el-ps2-elf-size
+          bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF
+          > bench/r5900_calibration/R5900_COUNTER_CALIBRATION.sections &&
+          mips64r5900el-ps2-elf-objdump -dr
+          bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF
+          > bench/r5900_calibration/R5900_COUNTER_CALIBRATION.disasm &&
+          sha256sum bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF
+          > bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF.sha256'
       - name: Validate PROFILE split and record checksums
         run: |
           if cmp -s HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx; then
@@ -100,6 +109,9 @@ jobs:
             --profile-off PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF \
             --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
             --output-template PHASE0_AB_SAMPLES_TEMPLATE.json
+          echo "--- R5900 calibration ELF ---"
+          cat bench/r5900_calibration/R5900_COUNTER_CALIBRATION.sections
+          cat bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF.sha256
           echo "--- PROFILE ON provenance ---"
           cat BENCHMARK_PROVENANCE_PROFILE_ON.yml
           echo "--- PROFILE OFF provenance ---"
@@ -135,6 +147,11 @@ jobs:
             GCC_R5900_TARGET.txt
             BENCHMARK_PROVENANCE_PROFILE_ON.yml
             BENCHMARK_PROVENANCE_PROFILE_OFF.yml
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF.sha256
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.map
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.sections
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.disasm
             HDDMAN.CFG
             LICENSE
             THIRD_PARTY_NOTICES.md
