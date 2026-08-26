@@ -13,6 +13,46 @@
 #include "storage.h"
 #include "version.h"
 
+/*
+ * diagnostics_controller_refresh() used to become one of the largest emitted
+ * functions under LTO because the scan, report renderer and optional storage
+ * path were all profitable inlining candidates. Keep those coarse phases as
+ * explicit call boundaries. They are dominated by device/report work, so the
+ * call overhead is negligible compared with keeping every path resident in a
+ * single controller working set.
+ */
+static __attribute__((noinline)) void diagnostics_scan_stage(
+    boot_chain_info_t *boot_chain, unsigned int start, unsigned int sectors)
+{
+    boot_diagnostics_scan(boot_chain, start, sectors);
+}
+
+static __attribute__((noinline)) void diagnostics_render_stage(
+    boot_chain_info_t *boot_chain, unsigned int start, unsigned int sectors,
+    int save_to_storage)
+{
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 1, save_to_storage ? 2u : 1u);
+    boot_report_session_render(boot_chain, start, sectors,
+                               APP_NAME, APP_VERSION);
+    session_log_line(
+        "Boot-chain scan: family='%s', confidence=%s, payload_read=%d, kelf=%d",
+        boot_chain->family, boot_chain->confidence,
+        boot_chain->payload_read_result, boot_chain->payload_kelf_result);
+}
+
+static __attribute__((noinline)) void diagnostics_save_stage(void)
+{
+    int result;
+
+    disk_status_phase_at("Saving diagnostics report and session log",
+                         "Selected report storage / BOOTCHAIN.TXT + HDDMAN.LOG");
+    disk_status_io(DISK_STATUS_SCAN, 0, 0, 2, 2);
+    result = boot_report_session_save(storage_selected());
+    session_log_line("BOOTCHAIN.TXT save to %s returned %d",
+                     storage_targets[storage_selected()].name, result);
+    session_log_flush(storage_selected());
+}
+
 void diagnostics_controller_refresh(
     const unsigned char header[APA_HEADER_SIZE],
     boot_chain_info_t *boot_chain,
@@ -22,30 +62,15 @@ void diagnostics_controller_refresh(
     unsigned int sectors = read_le32(header + APA_OSD_SIZE_OFFSET);
 
     pad_activity_begin();
-    boot_diagnostics_scan(boot_chain, start, sectors);
+    diagnostics_scan_stage(boot_chain, start, sectors);
 
     disk_status_begin_at("Boot-chain diagnostics",
                          "Rendering structured evidence report",
                          "In-memory BOOTCHAIN.TXT representation");
-    disk_status_io(DISK_STATUS_SCAN, 0, 0, 1, save_to_storage ? 2u : 1u);
-    boot_report_session_render(boot_chain, start, sectors,
-                               APP_NAME, APP_VERSION);
-    session_log_line(
-        "Boot-chain scan: family='%s', confidence=%s, payload_read=%d, kelf=%d",
-        boot_chain->family, boot_chain->confidence,
-        boot_chain->payload_read_result, boot_chain->payload_kelf_result);
+    diagnostics_render_stage(boot_chain, start, sectors, save_to_storage);
 
-    if (save_to_storage) {
-        int result;
-
-        disk_status_phase_at("Saving diagnostics report and session log",
-                             "Selected report storage / BOOTCHAIN.TXT + HDDMAN.LOG");
-        disk_status_io(DISK_STATUS_SCAN, 0, 0, 2, 2);
-        result = boot_report_session_save(storage_selected());
-        session_log_line("BOOTCHAIN.TXT save to %s returned %d",
-                         storage_targets[storage_selected()].name, result);
-        session_log_flush(storage_selected());
-    }
+    if (save_to_storage)
+        diagnostics_save_stage();
     disk_status_end();
     pad_activity_end();
 }
