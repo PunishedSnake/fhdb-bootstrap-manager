@@ -7,7 +7,6 @@
 #include "hdl_transaction.h"
 #include "sha256.h"
 
-#define HDL_TRANSACTION_VERSION 2u
 #define HDL_TRANSACTION_HASH_OFFSET 480u
 
 static const unsigned char transaction_magic[8] = {
@@ -131,7 +130,7 @@ int hdl_transaction_encode(const hdl_transaction_t *transaction,
         return HDL_TRANSACTION_INVALID_ARGUMENT;
     memset(record, 0, HDL_TRANSACTION_RECORD_SIZE);
     memcpy(record, transaction_magic, sizeof(transaction_magic));
-    write_le32(record + 8, HDL_TRANSACTION_VERSION);
+    write_le32(record + 8, HDL_TRANSACTION_RECORD_VERSION_CURRENT);
     write_le32(record + 12, (uint32_t)transaction->stage);
     write_le64(record + 16, transaction->source_bytes);
     write_le64(record + 24, transaction->total_sectors);
@@ -164,11 +163,15 @@ int hdl_transaction_decode(const unsigned char record[HDL_TRANSACTION_RECORD_SIZ
 {
     unsigned char digest[32];
     hdl_transaction_t decoded;
+    uint32_t version;
 
     if (record == NULL || transaction == NULL)
         return HDL_TRANSACTION_INVALID_ARGUMENT;
-    if (memcmp(record, transaction_magic, sizeof(transaction_magic)) != 0 ||
-        read_le32(record + 8) != HDL_TRANSACTION_VERSION)
+    if (memcmp(record, transaction_magic, sizeof(transaction_magic)) != 0)
+        return HDL_TRANSACTION_INVALID_RECORD;
+    version = read_le32(record + 8);
+    if (version != HDL_TRANSACTION_RECORD_VERSION_LEGACY &&
+        version != HDL_TRANSACTION_RECORD_VERSION_CURRENT)
         return HDL_TRANSACTION_INVALID_RECORD;
     sha256_buffer(record, HDL_TRANSACTION_HASH_OFFSET, digest);
     if (memcmp(digest, record + HDL_TRANSACTION_HASH_OFFSET,
@@ -194,6 +197,7 @@ int hdl_transaction_decode(const unsigned char record[HDL_TRANSACTION_RECORD_SIZ
     decoded.opl_compat_flags = record[473];
     decoded.dma_type = record[474];
     decoded.dma_mode = record[475];
+    decoded.record_version = version;
     if (!transaction_valid(&decoded))
         return HDL_TRANSACTION_INVALID_RECORD;
     *transaction = decoded;
