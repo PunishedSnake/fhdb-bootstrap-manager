@@ -7,7 +7,8 @@
 #define HDL_TRANSACTION_RECORD_SIZE 544u
 #define HDL_TRANSACTION_RECORD_VERSION_LEGACY 2u
 #define HDL_TRANSACTION_RECORD_VERSION_DIGEST 3u
-#define HDL_TRANSACTION_RECORD_VERSION_CURRENT 4u
+#define HDL_TRANSACTION_RECORD_VERSION_CHECKPOINT 4u
+#define HDL_TRANSACTION_RECORD_VERSION_CURRENT 5u
 #define HDL_TRANSACTION_TARGET_MAX 33u
 #define HDL_TRANSACTION_STARTUP_MAX 60u
 #define HDL_TRANSACTION_SOURCE_PATH_MAX 160u
@@ -50,16 +51,22 @@ typedef struct {
     uint8_t dma_type;
     uint8_t dma_mode;
 
-    /* v4 COPY records may carry the SHA-256 chaining state for exactly
+    /* v4+ COPY records may carry the SHA-256 chaining state for exactly
      * completed_sectors * 2048 source bytes. It is an optimization checkpoint,
      * not a replacement for source identity: source_fingerprint remains the
      * quick size+first/tail fingerprint until PAYLOAD_VERIFIED. */
     unsigned char source_hash_checkpoint[32];
     uint32_t source_hash_checkpoint_valid;
 
+    /* v5 PLANNED records can state that the allocator was durably armed before
+     * the first APA create call. This is ownership metadata, not a claim that
+     * the main/sub partition set was fully created. It closes the crash window
+     * where an allocation may exist while the durable stage is still PLANNED. */
+    uint32_t allocation_armed;
+
     /* In-memory provenance only. Encoders always write CURRENT. Decoded v2/v3
-     * records keep their original version so recovery preserves their legacy
-     * behavior while v4 can restore a COPY hash checkpoint directly. */
+     * records preserve legacy behavior; v4 restores COPY hash checkpoints and
+     * v5 additionally understands allocation ownership while PLANNED. */
     uint32_t record_version;
 } hdl_transaction_t;
 
