@@ -3,6 +3,7 @@
 #include <debug.h>
 #include <libpad.h>
 #include <malloc.h>
+#include <timer.h>
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
 #include <hdd-ioctl.h>
@@ -134,7 +135,10 @@ static int scan_mass_images(hdl_image_entry_t **images_out,
         return HDL_INSTALL_NO_IMAGES;
     *images_out = NULL;
     *count_out = 0;
-    images = calloc(capacity, sizeof(*images));
+    /* count is the ownership boundary. Every accepted slot is fully written
+     * before count advances, so zeroing spare capacity just dirties memory that
+     * no consumer may legally inspect. */
+    images = malloc(capacity * sizeof(*images));
     if (images == NULL)
         return HDL_INSTALL_MEMORY_FAILED;
     directory = fileXioDopen("mass:/");
@@ -160,8 +164,6 @@ static int scan_mass_images(hdl_image_entry_t **images_out,
                 return HDL_INSTALL_MEMORY_FAILED;
             }
             images = grown;
-            memset(images + capacity, 0,
-                   (next - capacity) * sizeof(*images));
             capacity = next;
         }
         image = &images[count];
@@ -367,40 +369,105 @@ static int source_identity_matches(hdl_file_source_t *source,
     return 0;
 }
 
+static int journal_read_record(const char *path,
+                               unsigned char record[HDL_TRANSACTION_RECORD_SIZE],
+                               unsigned int *record_size)
+{
+    iox_stat_t stat;
+    uint64_t bytes;
+    int result;
+
+    if (path == NULL || record == NULL || record_size == NULL)
+        return HDL_INSTALL_JOURNAL_INVALID;
+    result = fileXioGetStat(path, &stat);
+    if (result < 0)
+        return result;
+    bytes = stat_bytes(&stat);
+    if (bytes != HDL_TRANSACTION_RECORD_SIZE_LEGACY &&
+        bytes != HDL_TRANSACTION_RECORD_SIZE)
+        return HDL_INSTALL_JOURNAL_INVALID;
+    memset(record, 0, HDL_TRANSACTION_RECORD_SIZE);
+    result = read_exact_file(path, record, (int)bytes);
+    if (result < 0)
+        return result;
+    *record_size = (unsigned int)bytes;
+    return 0;
+}
+
+static unsigned int journal_save_count;
+static uint64_t journal_save_total_us;
+static uint64_t journal_save_max_us;
+
+static void journal_log_save(const hdl_transaction_t *transaction,
+                             u64 start, int result)
+{
+    u32 seconds = 0;
+    u32 microseconds = 0;
+    uint64_t elapsed_us;
+
+    TimerBusClock2USec(GetTimerSystemTime() - start, &seconds, &microseconds);
+    elapsed_us = (uint64_t)seconds * 1000000u + microseconds;
+    journal_save_count++;
+    journal_save_total_us += elapsed_us;
+    if (elapsed_us > journal_save_max_us)
+        journal_save_max_us = elapsed_us;
+    session_log_line(
+        "HDL journal save stage=%u progress=%llu/%llu record=%u us=%llu count=%u total_us=%llu max_us=%llu result=%d",
+        transaction != NULL ? (unsigned int)transaction->stage : 0u,
+        transaction != NULL ?
+            (unsigned long long)transaction->completed_sectors : 0ull,
+        transaction != NULL ?
+            (unsigned long long)transaction->total_sectors : 0ull,
+        (unsigned int)HDL_TRANSACTION_RECORD_SIZE,
+        (unsigned long long)elapsed_us, journal_save_count,
+        (unsigned long long)journal_save_total_us,
+        (unsigned long long)journal_save_max_us, result);
+}
+
 static int journal_save(const hdl_transaction_t *transaction)
 {
     unsigned char record[HDL_TRANSACTION_RECORD_SIZE];
     unsigned char verify[HDL_TRANSACTION_RECORD_SIZE];
     hdl_transaction_t decoded;
+    u64 start = GetTimerSystemTime();
     int result;
 
     result = hdl_transaction_encode(transaction, record);
     if (result < 0)
-        return result;
+        goto done;
     result = write_whole_file(HDL_INSTALL_JOURNAL_NEW, record, sizeof(record));
     if (result < 0)
-        return result;
+        goto done;
     result = read_exact_file(HDL_INSTALL_JOURNAL_NEW, verify, sizeof(verify));
     if (result < 0 || memcmp(record, verify, sizeof(record)) != 0 ||
-        hdl_transaction_decode(verify, &decoded) < 0)
-        return HDL_INSTALL_JOURNAL_INVALID;
+        hdl_transaction_decode(verify, sizeof(verify), &decoded) < 0) {
+        result = HDL_INSTALL_JOURNAL_INVALID;
+        goto done;
+    }
     (void)fileXioRemove(HDL_INSTALL_JOURNAL);
     result = fileXioRename(HDL_INSTALL_JOURNAL_NEW, HDL_INSTALL_JOURNAL);
-    return result < 0 ? result : 0;
+    if (result >= 0)
+        result = 0;
+done:
+    journal_log_save(transaction, start, result);
+    return result;
 }
 
 static int journal_load(hdl_transaction_t *transaction)
 {
     unsigned char record[HDL_TRANSACTION_RECORD_SIZE];
-    int result = read_exact_file(HDL_INSTALL_JOURNAL, record, sizeof(record));
+    unsigned int record_size = 0;
+    int result = journal_read_record(HDL_INSTALL_JOURNAL,
+                                     record, &record_size);
 
-    if (result == 0 && hdl_transaction_decode(record, transaction) == 0)
+    if (result == 0 &&
+        hdl_transaction_decode(record, record_size, transaction) == 0)
         return 0;
-    result = read_exact_file(HDL_INSTALL_JOURNAL_NEW,
-                             record, sizeof(record));
+    result = journal_read_record(HDL_INSTALL_JOURNAL_NEW,
+                                 record, &record_size);
     if (result < 0)
         return result;
-    return hdl_transaction_decode(record, transaction);
+    return hdl_transaction_decode(record, record_size, transaction);
 }
 
 static void journal_remove(void)

@@ -59,31 +59,22 @@ static unsigned int game_page_move_selection(unsigned int selected,
 #undef HDL_BROWSER_PAGE_SIZE
 #define HDL_BROWSER_PAGE_SIZE 8u
 
-/* A new install used to run the complete raw APA walker in recheck_disk() and
- * then immediately run it a second time solely to answer "does this generated
- * target name already exist?". Cache the generated target before planning so
- * the one required admission walk can answer free-space and collision
- * questions at the same time. */
-static char hdl_pending_target[HDL_PARTITION_ID_MAX];
-static int hdl_pending_target_result_valid;
-static int hdl_pending_target_exists;
-
 /* New-install source path is remembered only long enough to turn useless ISO
  * volume labels such as SLUS_21678 into a human title from the filename. This
  * does not affect source identity, which remains SYSTEM.CNF + fingerprint. */
 static char hdl_selected_iso_path[HDL_TRANSACTION_SOURCE_PATH_MAX];
 
-/* The destructive transaction performs a second admission check after the
- * confirmation chord. For a brand-new install that pass must prove the exact
- * generated target is still absent. Once it has done so, the immediately
- * following legacy fileXioOpen(hdd0:<target>, O_RDONLY) check is redundant and
- * particularly expensive on very large APA chains, so it is satisfied from
- * this raw-walker result instead of traversing the chain a third time. */
+/* The post-confirm raw APA walk is the authoritative collision/free-space
+ * preflight. v5 additionally lets a PLANNED journal own a target whose allocator
+ * may already have started, so recovery can validate and remove only that exact
+ * partial allocation before retrying creation. */
 static char hdl_transaction_guard_target[HDL_PARTITION_ID_MAX];
 static int hdl_transaction_guard_active;
 static int hdl_transaction_guard_checked;
 static int hdl_transaction_guard_found;
 static int hdl_transaction_guard_lookup_consumed;
+static int hdl_transaction_guard_allow_owned_target;
+static hdl_transaction_t *hdl_active_transaction;
 
 /* Keep the one hdl0: descriptor owned by execute_transaction visible to the
  * final metadata verification wrapper. Re-opening hdd0:<target> while hdl0:
@@ -140,9 +131,11 @@ static void hdl_transaction_guard_disarm(void)
     hdl_transaction_guard_checked = 0;
     hdl_transaction_guard_found = 1;
     hdl_transaction_guard_lookup_consumed = 0;
+    hdl_transaction_guard_allow_owned_target = 0;
 }
 
-static void hdl_transaction_guard_arm(const char *target)
+static void hdl_transaction_guard_arm(const char *target,
+                                      int allow_owned_target)
 {
     hdl_transaction_guard_disarm();
     if (target == NULL || target[0] == '\0')
@@ -150,20 +143,7 @@ static void hdl_transaction_guard_arm(const char *target)
     snprintf(hdl_transaction_guard_target,
              sizeof(hdl_transaction_guard_target), "%s", target);
     hdl_transaction_guard_active = 1;
-}
-
-static int hdl_install_partition_id(const char *disc_id, const char *title,
-                                    char destination[HDL_PARTITION_ID_MAX])
-{
-    int result = hdl_partition_id(disc_id, title, destination);
-
-    hdl_pending_target[0] = '\0';
-    hdl_pending_target_result_valid = 0;
-    hdl_pending_target_exists = 1;
-    if (result == 0)
-        snprintf(hdl_pending_target, sizeof(hdl_pending_target), "%s",
-                 destination);
-    return result;
+    hdl_transaction_guard_allow_owned_target = allow_owned_target != 0;
 }
 
 static void normalize_iso_identity(const char *text, char *normalized,
@@ -282,59 +262,7 @@ static int hdl_install_source_fingerprint(hdl_file_source_t *source,
     return source_fingerprint(source, digest);
 }
 
-static int hdl_install_recheck_disk(uint32_t *max_partition_sectors,
-                                    uint32_t *free_sectors)
-{
-    int result;
-    int found = 0;
-
-    app_ui_activity_message(
-        "HDL HDD planning",
-        hdl_pending_target[0] != '\0'
-            ? "Validating APA, free space and the generated target in one raw pass."
-            : "Validating the APA chain and calculating available allocation space.");
-    if (hdl_pending_target[0] == '\0')
-        return recheck_disk(max_partition_sectors, free_sectors);
-
-    result = recheck_disk_target(hdl_pending_target, &found,
-                                 max_partition_sectors, free_sectors);
-    if (result == 0) {
-        hdl_pending_target_exists = found;
-        hdl_pending_target_result_valid = 1;
-        session_log_line("HDL combined planning target=%s collision=%d",
-                         hdl_pending_target, found);
-    }
-    return result;
-}
-
-static int hdl_cached_target_exists(const char *target)
-{
-    int found;
-
-    /* Keep the historical helper referenced for builds where this fragment is
-     * compiled with aggressive -Werror unused-function checking. The install
-     * path deliberately does not call it because that would invoke the stock
-     * APA name lookup we are replacing. */
-    (void)target_exists;
-
-    if (target == NULL || !hdl_pending_target_result_valid ||
-        strcmp(target, hdl_pending_target) != 0) {
-        session_log_line("HDL cached target lookup unavailable target=%s",
-                         target != NULL ? target : "(null)");
-        return 1;
-    }
-    found = hdl_pending_target_exists;
-    session_log_line("HDL cached target lookup target=%s collision=%d",
-                     target, found);
-
-    /* This is now a pure cached lookup with no physical I/O. Do not render a
-     * fake activity page here: on real hardware that direct GS frame could
-     * remain visible while the following confirmation was already waiting for
-     * L1+R1+X. The actual confirmation is rendered explicitly by install_ui. */
-    hdl_pending_target_result_valid = 0;
-    hdl_pending_target[0] = '\0';
-    return found;
-}
+static int hdl_remove_incomplete_target_journal(const char *target);
 
 static int hdl_transaction_recheck_disk(uint32_t *max_partition_sectors,
                                         uint32_t *free_sectors)
@@ -345,17 +273,52 @@ static int hdl_transaction_recheck_disk(uint32_t *max_partition_sectors,
     if (!hdl_transaction_guard_active)
         return recheck_disk(max_partition_sectors, free_sectors);
 
-    disk_status_phase_at("Write preflight: revalidating target absence",
-                         "Raw APA chain, free space and generated target ID");
+    disk_status_phase_at(
+        hdl_transaction_guard_allow_owned_target
+            ? "Write preflight: validating journal-owned allocation"
+            : "Write preflight: revalidating target absence",
+        "Raw APA chain, free space and generated target ID");
     result = recheck_disk_target(hdl_transaction_guard_target, &found,
                                  max_partition_sectors, free_sectors);
     if (result == 0) {
         hdl_transaction_guard_checked = 1;
         hdl_transaction_guard_found = found;
-        session_log_line("HDL post-confirm raw guard target=%s collision=%d",
-                         hdl_transaction_guard_target, found);
-        if (found)
+        session_log_line(
+            "HDL post-confirm raw guard target=%s collision=%d owned=%d",
+            hdl_transaction_guard_target, found,
+            hdl_transaction_guard_allow_owned_target);
+        if (found && !hdl_transaction_guard_allow_owned_target)
             return HDL_INSTALL_TARGET_EXISTS;
+        if (found && hdl_transaction_guard_allow_owned_target &&
+            free_sectors != NULL) {
+            /* The owned partial allocation will be removed after source
+             * identity is revalidated. Avoid rejecting recovery merely because
+             * those owned sectors are temporarily absent from free-space totals;
+             * the stock allocator remains the final space authority on retry. */
+            *free_sectors = UINT32_MAX;
+        }
+    }
+    return result;
+}
+
+static int hdl_transaction_source_identity_matches(
+    hdl_file_source_t *source, const hdl_transaction_t *transaction)
+{
+    int result = source_identity_matches(source, transaction);
+
+    if (result == 0 && hdl_transaction_guard_active &&
+        hdl_transaction_guard_allow_owned_target &&
+        hdl_transaction_guard_checked && hdl_transaction_guard_found &&
+        transaction != NULL &&
+        strcmp(transaction->target, hdl_transaction_guard_target) == 0) {
+        result = hdl_remove_incomplete_target_journal(transaction->target);
+        if (result == 0) {
+            hdl_transaction_guard_found = 0;
+            hdl_transaction_guard_lookup_consumed = 0;
+            session_log_line(
+                "HDL removed journal-owned partial allocation before retry target=%s",
+                transaction->target);
+        }
     }
     return result;
 }
@@ -392,13 +355,35 @@ static int hdl_status_fileXioOpen(const char *path, int flags, int mode)
     }
 
     if (created_hdd) {
+        /* This is the last point before current ps2hdd may mutate APA. Persist
+         * allocation ownership first. A failed journal commit returns without
+         * calling the allocator, so no unjournaled partition can be created. */
+        if (hdl_active_transaction != NULL &&
+            hdl_active_transaction->stage == HDL_TRANSACTION_STAGE_PLANNED &&
+            !hdl_active_transaction->allocation_armed) {
+            hdl_active_transaction->allocation_armed = 1;
+            hdl_active_transaction->record_version =
+                HDL_TRANSACTION_RECORD_VERSION_CURRENT;
+            result = journal_save(hdl_active_transaction);
+            if (result < 0) {
+                hdl_active_transaction->allocation_armed = 0;
+                session_log_line(
+                    "HDL allocator ownership journal failed before APA create result=%d",
+                    result);
+                return HDL_INSTALL_JOURNAL_INVALID;
+            }
+            session_log_line(
+                "HDL allocator ownership armed target=%s before first APA create",
+                hdl_active_transaction->target);
+        }
+
         /* apaOpen() performs its own ID walk as part of the actual create. The
-         * raw post-confirm guard above has just proven the target absent; from
-         * this point the stock call is the allocator itself, not a third
-         * read-only collision probe. */
+         * raw post-confirm guard has already established target ownership; from
+         * this point the stock call is the allocator itself, not another
+         * independent collision probe. */
         hdl_transaction_guard_active = 0;
         disk_status_phase_at("Creating HDL main partition",
-                             "Stock APA allocator after raw target guard");
+                             "Stock APA allocator after durable ownership handoff");
         disk_status_io(DISK_STATUS_WRITE, 0, 0, 0, 0);
     } else if (path != NULL && strncmp(path, "hdd0:", 5) == 0 &&
                flags == FIO_O_RDONLY) {
@@ -516,33 +501,47 @@ static int hdl_status_fileXioRemove(const char *path)
 }
 
 /*
- * dev18 exposed a cleanup trap after reinstalling a game into sectors that had
- * previously held the same title. APA deletion leaves payload bytes untouched,
- * so the freshly-created but incomplete allocation could inherit a valid old
- * HDL metadata block and the legacy cleanup guard returned TARGET_EXISTS.
- *
- * For pre-dev19 journals, accept such a block only when it parses to the exact
- * game identity recorded by the still-incomplete journal. Different metadata
- * means the target changed underneath us and remains protected. New dev19
- * allocations are invalidated immediately at creation, so this compatibility
- * path should only be needed to clean up already-existing interrupted tests.
+ * APA deletion does not erase payload bytes, so an interrupted allocation can
+ * inherit stale HDL metadata from an earlier occupant. A journal-owned target
+ * may be deleted only after a complete raw-chain validation and exact journal
+ * ownership check. During an armed resume the raw guard has already done that
+ * chain walk; explicit cleanup performs it here before touching the HDD.
  */
 static int hdl_remove_incomplete_target_journal(const char *target)
 {
     hdl_transaction_t transaction;
     unsigned char metadata[HDL_METADATA_SIZE];
     hdl_metadata_info_t parsed;
+    uint32_t maximum;
+    uint32_t free_sectors;
     char path[64];
     int result;
     int has_magic;
+    int found;
+    int planned_owned;
 
     result = journal_load(&transaction);
     if (result < 0)
         return HDL_INSTALL_JOURNAL_INVALID;
+    planned_owned = transaction.stage == HDL_TRANSACTION_STAGE_PLANNED &&
+                    transaction.allocation_armed;
     if (target == NULL || strcmp(transaction.target, target) != 0 ||
-        transaction.stage < HDL_TRANSACTION_STAGE_PARTITIONS_CREATED ||
-        transaction.stage >= HDL_TRANSACTION_STAGE_METADATA_COMMITTED)
+        (!planned_owned &&
+         (transaction.stage < HDL_TRANSACTION_STAGE_PARTITIONS_CREATED ||
+          transaction.stage >= HDL_TRANSACTION_STAGE_METADATA_COMMITTED)))
         return HDL_INSTALL_TARGET_CHANGED;
+
+    if (hdl_transaction_guard_active && hdl_transaction_guard_checked &&
+        strcmp(target, hdl_transaction_guard_target) == 0) {
+        found = hdl_transaction_guard_found;
+    } else {
+        found = 0;
+        result = recheck_disk_target(target, &found, &maximum, &free_sectors);
+        if (result < 0)
+            return result;
+    }
+    if (!found)
+        return 0;
 
     result = read_target_metadata(target, metadata);
     if (result < 0)
@@ -559,8 +558,10 @@ static int hdl_remove_incomplete_target_journal(const char *target)
                              target);
             return HDL_INSTALL_TARGET_CHANGED;
         }
-        session_log_line("HDL incomplete cleanup accepted stale matching metadata target=%s stage=%u",
-                         target, (unsigned int)transaction.stage);
+        session_log_line(
+            "HDL incomplete cleanup accepted stale matching metadata target=%s stage=%u armed=%u",
+            target, (unsigned int)transaction.stage,
+            (unsigned int)transaction.allocation_armed);
     }
 
     if (target_path("hdd0:", target, path, sizeof(path)) < 0)
@@ -577,7 +578,9 @@ static int hdl_remove_incomplete_target_journal(const char *target)
 #define fileXioLseek64 hdl_fast_fileXioLseek64
 #define target_metadata_matches(...) hdl_target_metadata_matches_active(__VA_ARGS__)
 #define recheck_disk(...) hdl_transaction_recheck_disk(__VA_ARGS__)
+#define source_identity_matches(...) hdl_transaction_source_identity_matches(__VA_ARGS__)
 #include "hdl_tools/transaction.inc"
+#undef source_identity_matches
 #undef recheck_disk
 #undef target_metadata_matches
 #undef fileXioLseek64
@@ -595,9 +598,11 @@ static int hdl_execute_transaction_guarded(hdl_transaction_t *transaction)
     int result;
 
     hdl_active_target_fd = -1;
+    hdl_active_transaction = transaction;
     hdl_fast_io_reset();
     if (planned)
-        hdl_transaction_guard_arm(transaction->target);
+        hdl_transaction_guard_arm(transaction->target,
+                                  transaction->allocation_armed);
     else
         hdl_transaction_guard_disarm();
 
@@ -609,6 +614,7 @@ static int hdl_execute_transaction_guarded(hdl_transaction_t *transaction)
     disk_status_set_write_intent(0);
     hdl_fast_io_reset();
     hdl_active_target_fd = -1;
+    hdl_active_transaction = NULL;
     hdl_transaction_guard_disarm();
     return result;
 }
@@ -618,17 +624,11 @@ static int hdl_execute_transaction_guarded(hdl_transaction_t *transaction)
 #define open_source(...) hdl_install_open_source(__VA_ARGS__)
 #define hdl_iso_probe(...) hdl_install_iso_probe(__VA_ARGS__)
 #define source_fingerprint(...) hdl_install_source_fingerprint(__VA_ARGS__)
-#define hdl_partition_id(...) hdl_install_partition_id(__VA_ARGS__)
-#define recheck_disk(...) hdl_install_recheck_disk(__VA_ARGS__)
-#define target_exists(...) hdl_cached_target_exists(__VA_ARGS__)
 #define execute_transaction(...) hdl_execute_transaction_guarded(__VA_ARGS__)
 #define remove_incomplete_target(...) hdl_remove_incomplete_target_journal(__VA_ARGS__)
 #include "hdl_tools/install_ui.inc"
 #undef remove_incomplete_target
 #undef execute_transaction
-#undef target_exists
-#undef recheck_disk
-#undef hdl_partition_id
 #undef source_fingerprint
 #undef hdl_iso_probe
 #undef open_source

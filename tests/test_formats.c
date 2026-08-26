@@ -131,6 +131,42 @@ static int test_sha256(void)
             return 0;
     }
 
+    /* A durable HDL COPY checkpoint needs only the eight chaining words when
+     * it is taken at a complete 64-byte boundary. Prove that restoring those
+     * words plus total_bytes produces the same final digest as uninterrupted
+     * hashing, and reject partial-block checkpoints rather than guessing. */
+    {
+        unsigned char payload[320];
+        unsigned char expected[32];
+        unsigned char resumed[32];
+        unsigned char checkpoint[32];
+        sha256_context_t first;
+        sha256_context_t second;
+        unsigned int i;
+
+        for (i = 0; i < sizeof(payload); i++)
+            payload[i] = (unsigned char)(i * 37u + 11u);
+        sha256_buffer(payload, sizeof(payload), expected);
+
+        sha256_init(&first);
+        sha256_update(&first, payload, 128u);
+        if (sha256_checkpoint_export(&first, checkpoint) < 0)
+            return 0;
+        if (sha256_checkpoint_import(&second, checkpoint, 128u) < 0)
+            return 0;
+        sha256_update(&second, payload + 128u, sizeof(payload) - 128u);
+        sha256_final(&second, resumed);
+        if (memcmp(expected, resumed, sizeof(expected)) != 0)
+            return 0;
+
+        sha256_init(&first);
+        sha256_update(&first, payload, 65u);
+        if (sha256_checkpoint_export(&first, checkpoint) >= 0)
+            return 0;
+        if (sha256_checkpoint_import(&second, checkpoint, 65u) >= 0)
+            return 0;
+    }
+
     sha256_buffer("abcdbcdecdefdefgefghfghighijhijk"
                   "ijkljklmklmnlmnomnopnopq", 56, digest);
     sha256_hex(digest, hex);

@@ -56,12 +56,20 @@ static HDL_INSTALL_UI_STAGE void show_result(const hdl_transaction_t *transactio
         return;
     }
 
-    snprintf(body, sizeof(body),
-             "Operation stopped with code %d.\n\n"
-             "No game metadata is exposed unless the journal reaches "
-             "METADATA_COMMITTED. The journal is preserved for review or "
-             "a guarded resume.",
-             result);
+    if (!path_exists(HDL_INSTALL_JOURNAL) &&
+        !path_exists(HDL_INSTALL_JOURNAL_NEW)) {
+        snprintf(body, sizeof(body),
+                 "Operation stopped with code %d before an HDD allocation "
+                 "became recovery-owned.\n\nNo transaction journal remains.",
+                 result);
+    } else {
+        snprintf(body, sizeof(body),
+                 "Operation stopped with code %d.\n\n"
+                 "No game metadata is exposed unless the journal reaches "
+                 "METADATA_COMMITTED. The journal is preserved for review or "
+                 "a guarded resume.",
+                 result);
+    }
     hdl_status_wait("HDL installation stopped", body, GS_UI_TONE_DANGER);
 }
 
@@ -74,8 +82,8 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     hdl_partition_plan_t plan;
     hdl_transaction_t transaction;
     uint32_t maximum;
-    uint32_t free_sectors;
     unsigned int count;
+    int maximum_value;
     int selection;
     int result;
 
@@ -175,16 +183,25 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
         show_result(&transaction, result);
         return;
     }
-    result = recheck_disk(&maximum, &free_sectors);
+
+    /* Pre-confirmation only needs enough live device state to describe the
+     * partition geometry. HDIOC_MAXSECTOR is cached in current ps2hdd, while
+     * exact free-space and name lookup both walk APA metadata. Those expensive
+     * checks are therefore deferred to the one authoritative post-confirm raw
+     * scan in execute_transaction(). */
+    result = fileXioDevctl("hdd0:", HDIOC_STATUS, NULL, 0, NULL, 0);
+    if (result == 0) {
+        maximum_value = fileXioDevctl("hdd0:", HDIOC_MAXSECTOR,
+                                      NULL, 0, NULL, 0);
+        if (maximum_value <= 0)
+            result = HDL_INSTALL_DISK_UNSAFE;
+        else
+            maximum = (uint32_t)maximum_value;
+    }
     if (result == 0)
         result = hdl_partition_plan(transaction.source_bytes, maximum, &plan);
-    if (result == 0 && plan.allocation_bytes / 512u > free_sectors)
-        result = HDL_INSTALL_NO_SPACE;
-    if (result == 0) {
+    if (result == 0)
         transaction.partition_count = plan.count;
-        if (target_exists(transaction.target))
-            result = HDL_INSTALL_TARGET_EXISTS;
-    }
     if (result < 0) {
         show_result(&transaction, result);
         return;
@@ -199,7 +216,8 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
                  "Source     : %llu MiB\n"
                  "Allocation : %llu MiB in %u partition%s\n"
                  "Target     : %s\n\n"
-                 "No HDD write has happened yet.",
+                 "No HDD write has happened yet. Target collision, live APA "
+                 "chain and exact free space are revalidated after confirmation.",
                  transaction.game_title,
                  transaction.startup,
                  (unsigned long long)(transaction.source_bytes /
@@ -217,9 +235,12 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     }
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_CROSS))
         return;
-    result = journal_save(&transaction);
-    if (result == 0)
-        result = execute_transaction(&transaction);
+
+    /* execute_transaction() begins with read-only live/source preflight. The
+     * v5 wrapper writes PLANNED+allocation_armed only at the final boundary
+     * immediately before the first APA O_CREAT. Thus failed preflight creates
+     * neither an HDD allocation nor a pointless recovery journal. */
+    result = execute_transaction(&transaction);
     show_result(&transaction, result);
 }
 
@@ -235,13 +256,14 @@ static HDL_INSTALL_UI_STAGE void incomplete_menu(hdl_transaction_t *transaction)
     int choice;
     int result;
 
-    items[1].enabled =
-        transaction->stage >= HDL_TRANSACTION_STAGE_PARTITIONS_CREATED &&
-        transaction->stage < HDL_TRANSACTION_STAGE_METADATA_COMMITTED;
-    snprintf(status, sizeof(status), "%s | stage %u | %llu/%llu sectors",
+    items[1].enabled = transaction->allocation_armed ||
+        (transaction->stage >= HDL_TRANSACTION_STAGE_PARTITIONS_CREATED &&
+         transaction->stage < HDL_TRANSACTION_STAGE_METADATA_COMMITTED);
+    snprintf(status, sizeof(status), "%s | stage %u | %llu/%llu sectors%s",
              transaction->target, (unsigned int)transaction->stage,
              (unsigned long long)transaction->completed_sectors,
-             (unsigned long long)transaction->total_sectors);
+             (unsigned long long)transaction->total_sectors,
+             transaction->allocation_armed ? " | allocator armed" : "");
     choice = app_ui_menu_select("Incomplete HDL transaction", status,
                                 items, 3, &selected);
     if (choice == 0) {
