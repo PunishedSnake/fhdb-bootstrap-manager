@@ -9,7 +9,6 @@
 
 #include "boot_chain.h"
 
-#include <stdio.h>
 #include <string.h>
 
 static int ascii_equal_nocase(char a, char b)
@@ -19,6 +18,28 @@ static int ascii_equal_nocase(char a, char b)
     if (b >= 'A' && b <= 'Z')
         b = (char)(b - 'A' + 'a');
     return a == b;
+}
+
+/* Bounded assignment for diagnostic labels and paths. The old implementation
+ * routed every plain "%s" assignment through snprintf even though no numeric
+ * formatting was required. Keep snprintf-like truncation/NUL semantics without
+ * dragging the general formatter through the classification path. */
+static void copy_text(char *destination, unsigned int capacity,
+                      const char *source)
+{
+    unsigned int copied = 0;
+
+    if (destination == NULL || capacity == 0)
+        return;
+    if (source == NULL) {
+        destination[0] = '\0';
+        return;
+    }
+    while (copied + 1u < capacity && source[copied] != '\0') {
+        destination[copied] = source[copied];
+        copied++;
+    }
+    destination[copied] = '\0';
 }
 
 /* Find a simple key/value entry while ignoring comments and whitespace. */
@@ -144,8 +165,7 @@ void expected_system_folder(const char *romver, char *destination,
             default: break;
         }
     }
-    if (destination != NULL && capacity > 0)
-        snprintf(destination, capacity, "%s", folder);
+    copy_text(destination, capacity, folder);
 }
 
 /*
@@ -160,89 +180,89 @@ void classify_boot_chain(boot_chain_info_t *info,
         return;
 
     if ((start == 0) != (sectors == 0)) {
-        snprintf(info->family, sizeof(info->family), "Invalid pointer state");
-        snprintf(info->confidence, sizeof(info->confidence), "certain");
-        snprintf(info->next_stage, sizeof(info->next_stage),
-                 "none safely inferable");
+        copy_text(info->family, sizeof(info->family), "Invalid pointer state");
+        copy_text(info->confidence, sizeof(info->confidence), "certain");
+        copy_text(info->next_stage, sizeof(info->next_stage),
+                  "none safely inferable");
         return;
     }
     if (start == 0) {
-        snprintf(info->family, sizeof(info->family), "No active payload");
-        snprintf(info->confidence, sizeof(info->confidence), "certain");
-        snprintf(info->next_stage, sizeof(info->next_stage), "none");
+        copy_text(info->family, sizeof(info->family), "No active payload");
+        copy_text(info->confidence, sizeof(info->confidence), "certain");
+        copy_text(info->next_stage, sizeof(info->next_stage), "none");
         return;
     }
     if (info->payload_read_result < 0) {
-        snprintf(info->family, sizeof(info->family), "Unreadable payload");
-        snprintf(info->confidence, sizeof(info->confidence), "certain");
-        snprintf(info->next_stage, sizeof(info->next_stage), "unknown");
+        copy_text(info->family, sizeof(info->family), "Unreadable payload");
+        copy_text(info->confidence, sizeof(info->confidence), "certain");
+        copy_text(info->next_stage, sizeof(info->next_stage), "unknown");
         return;
     }
     if (info->payload_kelf_result < 0) {
-        snprintf(info->family, sizeof(info->family), "Other / invalid KELF");
-        snprintf(info->confidence, sizeof(info->confidence), "high");
-        snprintf(info->next_stage, sizeof(info->next_stage), "unknown");
+        copy_text(info->family, sizeof(info->family), "Other / invalid KELF");
+        copy_text(info->confidence, sizeof(info->confidence), "high");
+        copy_text(info->next_stage, sizeof(info->next_stage), "unknown");
         return;
     }
 
     if (info->osdmenu_mbr_config &&
         info->osdmenu_auto_target == BOOT_AUTO_PSBBN) {
-        snprintf(info->family, sizeof(info->family), "PSBBN / OSDMenu MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "%s",
-                 info->psbbn_boot ? "high" : "medium");
-        snprintf(info->next_stage, sizeof(info->next_stage),
-                 "hdd0:__system:pfs:/p2lboot/osdboot.elf");
+        copy_text(info->family, sizeof(info->family), "PSBBN / OSDMenu MBR");
+        copy_text(info->confidence, sizeof(info->confidence),
+                  info->psbbn_boot ? "high" : "medium");
+        copy_text(info->next_stage, sizeof(info->next_stage),
+                  "hdd0:__system:pfs:/p2lboot/osdboot.elf");
     } else if (info->osdmenu_mbr_config &&
                info->osdmenu_auto_target == BOOT_AUTO_HOSDSYS) {
-        snprintf(info->family, sizeof(info->family),
-                 "HDD-OSD / OSDMenu MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "%s",
-                 (info->hosdmenu_boot || info->hddosd_boot) ?
-                     "high" : "medium");
-        snprintf(info->next_stage, sizeof(info->next_stage), "%s",
-                 info->hosdmenu_boot ?
-                     "hdd0:__system:pfs:/osdmenu/hosdmenu.elf" :
-                 info->hddosd_boot ? info->hddosd_path :
-                     "OSDMenu built-in $HOSDSYS target");
+        copy_text(info->family, sizeof(info->family),
+                  "HDD-OSD / OSDMenu MBR");
+        copy_text(info->confidence, sizeof(info->confidence),
+                  (info->hosdmenu_boot || info->hddosd_boot) ?
+                      "high" : "medium");
+        copy_text(info->next_stage, sizeof(info->next_stage),
+                  info->hosdmenu_boot ?
+                      "hdd0:__system:pfs:/osdmenu/hosdmenu.elf" :
+                  info->hddosd_boot ? info->hddosd_path :
+                      "OSDMenu built-in $HOSDSYS target");
     } else if (info->osdmenu_mbr_config &&
                info->osdmenu_auto_target == BOOT_AUTO_CUSTOM) {
-        snprintf(info->family, sizeof(info->family), "Custom OSDMenu MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "high");
-        snprintf(info->next_stage, sizeof(info->next_stage), "%s",
-                 info->osdmenu_auto_path[0] != '\0' ?
-                     info->osdmenu_auto_path : "custom target");
+        copy_text(info->family, sizeof(info->family), "Custom OSDMenu MBR");
+        copy_text(info->confidence, sizeof(info->confidence), "high");
+        copy_text(info->next_stage, sizeof(info->next_stage),
+                  info->osdmenu_auto_path[0] != '\0' ?
+                      info->osdmenu_auto_path : "custom target");
     } else if (info->fhdb_config) {
-        snprintf(info->family, sizeof(info->family), "FHDB-compatible MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "medium");
+        copy_text(info->family, sizeof(info->family), "FHDB-compatible MBR");
+        copy_text(info->confidence, sizeof(info->confidence), "medium");
         if (info->legacy_osdmain)
-            snprintf(info->next_stage, sizeof(info->next_stage),
-                     "hdd0:__system:pfs:/osd/osdmain.elf");
+            copy_text(info->next_stage, sizeof(info->next_stage),
+                      "hdd0:__system:pfs:/osd/osdmain.elf");
         else if (info->hddosd_boot)
-            snprintf(info->next_stage, sizeof(info->next_stage),
-                     "hdd0:__system:pfs:/osd100 + __sysconf:/FMCB");
+            copy_text(info->next_stage, sizeof(info->next_stage),
+                      "hdd0:__system:pfs:/osd100 + __sysconf:/FMCB");
         else
-            snprintf(info->next_stage, sizeof(info->next_stage),
-                     "hdd0:__sysconf:pfs:/FMCB (OSD stage unknown)");
+            copy_text(info->next_stage, sizeof(info->next_stage),
+                      "hdd0:__sysconf:pfs:/FMCB (OSD stage unknown)");
     } else if (info->hosdmenu_boot || info->osdmenu_mbr_config) {
-        snprintf(info->family, sizeof(info->family), "HOSDMenu / OSDMenu MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "high");
-        snprintf(info->next_stage, sizeof(info->next_stage),
-                 "hdd0:__system:pfs:/osdmenu/hosdmenu.elf");
+        copy_text(info->family, sizeof(info->family), "HOSDMenu / OSDMenu MBR");
+        copy_text(info->confidence, sizeof(info->confidence), "high");
+        copy_text(info->next_stage, sizeof(info->next_stage),
+                  "hdd0:__system:pfs:/osdmenu/hosdmenu.elf");
     } else if (info->psbbn_boot || info->psbbn_partition_count >= 4) {
-        snprintf(info->family, sizeof(info->family), "PSBBN-compatible MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "medium");
-        snprintf(info->next_stage, sizeof(info->next_stage),
-                 "hdd0:__system:pfs:/p2lboot/osdboot.elf");
+        copy_text(info->family, sizeof(info->family), "PSBBN-compatible MBR");
+        copy_text(info->confidence, sizeof(info->confidence), "medium");
+        copy_text(info->next_stage, sizeof(info->next_stage),
+                  "hdd0:__system:pfs:/p2lboot/osdboot.elf");
     } else if (info->hddosd_boot || info->legacy_osdmain) {
-        snprintf(info->family, sizeof(info->family),
-                 "HDD-OSD-compatible MBR");
-        snprintf(info->confidence, sizeof(info->confidence), "medium");
-        snprintf(info->next_stage, sizeof(info->next_stage), "%s",
-                 info->hddosd_boot ? info->hddosd_path :
-                     "hdd0:__system:pfs:/osd/osdmain.elf");
+        copy_text(info->family, sizeof(info->family),
+                  "HDD-OSD-compatible MBR");
+        copy_text(info->confidence, sizeof(info->confidence), "medium");
+        copy_text(info->next_stage, sizeof(info->next_stage),
+                  info->hddosd_boot ? info->hddosd_path :
+                      "hdd0:__system:pfs:/osd/osdmain.elf");
     } else {
-        snprintf(info->family, sizeof(info->family), "Other / unknown KELF");
-        snprintf(info->confidence, sizeof(info->confidence), "low");
-        snprintf(info->next_stage, sizeof(info->next_stage), "not detected");
+        copy_text(info->family, sizeof(info->family), "Other / unknown KELF");
+        copy_text(info->confidence, sizeof(info->confidence), "low");
+        copy_text(info->next_stage, sizeof(info->next_stage), "not detected");
     }
 }
