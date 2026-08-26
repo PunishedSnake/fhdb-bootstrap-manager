@@ -2,10 +2,10 @@
 """Compare same-source HDL PROFILE=0/1 real-hardware samples.
 
 Input is a JSON array (or an object with a ``samples`` array). Each sample must
-record ``mode`` (``OFF``/``ON``), ``project_git_sha``, ``workload_id``,
-``correctness_hash``, ``source_bytes`` and ``total_us``. ``copy_us`` and
-``verify_us`` are optional, but a metric is compared only when every accepted
-sample in both modes provides it.
+record ``mode`` (``OFF``/``ON``), ``project_git_sha``, the frozen mode-specific
+ELF/IRX hashes, ``workload_id``, ``correctness_hash``, ``source_bytes`` and
+``total_us``. ``copy_us`` and ``verify_us`` are optional, but a metric is
+compared only when every accepted sample in both modes provides it.
 
 The tool intentionally does not invent PROFILE=0 latency distributions from the
 PROFILE=1 telemetry log. ``parse_hdl_perf.py`` remains the source for the rich
@@ -22,9 +22,22 @@ import sys
 from pathlib import Path
 from typing import Any
 
+EXPECTED_BINARY_HASHES = {
+    "ON": {
+        "benchmark_elf_sha256": "964d5c30613b16e5a160b51d4473000ce6da5740596a785d100d2c68a09686d7",
+        "hdl_stream_irx_sha256": "8d3dbeabadbb860888b2c3d2072e8344953bea443faefccefce006b234cdb3db",
+    },
+    "OFF": {
+        "benchmark_elf_sha256": "4d1458ebf158c21759d1acdd3a44ecca094a5f9948c9e4461ef4a4beb8f23916",
+        "hdl_stream_irx_sha256": "f0b29957560ce2ef35a53e77fa8250f477d7aa6490037f00cdfe2edc04a39751",
+    },
+}
+
 REQUIRED = (
     "mode",
     "project_git_sha",
+    "benchmark_elf_sha256",
+    "hdl_stream_irx_sha256",
     "workload_id",
     "correctness_hash",
     "source_bytes",
@@ -86,9 +99,23 @@ def _normalize(raw: Any) -> list[dict[str, Any]]:
                 value = normalized[key]
                 if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                     raise ValueError(f"sample {index}: {key} must be a positive integer")
-        for key in ("project_git_sha", "workload_id", "correctness_hash"):
+        for key in (
+            "project_git_sha",
+            "benchmark_elf_sha256",
+            "hdl_stream_irx_sha256",
+            "workload_id",
+            "correctness_hash",
+        ):
             if not isinstance(normalized[key], str) or not normalized[key]:
                 raise ValueError(f"sample {index}: {key} must be a non-empty string")
+
+        expected = EXPECTED_BINARY_HASHES[mode]
+        for key in ("benchmark_elf_sha256", "hdl_stream_irx_sha256"):
+            if normalized[key].lower() != expected[key]:
+                raise ValueError(
+                    f"sample {index}: PROFILE {mode} {key} does not match frozen pair"
+                )
+            normalized[key] = normalized[key].lower()
         samples.append(normalized)
     return samples
 
@@ -118,6 +145,7 @@ def compare_samples(samples: list[dict[str, Any]], min_samples: int = 4) -> dict
     source_bytes = next(iter(source_sizes))
     result: dict[str, Any] = {
         "project_git_sha": next(iter(shas)),
+        "binary_hashes": EXPECTED_BINARY_HASHES,
         "workload_id": next(iter(workloads)),
         "correctness_hash": next(iter(hashes)),
         "source_bytes": source_bytes,
@@ -175,10 +203,13 @@ def selftest() -> None:
         ("OFF", [1000, 1010, 990, 1005], [700, 705, 695, 700], [200, 205, 195, 200]),
         ("ON", [1020, 1030, 1010, 1025], [714, 719, 709, 714], [204, 209, 199, 204]),
     ):
+        expected = EXPECTED_BINARY_HASHES[mode]
         for total, copy, verify in zip(totals, copies, verifies):
             samples.append({
                 "mode": mode,
                 "project_git_sha": "abc123",
+                "benchmark_elf_sha256": expected["benchmark_elf_sha256"],
+                "hdl_stream_irx_sha256": expected["hdl_stream_irx_sha256"],
                 "workload_id": "fixture-iso-a",
                 "correctness_hash": "deadbeef",
                 "source_bytes": 1024 * 1024,
@@ -186,7 +217,8 @@ def selftest() -> None:
                 "copy_us": copy,
                 "verify_us": verify,
             })
-    result = compare_samples(samples)
+    normalized = _normalize(samples)
+    result = compare_samples(normalized)
     assert result["sample_counts"] == {"OFF": 4, "ON": 4}
     assert result["metrics"]["total_us"]["off"]["p50"] == 1000
     assert result["metrics"]["total_us"]["on"]["p50"] == 1020
@@ -194,14 +226,23 @@ def selftest() -> None:
     assert result["metrics"]["copy_us"]["on_vs_off_percent"]["p50"] == 2.0
     assert result["metrics"]["end_to_end_kib_per_second"]["off"]["samples"] == 4
 
-    broken = [dict(sample) for sample in samples]
-    broken[-1]["project_git_sha"] = "different"
+    broken_sha = [dict(sample) for sample in samples]
+    broken_sha[-1]["project_git_sha"] = "different"
     try:
-        compare_samples(broken)
+        compare_samples(_normalize(broken_sha))
     except ValueError as error:
         assert "project_git_sha" in str(error)
     else:
-        raise AssertionError("mismatched SHA must fail")
+        raise AssertionError("mismatched project SHA must fail")
+
+    broken_binary = [dict(sample) for sample in samples]
+    broken_binary[0]["benchmark_elf_sha256"] = "0" * 64
+    try:
+        _normalize(broken_binary)
+    except ValueError as error:
+        assert "frozen pair" in str(error)
+    else:
+        raise AssertionError("mismatched binary hash must fail")
 
 
 def main() -> int:
