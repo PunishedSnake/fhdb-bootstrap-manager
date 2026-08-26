@@ -7,15 +7,14 @@ throughput.
 
 ## Frozen hardware-test pair
 
-Until a newer green pair is explicitly recorded here, use the artifacts from CI
-run #666, project head:
+The binary identity frozen by CI run #666 originates from project head:
 
 ```text
-project_git_sha  7875b14d837d6332f5edc37f1c12a55527d7dd87
-project_git_ref  perf/corpus-v2-integration
-ps2sdk_commit    b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b
-toolchain        mips64r5900el-ps2-elf GCC 15.2.0
-container        ps2dev/ps2dev:v2.0.0
+frozen_source_git_sha  7875b14d837d6332f5edc37f1c12a55527d7dd87
+project_git_ref        perf/corpus-v2-integration
+ps2sdk_commit          b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b
+toolchain              mips64r5900el-ps2-elf GCC 15.2.0
+container              ps2dev/ps2dev:v2.0.0
 ```
 
 PROFILE ON:
@@ -40,6 +39,18 @@ IRX data          144
 IRX SHA-256     f0b29957560ce2ef35a53e77fa8250f477d7aa6490037f00cdfe2edc04a39751
 ```
 
+The exact ELF/IRX hashes define the frozen binary pair. Later commits that touch
+only documentation or host-side tooling may be rebuilt by CI into byte-identical
+ELFs. In that case the CI provenance correctly records the newer artifact
+`project_git_sha`, while the binary identity remains the hash pair above. A run
+record must therefore preserve both:
+
+1. the `project_git_sha` from the artifact actually tested;
+2. the mode-specific frozen ELF/IRX hashes.
+
+Do not rewrite the artifact SHA to `7875b14...` merely because the bytes match
+the original CI #666 pair.
+
 The static footprint delta is evidence that the compiled-out path is real; it is
 **not** a runtime speedup measurement. CI also enforces that the ON/OFF
 `hdl_stream.irx` files are not byte-identical.
@@ -54,9 +65,10 @@ authoritative profiler-overhead sample.
 
 ## Compared builds
 
-The authoritative instrumentation-overhead comparison is a same-source pair
-built from one green commit on `perf/corpus-v2-integration` with the same PS2DEV
-container, PS2SDK source, optimization flags and runtime implementation.
+The authoritative instrumentation-overhead comparison is a same-runtime-source
+pair built from one green artifact head with the same PS2DEV container, PS2SDK
+source, optimization flags and runtime implementation. The frozen hashes above
+are the final guard against accidentally testing a different binary.
 
 ### A: PROFILE OFF
 
@@ -81,7 +93,7 @@ record, but the timed hot-path accounting itself is absent.
 
 ### B: PROFILE ON
 
-Build the exact same commit with:
+Build the exact same artifact head with:
 
 ```text
 HDL_PROFILE=1
@@ -107,6 +119,25 @@ known-good HDL installer baseline, but it is **not** the authoritative profiler
 overhead A/B. Runtime and Phase-1 policy changes after that commit make such a
 cross-commit timing delta confounded.
 
+## Preflight before copying to the console
+
+Run the host-side guard on the exact two ELF files selected for the test:
+
+```text
+python3 tools/phase0_profile_pair_preflight.py \
+  --profile-on PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF \
+  --profile-off PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF \
+  --project-git-sha <project_git_sha from that CI artifact> \
+  --output-template PHASE0_AB_SAMPLES_TEMPLATE.json
+```
+
+The command fails if either ELF size or SHA-256 differs from the frozen pair. It
+also creates the eight-run interleaved sample template with the artifact SHA and
+mode-specific ELF/IRX hashes already filled in. Do not hand-edit those hashes.
+
+After copying the files to the launch medium, verify the ELF hashes there as
+well. A filename such as `PROFILE_ON.ELF` is not provenance.
+
 ## Hardware provenance
 
 Record before each pair of runs:
@@ -122,6 +153,7 @@ toolchain:
 active_irx:
 build_flags:
 hdl_profile_enabled:
+project_git_sha:
 benchmark_elf_sha256:
 hdl_stream_irx_sha256:
 workload:
@@ -135,11 +167,8 @@ correctness_hash:
 
 The CI-generated `BENCHMARK_PROVENANCE_PROFILE_OFF.yml` and
 `BENCHMARK_PROVENANCE_PROFILE_ON.yml` supply build-side fields, including exact
-ELF/IRX hashes and sizes. Hardware fields remain explicit manual measurements
-rather than guessed metadata.
-
-Before timing, verify the ELF SHA-256 on the medium used to launch each build.
-A filename such as `PROFILE_ON.ELF` is not provenance.
+artifact project SHA, ELF/IRX hashes and sizes. Hardware fields remain explicit
+manual measurements rather than guessed metadata.
 
 ## Workload contract
 
@@ -153,11 +182,16 @@ Use the same:
 - video mode and active background services;
 - cold/warm policy.
 
-Prefer an interleaved order such as `OFF, ON, ON, OFF` or `ON, OFF, OFF, ON`
-rather than running every sample of one build first. This reduces temperature,
-device-state and session-order bias. Recreate or otherwise control the target
-layout between destructive install samples so the compared workload stays
-meaningfully equivalent.
+Use the generated eight-run order:
+
+```text
+OFF, ON, ON, OFF, ON, OFF, OFF, ON
+```
+
+rather than running every sample of one build first. This distributes both modes
+through the session and reduces temperature, device-state and session-order
+bias. Recreate or otherwise control the target layout between destructive
+install samples so the compared workload stays meaningfully equivalent.
 
 For HDL copy throughput, use one ISO large enough that startup/allocation noise
 is negligible compared with the bulk copy phase. Do not compare different ISOs,
@@ -188,18 +222,21 @@ For the overhead result report PROFILE ON relative to PROFILE OFF for wall time
 and throughput. Do not fabricate p95/p99 for PROFILE OFF from absent telemetry;
 the point of the OFF build is to remove that instrumentation.
 
-Run at least four complete comparable samples per mode, preferably distributed
-through an interleaved order. Add samples if wall time or PROFILE ON tail latency
-is unstable.
+Run at least four complete comparable samples per mode. Add samples if wall time
+or PROFILE ON tail latency is unstable.
 
 ## Host comparison record
 
-Store the comparable run timings in a JSON array. Every sample must include:
+Use the `PHASE0_AB_SAMPLES_TEMPLATE.json` emitted by preflight. Each sample has
+this shape:
 
 ```json
 {
+  "run": 1,
   "mode": "OFF",
-  "project_git_sha": "7875b14d837d6332f5edc37f1c12a55527d7dd87",
+  "project_git_sha": "<artifact head actually tested>",
+  "benchmark_elf_sha256": "4d1458ebf158c21759d1acdd3a44ecca094a5f9948c9e4461ef4a4beb8f23916",
+  "hdl_stream_irx_sha256": "f0b29957560ce2ef35a53e77fa8250f477d7aa6490037f00cdfe2edc04a39751",
   "workload_id": "<stable workload/device/layout identifier>",
   "correctness_hash": "<same verified result for every sample>",
   "source_bytes": 0,
@@ -210,35 +247,46 @@ Store the comparable run timings in a JSON array. Every sample must include:
 ```
 
 `copy_us` and `verify_us` are optional if the external measurement setup cannot
-isolate those phases. `source_bytes` and `total_us` are mandatory. Compare the
-record with:
+isolate those phases. `source_bytes` and `total_us` are mandatory. Replace every
+zero placeholder before comparison, otherwise input validation rejects it.
+
+Compare the completed record with:
 
 ```text
-python3 tools/compare_hdl_profile_ab.py samples.json --output profile-ab.json
+python3 tools/compare_hdl_profile_ab.py PHASE0_AB_SAMPLES_TEMPLATE.json \
+  --output profile-ab.json
 ```
 
-The comparator refuses mixed project SHAs, workloads, correctness hashes or
-source sizes and requires four samples of each mode by default. It reports
-p50/p95/p99/max for available wall-time metrics plus signed PROFILE ON vs OFF
-percent deltas. Throughput is derived from the recorded bytes and time. Rich EE
-and IOP latency distributions remain sourced from `parse_hdl_perf.py` for
-PROFILE ON only.
+The comparator refuses:
+
+- mixed artifact project SHAs;
+- an ELF or IRX hash not belonging to the frozen mode-specific pair;
+- mixed workloads;
+- differing correctness hashes;
+- differing source sizes;
+- fewer than four samples of either mode by default.
+
+It reports p50/p95/p99/max for available wall-time metrics plus signed PROFILE
+ON vs OFF percent deltas. Throughput is derived from the recorded bytes and
+time. Rich EE and IOP latency distributions remain sourced from
+`parse_hdl_perf.py` for PROFILE ON only.
 
 ## Phase-0 acceptance
 
 Phase 0 may be marked hardware-complete only when:
 
-1. PROFILE OFF and PROFILE ON are from the same project SHA and their recorded
-   ELF/IRX hashes match the selected CI pair;
-2. both builds pass the same correctness workload;
-3. PROFILE ON produces internally consistent stage counters and traffic
+1. PROFILE OFF and PROFILE ON samples share the artifact `project_git_sha`
+   recorded by the CI pair actually tested;
+2. every sample carries the frozen mode-specific ELF/IRX hashes;
+3. both builds pass the same correctness workload;
+4. PROFILE ON produces internally consistent stage counters and traffic
    accounting;
-4. the measurement overhead of PROFILE ON is quantified rather than assumed
+5. the measurement overhead of PROFILE ON is quantified rather than assumed
    negligible;
-5. PROFILE ON retains p50/p95/p99/max instead of replacing distributions with
+6. PROFILE ON retains p50/p95/p99/max instead of replacing distributions with
    an average;
-6. the result includes console/toolchain/IRX/workload provenance;
-7. R5900 counter calibration is checked on the real EE before counter-derived
+7. the result includes console/toolchain/IRX/workload provenance;
+8. R5900 counter calibration is checked on the real EE before counter-derived
    optimization claims are made.
 
 If instrumentation materially changes throughput or tail latency, keep
