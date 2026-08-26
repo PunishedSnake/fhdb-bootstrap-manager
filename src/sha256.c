@@ -222,3 +222,32 @@ void sha256_hex(const unsigned char digest[32], char output[65])
     }
     output[64] = '\0';
 }
+
+int sha256_checkpoint_export(const sha256_context_t *context,
+                             unsigned char checkpoint[32])
+{
+    unsigned int i;
+
+    if (context == NULL || checkpoint == NULL || context->block_used != 0 ||
+        (context->total_bytes & 63u) != 0)
+        return -1;
+    for (i = 0; i < 8; i++)
+        write_be32(checkpoint + i * 4u, context->state[i]);
+    return 0;
+}
+
+int sha256_checkpoint_import(sha256_context_t *context,
+                             const unsigned char checkpoint[32],
+                             uint64_t total_bytes)
+{
+    unsigned int i;
+
+    if (context == NULL || checkpoint == NULL || (total_bytes & 63u) != 0)
+        return -1;
+    for (i = 0; i < 8; i++)
+        context->state[i] = read_be32(checkpoint + i * 4u);
+    context->total_bytes = total_bytes;
+    context->block_used = 0;
+    memset(context->block, 0, sizeof(context->block));
+    return 0;
+}
