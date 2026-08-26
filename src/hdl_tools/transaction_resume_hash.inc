@@ -258,11 +258,9 @@ static uint32_t physical_lba(const hdl_partition_plan_t *plan,
 
 /*
  * Hash a source ISO without involving the HDD. This is primarily used when a
- * previously PAYLOAD_VERIFIED journal is resumed: the old journal format does
- * not persist a full payload SHA-256, so one source pass is still required to
- * reconstruct the expected digest. Fresh installs do not pay this second USB
- * pass because copy_payload() hashes source bytes while they are already being
- * transferred.
+ * previously PAYLOAD_VERIFIED journal is resumed and no matching optional
+ * SHA-state checkpoint exists. Fresh installs do not pay this second USB pass
+ * because copy_payload() hashes source bytes while they are already moving.
  */
 static int hash_source_payload(const hdl_transaction_t *transaction,
                                int source_fd,
@@ -321,30 +319,52 @@ static int copy_payload(hdl_transaction_t *transaction,
         return HDL_INSTALL_MEMORY_FAILED;
     sha256_init(&source_hash);
 
-    /* Resume needs the SHA state for the already-copied prefix. Re-read only
-     * that prefix from USB, then continue hashing naturally while copying the
-     * remaining bytes. A fresh install starts at zero and skips this pass. */
+    /* Resume needs the SHA state for the already-copied prefix. A validated
+     * checkpoint makes that prefix O(1) to restore. Missing/stale/corrupt
+     * checkpoints deliberately fall through to the historical full USB rehash,
+     * preserving the previous correctness contract. */
     if (offset > 0) {
-        disk_status_phase_at("Rebuilding source digest for resumed copy",
-                             "Already-copied prefix on mass:");
-        if (fileXioLseek64(source_fd, 0, FIO_SEEK_SET) != 0) {
-            result = HDL_INSTALL_COPY_FAILED;
-            goto done;
-        }
-        while (hash_offset < offset) {
-            uint64_t remaining = offset - hash_offset;
-            unsigned int bytes = remaining > HDL_INSTALL_IO_BYTES ?
-                                 HDL_INSTALL_IO_BYTES : (unsigned int)remaining;
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+        int checkpoint_result = hash_checkpoint_load(transaction, &source_hash);
 
-            result = read_exact_fd(source_fd, buffer, bytes);
-            if (result < 0)
+        if (checkpoint_result == 0) {
+            hash_offset = offset;
+            session_log_line(
+                "HDL restored source SHA checkpoint bytes=%llu; skipped prefix rehash",
+                (unsigned long long)offset);
+        } else {
+            session_log_line(
+                "HDL source SHA checkpoint unavailable result=%d; using safe prefix rehash",
+                checkpoint_result);
+#endif
+            disk_status_phase_at("Rebuilding source digest for resumed copy",
+                                 "Already-copied prefix on mass:");
+            if (fileXioLseek64(source_fd, 0, FIO_SEEK_SET) != 0) {
+                result = HDL_INSTALL_COPY_FAILED;
                 goto done;
-            sha256_update(&source_hash, buffer, bytes);
-            hash_offset += bytes;
-            disk_status_io(DISK_STATUS_VERIFY, 0, 0,
-                           (unsigned int)(hash_offset / 2048u),
-                           (unsigned int)transaction->total_sectors);
+            }
+            while (hash_offset < offset) {
+                uint64_t remaining = offset - hash_offset;
+                unsigned int bytes = remaining > HDL_INSTALL_IO_BYTES ?
+                                     HDL_INSTALL_IO_BYTES : (unsigned int)remaining;
+
+                result = read_exact_fd(source_fd, buffer, bytes);
+                if (result < 0)
+                    goto done;
+                sha256_update(&source_hash, buffer, bytes);
+                hash_offset += bytes;
+                disk_status_io(DISK_STATUS_VERIFY, 0, 0,
+                               (unsigned int)(hash_offset / 2048u),
+                               (unsigned int)transaction->total_sectors);
+            }
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+            checkpoint_result = hash_checkpoint_save(transaction, &source_hash);
+            if (checkpoint_result < 0)
+                session_log_line(
+                    "HDL source SHA checkpoint refresh failed result=%d; resume remains safe",
+                    checkpoint_result);
         }
+#endif
     }
 
     disk_status_phase_at("Copying ISO payload from mass:",
@@ -375,6 +395,15 @@ static int copy_payload(hdl_transaction_t *transaction,
         transaction->completed_sectors = offset / 2048u;
         if (transaction->completed_sectors >= next_journal ||
             offset == transaction->source_bytes) {
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+            int checkpoint_result = hash_checkpoint_save(transaction, &source_hash);
+
+            if (checkpoint_result < 0)
+                session_log_line(
+                    "HDL source SHA checkpoint save failed progress=%llu result=%d; journal remains authoritative",
+                    (unsigned long long)transaction->completed_sectors,
+                    checkpoint_result);
+#endif
             result = journal_save(transaction);
             if (result < 0)
                 goto done;
@@ -382,6 +411,14 @@ static int copy_payload(hdl_transaction_t *transaction,
                            HDL_INSTALL_JOURNAL_INTERVAL_SECTORS;
         }
         if (poll_for_press(&pressed) && (pressed & PAD_TRIANGLE)) {
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+            int checkpoint_result = hash_checkpoint_save(transaction, &source_hash);
+
+            if (checkpoint_result < 0)
+                session_log_line(
+                    "HDL source SHA checkpoint save on cancel failed result=%d",
+                    checkpoint_result);
+#endif
             result = journal_save(transaction);
             if (result == 0)
                 result = HDL_INSTALL_CANCELLED;
@@ -395,11 +432,10 @@ done:
 }
 
 /*
- * Verify the installed payload from HDD only. The source digest is either
- * accumulated for free while fresh bytes are copied, or reconstructed by one
- * source-only pass when resuming a PAYLOAD_VERIFIED journal. This removes the
- * old second full USB read from the normal install path while preserving full
- * end-to-end SHA-256 verification of every payload byte.
+ * Verify the installed payload from HDD only. The source digest is accumulated
+ * while fresh bytes are copied. On resume, an optional authenticated SHA-state
+ * checkpoint can reconstruct it without replaying already-consumed USB bytes;
+ * otherwise the historical source-only pass remains the safe baseline.
  */
 static int verify_target_digest(const hdl_transaction_t *transaction,
                                 const hdl_partition_plan_t *plan,
@@ -562,13 +598,32 @@ static int execute_transaction(hdl_transaction_t *transaction)
     }
     if (transaction->stage == HDL_TRANSACTION_STAGE_PAYLOAD_VERIFIED) {
         if (!verified_this_run) {
-            disk_status_phase_at("Hashing source for resumed verification",
-                                 "One source pass required by legacy journal format");
-            result = hash_source_payload(transaction, source.fd,
-                                         source_payload_digest);
-            if (result < 0)
-                goto done;
-            source_digest_valid = 1;
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+            sha256_context_t restored_source_hash;
+            int checkpoint_result =
+                hash_checkpoint_load(transaction, &restored_source_hash);
+
+            if (checkpoint_result == 0) {
+                sha256_final(&restored_source_hash, source_payload_digest);
+                source_digest_valid = 1;
+                session_log_line(
+                    "HDL restored complete source SHA checkpoint bytes=%llu; skipped full USB hash pass",
+                    (unsigned long long)transaction->source_bytes);
+            } else {
+                session_log_line(
+                    "HDL complete source SHA checkpoint unavailable result=%d; using safe full source hash",
+                    checkpoint_result);
+#endif
+                disk_status_phase_at("Hashing source for resumed verification",
+                                     "One source pass required without a matching hash checkpoint");
+                result = hash_source_payload(transaction, source.fd,
+                                             source_payload_digest);
+                if (result < 0)
+                    goto done;
+                source_digest_valid = 1;
+#if defined(HDL_RESUME_HASH_CHECKPOINT_ENABLED) && HDL_RESUME_HASH_CHECKPOINT_ENABLED
+            }
+#endif
             disk_status_phase_at("Re-verifying resumed payload on HDD",
                                  "HDD-only SHA-256 read-back against source digest");
             result = verify_target_digest(transaction, &plan, &layout,
