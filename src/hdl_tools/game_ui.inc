@@ -1,4 +1,6 @@
-static void show_game_details(const hdl_game_entry_t *game)
+#define HDL_GAME_UI_STAGE __attribute__((noinline, optimize("Os")))
+
+static HDL_GAME_UI_STAGE void show_game_details(const hdl_game_entry_t *game)
 {
     char digest[65];
 
@@ -30,7 +32,8 @@ static void show_game_details(const hdl_game_entry_t *game)
     app_ui_wait_to_return();
 }
 
-static void show_delete_result(const hdl_game_entry_t *game, int result)
+static HDL_GAME_UI_STAGE void show_delete_result(const hdl_game_entry_t *game,
+                                                 int result)
 {
     scr_clear();
     if (result == 0) {
@@ -54,7 +57,8 @@ static void show_delete_result(const hdl_game_entry_t *game, int result)
     app_ui_wait_to_return();
 }
 
-static int game_action_menu(hdl_game_entry_t *game, uint32_t total_sectors)
+static HDL_GAME_UI_STAGE int game_action_menu(hdl_game_entry_t *game,
+                                              uint32_t total_sectors)
 {
     app_ui_menu_item_t items[] = {
         {"View details", "Inspect partition identity and HDL metadata", 1},
@@ -93,7 +97,7 @@ static int game_action_menu(hdl_game_entry_t *game, uint32_t total_sectors)
     }
 }
 
-static void installed_games_menu(void)
+static HDL_GAME_UI_STAGE void installed_games_menu(void)
 {
     hdl_catalog_t catalog;
     int result;
@@ -142,10 +146,7 @@ static void installed_games_menu(void)
  * inline by generic compiler heuristics, but doing so makes the always-hot root
  * manager compete with ISO/APA tooling for the R5900's 16 KiB I-cache. A human
  * menu transition is not a call-overhead benchmark. */
-#if defined(__GNUC__)
-__attribute__((noinline))
-#endif
-void hdl_tools_menu(void)
+HDL_GAME_UI_STAGE void hdl_tools_menu(void)
 {
     static const app_ui_menu_item_t items[] = {
         {"Install ISO from USB", "Choose a mass:/ ISO and create a verified HDL game", 1},
@@ -169,3 +170,5 @@ void hdl_tools_menu(void)
             open_incomplete_transaction();
     }
 }
+
+#undef HDL_GAME_UI_STAGE
