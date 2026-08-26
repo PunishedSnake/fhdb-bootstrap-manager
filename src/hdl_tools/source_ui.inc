@@ -367,6 +367,31 @@ static int source_identity_matches(hdl_file_source_t *source,
     return 0;
 }
 
+static int journal_read_record(const char *path,
+                               unsigned char record[HDL_TRANSACTION_RECORD_SIZE],
+                               unsigned int *record_size)
+{
+    iox_stat_t stat;
+    uint64_t bytes;
+    int result;
+
+    if (path == NULL || record == NULL || record_size == NULL)
+        return HDL_INSTALL_JOURNAL_INVALID;
+    result = fileXioGetStat(path, &stat);
+    if (result < 0)
+        return result;
+    bytes = stat_bytes(&stat);
+    if (bytes != HDL_TRANSACTION_RECORD_SIZE_LEGACY &&
+        bytes != HDL_TRANSACTION_RECORD_SIZE)
+        return HDL_INSTALL_JOURNAL_INVALID;
+    memset(record, 0, HDL_TRANSACTION_RECORD_SIZE);
+    result = read_exact_file(path, record, (int)bytes);
+    if (result < 0)
+        return result;
+    *record_size = (unsigned int)bytes;
+    return 0;
+}
+
 static int journal_save(const hdl_transaction_t *transaction)
 {
     unsigned char record[HDL_TRANSACTION_RECORD_SIZE];
@@ -382,7 +407,7 @@ static int journal_save(const hdl_transaction_t *transaction)
         return result;
     result = read_exact_file(HDL_INSTALL_JOURNAL_NEW, verify, sizeof(verify));
     if (result < 0 || memcmp(record, verify, sizeof(record)) != 0 ||
-        hdl_transaction_decode(verify, &decoded) < 0)
+        hdl_transaction_decode(verify, sizeof(verify), &decoded) < 0)
         return HDL_INSTALL_JOURNAL_INVALID;
     (void)fileXioRemove(HDL_INSTALL_JOURNAL);
     result = fileXioRename(HDL_INSTALL_JOURNAL_NEW, HDL_INSTALL_JOURNAL);
@@ -392,15 +417,18 @@ static int journal_save(const hdl_transaction_t *transaction)
 static int journal_load(hdl_transaction_t *transaction)
 {
     unsigned char record[HDL_TRANSACTION_RECORD_SIZE];
-    int result = read_exact_file(HDL_INSTALL_JOURNAL, record, sizeof(record));
+    unsigned int record_size = 0;
+    int result = journal_read_record(HDL_INSTALL_JOURNAL,
+                                     record, &record_size);
 
-    if (result == 0 && hdl_transaction_decode(record, transaction) == 0)
+    if (result == 0 &&
+        hdl_transaction_decode(record, record_size, transaction) == 0)
         return 0;
-    result = read_exact_file(HDL_INSTALL_JOURNAL_NEW,
-                             record, sizeof(record));
+    result = journal_read_record(HDL_INSTALL_JOURNAL_NEW,
+                                 record, &record_size);
     if (result < 0)
         return result;
-    return hdl_transaction_decode(record, transaction);
+    return hdl_transaction_decode(record, record_size, transaction);
 }
 
 static void journal_remove(void)
