@@ -23,8 +23,15 @@ jobs:
         run: |
           python3 tools/check_filexio_fdman_policy.py --selftest
           python3 tools/check_filexio_fdman_policy.py
-      - name: Self-test formatter contract audit
-        run: python3 tools/printf_format_audit.py --selftest
+      - name: Enforce no-local-time libcglue policy
+        run: |
+          python3 tools/check_libcglue_time_policy.py --selftest
+          python3 tools/check_libcglue_time_policy.py
+      - name: Enforce integer-only formatter policy
+        run: |
+          python3 tools/printf_format_audit.py --selftest
+          python3 tools/check_integer_format_policy.py --selftest
+          python3 tools/check_integer_format_policy.py
 
   ps2-build:
     runs-on: ubuntu-latest
