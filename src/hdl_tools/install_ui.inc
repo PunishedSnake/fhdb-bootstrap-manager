@@ -1,3 +1,5 @@
+#define HDL_INSTALL_UI_STAGE __attribute__((noinline, optimize("Os")))
+
 static void hdl_status_wait(const char *title, const char *body,
                             gs_ui_tone_t tone)
 {
@@ -28,7 +30,8 @@ static int choose_media_type(uint32_t suggested)
     return choice < 0 ? -1 : (choice == 0 ? 0x12 : 0x14);
 }
 
-static void show_result(const hdl_transaction_t *transaction, int result)
+static HDL_INSTALL_UI_STAGE void show_result(const hdl_transaction_t *transaction,
+                                             int result)
 {
     char body[640];
     gs_ui_tone_t tone;
@@ -62,7 +65,7 @@ static void show_result(const hdl_transaction_t *transaction, int result)
     hdl_status_wait("HDL installation stopped", body, GS_UI_TONE_DANGER);
 }
 
-static void begin_new_install(void)
+static HDL_INSTALL_UI_STAGE void begin_new_install(void)
 {
     hdl_image_entry_t *images = NULL;
     hdl_file_source_t source;
@@ -220,7 +223,7 @@ static void begin_new_install(void)
     show_result(&transaction, result);
 }
 
-static void incomplete_menu(hdl_transaction_t *transaction)
+static HDL_INSTALL_UI_STAGE void incomplete_menu(hdl_transaction_t *transaction)
 {
     app_ui_menu_item_t items[] = {
         {"Resume incomplete install", "Recheck source, disk and exact target layout", 1},
@@ -270,7 +273,7 @@ static void incomplete_menu(hdl_transaction_t *transaction)
     }
 }
 
-static void show_corrupt_journal(void)
+static HDL_INSTALL_UI_STAGE void show_corrupt_journal(void)
 {
     hdl_status_wait(
         "Corrupt HDL transaction journal",
@@ -280,7 +283,7 @@ static void show_corrupt_journal(void)
         GS_UI_TONE_DANGER);
 }
 
-static void open_new_install(void)
+static HDL_INSTALL_UI_STAGE void open_new_install(void)
 {
     hdl_transaction_t transaction;
     int result = journal_load(&transaction);
@@ -297,7 +300,7 @@ static void open_new_install(void)
     begin_new_install();
 }
 
-static void open_incomplete_transaction(void)
+static HDL_INSTALL_UI_STAGE void open_incomplete_transaction(void)
 {
     hdl_transaction_t transaction;
     int result = journal_load(&transaction);
@@ -316,3 +319,5 @@ static void open_incomplete_transaction(void)
                     "currently nothing to resume or clean up.",
                     GS_UI_TONE_INFO);
 }
+
+#undef HDL_INSTALL_UI_STAGE
