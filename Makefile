@@ -154,7 +154,7 @@ clean:
 	rm -rf $(HOST_HDD_FIXTURE_DIR) $(HOST_FORENSIC_FIXTURE_DIR)
 
 main.o: src/main.c
-	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+	$(EE_CC) $(EE_COLD_CFLAGS) $(EE_INCS) -c $< -o $@
 
 manager_menu_ps2.o: src/manager_menu_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
