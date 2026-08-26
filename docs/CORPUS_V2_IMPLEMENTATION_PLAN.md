@@ -159,16 +159,51 @@ in hardware smoke tests.
 
 ## Phase 2: I-cache and control-flow locality
 
-- [ ] Split `execute_transaction()` into state/stage handlers without changing
+- [x] Split `execute_transaction()` into state/stage handlers without changing
       transaction semantics or recovery guarantees.
-- [ ] Split other measured multi-kilobyte controller functions only where the
+- [x] Split other measured multi-kilobyte controller functions only where the
       active path benefits from smaller working sets.
-- [ ] Evaluate `-Os` for cold translation units and retain `-O2` for measured hot
+- [x] Evaluate `-Os` for cold translation units and retain `-O2` for measured hot
       paths; compare size and latency before adopting per-TU flags.
-- [ ] Audit compiler-generated 64-bit divide/mod helpers and eliminate only cases
+- [x] Audit compiler-generated 64-bit divide/mod helpers and eliminate only cases
       whose arithmetic contract proves a cheaper transformation correct.
 
-Exit gate: smaller active I-cache footprint plus equal correctness/error paths.
+### Phase-2 software-side notes
+
+The completed Phase-1 integration build (CI #608) emitted 232800 B of named
+function text, 58250 disassembled instructions and a 638388 B ELF. The current
+Phase-2 software-side build (CI #625) emits 228308 B of named function text,
+57145 instructions and a 634036 B ELF: -4492 B (-1.93%) named text, -1105
+instructions (-1.90%) and -4352 B (-0.68%) ELF size before any hardware claim.
+
+Large active control paths were reduced by preserving natural ownership/stage
+boundaries instead of globally changing optimization flags. Examples include:
+
+- `execute_transaction`: 6176 B -> largest stage 2144 B;
+- boot diagnostics refresh: 8684 B monolith -> independent scan/render stages;
+- one-shot startup `main`: 6324 B -> about 1.4 KiB with selective cold `-Os`;
+- disk-status wrapper `render`: about 4220 B -> about 0.6 KiB;
+- `bootstrap_controller_install`: 4756 B -> 1356 B;
+- `open_new_install`: 4364 B monolith removed by explicit install UI stages;
+- `bootstrap_menu`: 4200 B monolith removed by isolating backup/disable/restore/
+  install workflow controllers;
+- human-speed menu/dashboard and HDL-game UI controllers were size-optimized
+  only after per-commit ELF A/B showed a net win.
+
+Two tempting changes were explicitly rejected and reverted: replacing bounded
+`snprintf("%s")` assignments in boot classification with an inline copy loop
+increased code under LTO, and forcing `hdl_iso_probe()` to `-Os` split helpers in
+ways that increased total text/ELF size. These negative results are retained in
+Git history so the same experiments are not repeated as folklore.
+
+The remaining `__udivdi3`/`__umoddi3` calls are owned by cold end-of-phase rate
+reporting, timer conversion, rendering and formatter code. No arithmetic rewrite
+was kept without a proven hot-path contract.
+
+Exit gate: **software-side static locality target met; real-hardware gate still
+open.** Before Phase 2 can be called complete for merge, run the same functional
+paths on a real PS2 and record correctness plus timing/counter evidence. Static
+ELF shrinkage and CI are not a runtime speedup claim.
 
 ## Phase 3: storage, APA and HDL dataflow
 
