@@ -50,7 +50,20 @@ typedef struct {
  * front-end can require an explicit user choice. Images larger than a CD are
  * classified as PS2 DVD. DVD9-sized images additionally require a verified
  * layer break before an installer may commit HDL metadata.
+ *
+ * This probe runs once during install preflight and is dominated by bounded
+ * ISO9660 parsing plus source reads, not steady-state payload transfer. Keep it
+ * size-optimized so LTO does not spend I-cache on a one-shot control path.
  */
-int hdl_iso_probe(const hdl_iso_source_t *source, hdl_iso_info_t *info);
+#if defined(__GNUC__)
+#define HDL_ISO_PROBE_SIZE_OPT __attribute__((optimize("Os")))
+#else
+#define HDL_ISO_PROBE_SIZE_OPT
+#endif
+
+int HDL_ISO_PROBE_SIZE_OPT hdl_iso_probe(const hdl_iso_source_t *source,
+                                         hdl_iso_info_t *info);
+
+#undef HDL_ISO_PROBE_SIZE_OPT
 
 #endif
