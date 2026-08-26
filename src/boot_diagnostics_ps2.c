@@ -9,13 +9,16 @@
 #include "disk_status_ps2.h"
 #include "storage.h"
 
-#define BOOT_DIAG_STAGE __attribute__((noinline))
+#define BOOT_DIAG_STAGE __attribute__((noinline, optimize("Os")))
 
 /*
  * Diagnostics crosses ROM, HDD raw payload, memory cards and two PFS mounts.
  * Each source is an independent, blocking evidence stage. Keep those stages
  * behind explicit call boundaries so LTO cannot fold the entire device walk
  * plus classification policy into one multi-kilobyte instruction working set.
+ * These helpers are explicit user-requested diagnostics rather than steady-
+ * state runtime, so size-optimize the stage bodies without changing the global
+ * -O2 baseline.
  */
 static BOOT_DIAG_STAGE void scan_console_identity_stage(boot_chain_info_t *info)
 {
