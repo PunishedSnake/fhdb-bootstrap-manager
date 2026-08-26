@@ -11,6 +11,15 @@ PS2SDK_PATH_VALUE=${PS2SDK:-unavailable}
 PS2SDK_REF=${PS2SDK_SOURCE_REF:-unavailable}
 PS2SDK_SHA=${PS2SDK_SOURCE_SHA:-unavailable}
 PS2DEV_BUNDLE_REF=${PS2DEV_BUNDLE_REF:-unavailable}
+HDL_PROFILE_VALUE=${HDL_PROFILE:-1}
+
+case "$HDL_PROFILE_VALUE" in
+    0|1) ;;
+    *)
+        printf 'HDL_PROFILE must be 0 or 1, got %s\n' "$HDL_PROFILE_VALUE" >&2
+        exit 2
+        ;;
+esac
 
 # A development environment may preserve the ps2sdk .git directory. Prefer the
 # exact installed checkout when available. Tagged ps2dev Docker images strip
@@ -41,7 +50,8 @@ ps2sdk_commit: "$PS2SDK_SHA"
 toolchain_target: "$CC_TARGET"
 toolchain_gcc: "$CC_VERSION"
 toolchain_container: "ps2dev/ps2dev:v2.0.0"
-build_flags: "-O2 -flto -G0 -fdata-sections -ffunction-sections; ld --gc-sections"
+hdl_profile_enabled: "$HDL_PROFILE_VALUE"
+build_flags: "-O2 -flto -G0 -fdata-sections -ffunction-sections -DHDL_PROFILE_ENABLED=$HDL_PROFILE_VALUE; ld --gc-sections"
 active_irx: UNRECORDED
 embedded_irx: "iomanX fileXio secrman freesio2 freepad mcman mcserv secrsif poweroff bdm bdmfs_fatfs usbd usbmass_bd ps2dev9 ata_bd ps2fs ps2hdd-bdm hdl_stream"
 workload: UNRECORDED

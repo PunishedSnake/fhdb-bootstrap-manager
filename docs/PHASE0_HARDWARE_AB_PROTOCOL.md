@@ -7,17 +7,40 @@ throughput.
 
 ## Compared builds
 
-### A: audited pre-instrumentation baseline
+The authoritative instrumentation-overhead comparison is a same-source pair
+built from one green commit on `perf/corpus-v2-integration` with the same PS2DEV
+container, PS2SDK source, optimization flags and runtime implementation.
 
-- project commit: `4b5aa8d85e86c9de570a2128b52d1eaa5b334844`
-- purpose: known-good HDL installer immediately before corpus-v2 measurement
-  instrumentation
-- expected Phase-0 telemetry: absent
+### A: PROFILE OFF
 
-### B: corpus-v2 measurement build
+Build the selected commit with:
 
-Use the newest green commit on `perf/corpus-v2-integration` before accepting a
-Phase-1 runtime optimization. The build must retain:
+```text
+HDL_PROFILE=0
+```
+
+This compiles the Phase-0 EE/IOP HDL telemetry out while retaining the same:
+
+- direct-BDM source path;
+- double-buffer prefetch worker and ownership flow;
+- ps2hdd/HIOCTRANSFER target path;
+- SIF DMA transfers;
+- EE cache writeback/invalidation required for DMA correctness;
+- SHA-256 verification;
+- journal, flush, metadata commit and read-back semantics.
+
+`HDL_STREAM_IOCTL2_GET_FAST_STATS` remains ABI-compatible and returns a zeroed
+record, but the timed hot-path accounting itself is absent.
+
+### B: PROFILE ON
+
+Build the exact same commit with:
+
+```text
+HDL_PROFILE=1
+```
+
+This is the diagnostic build and retains:
 
 - EE pump/source/target latency histograms;
 - IOP direct-source/fallback/prefetch/HDD/SIF histograms;
@@ -25,9 +48,16 @@ Phase-1 runtime optimization. The build must retain:
 - benchmark provenance artifact;
 - linker/ELF audit artifacts.
 
-The project source, toolchain and HDL transaction semantics must otherwise stay
-unchanged for the measurement comparison. Any Phase-1 change must be measured
-separately and must not be folded into the Phase-0 overhead result.
+CI emits both ELFs, linker maps, optimization audits and provenance records from
+one checkout and one toolchain image. The profile mode is written explicitly to
+each provenance file.
+
+### Historical pre-instrumentation reference
+
+Commit `4b5aa8d85e86c9de570a2128b52d1eaa5b334844` remains useful as the original
+known-good HDL installer baseline, but it is **not** the authoritative profiler
+overhead A/B. Runtime and Phase-1 policy changes after that commit make such a
+cross-commit timing delta confounded.
 
 ## Hardware provenance
 
@@ -43,6 +73,7 @@ ps2sdk_commit:
 toolchain:
 active_irx:
 build_flags:
+hdl_profile_enabled:
 workload:
 direction:
 buffering:
@@ -52,8 +83,9 @@ units:
 correctness_hash:
 ```
 
-The CI-generated `BENCHMARK_PROVENANCE.yml` supplies build-side fields. Hardware
-fields remain explicit manual measurements rather than guessed metadata.
+The CI-generated `BENCHMARK_PROVENANCE_PROFILE_OFF.yml` and
+`BENCHMARK_PROVENANCE_PROFILE_ON.yml` supply build-side fields. Hardware fields
+remain explicit manual measurements rather than guessed metadata.
 
 ## Workload contract
 
@@ -67,15 +99,28 @@ Use the same:
 - video mode and active background services;
 - cold/warm policy.
 
+Prefer an interleaved order such as `OFF, ON, ON, OFF` or `ON, OFF, OFF, ON`
+rather than running every sample of one build first. This reduces temperature,
+device-state and session-order bias. Recreate or otherwise control the target
+layout between destructive install samples so the compared workload stays
+meaningfully equivalent.
+
 For HDL copy throughput, use one ISO large enough that startup/allocation noise
 is negligible compared with the bulk copy phase. Do not compare different ISOs,
 USB sticks or HDD layouts and call the result an instrumentation delta.
 
 ## Measurements
 
-For each build record at least:
+For **both** builds record at least:
 
+- total install wall time;
 - bulk copy wall time and useful KiB/s;
+- payload verification wall time;
+- final correctness result/hash;
+- any cancellation, journal or metadata-commit failure.
+
+For PROFILE ON additionally retain:
+
 - p50, p95, p99 and max EE pump ioctl latency;
 - p50, p95, p99 and max IOP direct-source latency;
 - p50, p95, p99 and max prefetch consumer wait;
@@ -83,28 +128,36 @@ For each build record at least:
 - p50, p95, p99 and max SIF DMA completion latency;
 - prefetch hit/miss counts;
 - fallback-source/fallback-target bytes;
-- useful payload, SIF DMA and EE cache-maintenance bytes;
-- final correctness result/hash;
-- any cancellation, journal or metadata-commit failure.
+- useful payload, SIF DMA and EE cache-maintenance bytes.
 
-Run at least three complete comparable samples for an initial engineering
-answer. More samples are required if p95/p99 or wall time is unstable.
+For the overhead result report PROFILE ON relative to PROFILE OFF for wall time
+and throughput. Do not fabricate p95/p99 for PROFILE OFF from absent telemetry;
+the point of the OFF build is to remove that instrumentation.
+
+Run at least four complete comparable samples, preferably two in each half of an
+interleaved order, for an initial engineering answer. Add samples if wall time
+or PROFILE ON tail latency is unstable.
 
 ## Phase-0 acceptance
 
 Phase 0 may be marked hardware-complete only when:
 
-1. build A and build B both pass the same correctness workload;
-2. B produces internally consistent stage counters and traffic accounting;
-3. the measurement overhead of B is quantified rather than assumed negligible;
-4. p50/p95/p99/max are retained, not replaced by an average;
+1. PROFILE OFF and PROFILE ON are from the same project SHA and pass the same
+   correctness workload;
+2. PROFILE ON produces internally consistent stage counters and traffic
+   accounting;
+3. the measurement overhead of PROFILE ON is quantified rather than assumed
+   negligible;
+4. PROFILE ON retains p50/p95/p99/max instead of replacing distributions with
+   an average;
 5. the result includes console/toolchain/IRX/workload provenance;
 6. R5900 counter calibration is checked on the real EE before counter-derived
    optimization claims are made.
 
-If instrumentation materially changes throughput or tail latency, keep a
-companion non-instrumented performance build and use the measurement build only
-for diagnosis.
+If instrumentation materially changes throughput or tail latency, keep
+`HDL_PROFILE=0` as the performance build and use `HDL_PROFILE=1` only for
+diagnosis. If the delta is negligible for the tested workload, that conclusion
+still applies only to the recorded console/adapters/workload.
 
 ## R5900 counter calibration
 

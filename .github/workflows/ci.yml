@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build, audit and strip PS2 ELF with PS2DEV v2.0.0
+      - name: Build PROFILE ON/OFF pair with PS2DEV v2.0.0
         run: >-
           docker run --rm
           -e PROJECT_GIT_SHA="$GITHUB_SHA"
@@ -48,18 +48,40 @@ jobs:
           -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
           sh -c 'apk add --no-cache make python3 >/dev/null &&
           sh tools/r5900_toolchain_audit.sh GCC_R5900_TARGET.txt &&
-          sh tools/build_benchmark_provenance.sh BENCHMARK_PROVENANCE.yml &&
           python3 tools/corpus_v2_project_audit.py
           --output CORPUS_V2_PROJECT_AUDIT.txt &&
           python3 tools/printf_format_audit.py
           --output PRINTF_FORMAT_AUDIT.txt &&
-          make clean && make &&
+          HDL_PROFILE=1 sh tools/build_benchmark_provenance.sh
+          BENCHMARK_PROVENANCE_PROFILE_ON.yml &&
+          make clean && make HDL_PROFILE=1 &&
           python3 tools/optimization_audit.py
           --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF
-          --output OPTIMIZATION_AUDIT.txt &&
-          make release'
-      - name: Record artifact checksum
-        run: sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+          --output OPTIMIZATION_AUDIT_PROFILE_ON.txt &&
+          make HDL_PROFILE=1 release &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER.ELF
+          PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER.map
+          PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map &&
+          HDL_PROFILE=0 sh tools/build_benchmark_provenance.sh
+          BENCHMARK_PROVENANCE_PROFILE_OFF.yml &&
+          make clean && make HDL_PROFILE=0 &&
+          python3 tools/optimization_audit.py
+          --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF
+          --output OPTIMIZATION_AUDIT_PROFILE_OFF.txt &&
+          make HDL_PROFILE=0 release &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER.ELF
+          PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER.map
+          PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.map &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF
+          PS2_HDD_BOOTSTRAP_MANAGER.ELF &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
+          PS2_HDD_BOOTSTRAP_MANAGER.map'
+      - name: Record artifact checksums
+        run: |
+          sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+          sha256sum PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF | tee HDL_PROFILE_PAIR.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: PS2-HDD-Bootstrap-Manager
@@ -67,11 +89,18 @@ jobs:
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
             PS2_HDD_BOOTSTRAP_MANAGER.map
-            OPTIMIZATION_AUDIT.txt
+            PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
+            PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.map
+            HDL_PROFILE_PAIR.sha256
+            OPTIMIZATION_AUDIT_PROFILE_ON.txt
+            OPTIMIZATION_AUDIT_PROFILE_OFF.txt
             CORPUS_V2_PROJECT_AUDIT.txt
             PRINTF_FORMAT_AUDIT.txt
             GCC_R5900_TARGET.txt
-            BENCHMARK_PROVENANCE.yml
+            BENCHMARK_PROVENANCE_PROFILE_ON.yml
+            BENCHMARK_PROVENANCE_PROFILE_OFF.yml
             HDDMAN.CFG
             LICENSE
             THIRD_PARTY_NOTICES.md

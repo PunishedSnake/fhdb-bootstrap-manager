@@ -1,4 +1,8 @@
+#include "hdl_profile.h"
+
+#if HDL_PROFILE_ENABLED
 #include <timer.h>
+#endif
 
 /*
  * EE-side glue for the dev20 IOP payload pump.
@@ -15,8 +19,20 @@
  * into IOP staging and performs one IOP->EE DMA, avoiding fileXio's extra
  * staging/copy layer.
  */
-#define HDL_FAST_LATENCY_BUCKETS 24u
 #define HDL_FAST_NOINLINE __attribute__((noinline))
+
+static int hdl_fast_source_fd = -1;
+static uint64_t hdl_fast_source_position;
+static uint64_t hdl_fast_source_seek_value;
+static uint64_t hdl_fast_source_total;
+static int hdl_fast_source_position_valid;
+static int hdl_fast_source_seek_pending;
+static int hdl_fast_pump_mode;
+static int hdl_fast_pump_ack;
+static unsigned int hdl_fast_pump_ack_bytes;
+
+#if HDL_PROFILE_ENABLED
+#define HDL_FAST_LATENCY_BUCKETS 24u
 #define HDL_FAST_COLD __attribute__((cold, noinline))
 
 typedef struct {
@@ -25,10 +41,6 @@ typedef struct {
     uint32_t buckets[HDL_FAST_LATENCY_BUCKETS];
 } hdl_fast_latency_stats_t;
 
-static int hdl_fast_source_fd = -1;
-static uint64_t hdl_fast_source_position;
-static uint64_t hdl_fast_source_seek_value;
-static uint64_t hdl_fast_source_total;
 static uint64_t hdl_fast_copy_start_ticks;
 static uint64_t hdl_fast_copy_bytes;
 static uint64_t hdl_fast_target_bytes;
@@ -38,11 +50,6 @@ static uint64_t hdl_fast_fallback_source_bytes;
 static uint64_t hdl_fast_fallback_target_bytes;
 static uint64_t hdl_fast_copy_consumer_start_ticks;
 static uint64_t hdl_fast_target_consumer_start_ticks;
-static int hdl_fast_source_position_valid;
-static int hdl_fast_source_seek_pending;
-static int hdl_fast_pump_mode;
-static int hdl_fast_pump_ack;
-static unsigned int hdl_fast_pump_ack_bytes;
 static int hdl_fast_path_logged;
 static int hdl_fast_copy_iop_stats_logged;
 static int hdl_fast_verify_iop_stats_logged;
@@ -197,6 +204,7 @@ static HDL_FAST_COLD void hdl_fast_log_target_profile(void)
         hdl_fast_target_consumer_latency.samples);
     hdl_fast_target_profile_logged = 1;
 }
+#endif
 
 static HDL_FAST_NOINLINE void hdl_fast_io_reset(void)
 {
@@ -204,6 +212,12 @@ static HDL_FAST_NOINLINE void hdl_fast_io_reset(void)
     hdl_fast_source_position = 0;
     hdl_fast_source_seek_value = 0;
     hdl_fast_source_total = 0;
+    hdl_fast_source_position_valid = 0;
+    hdl_fast_source_seek_pending = 0;
+    hdl_fast_pump_mode = 0;
+    hdl_fast_pump_ack = 0;
+    hdl_fast_pump_ack_bytes = 0;
+#if HDL_PROFILE_ENABLED
     hdl_fast_copy_start_ticks = 0;
     hdl_fast_copy_bytes = 0;
     hdl_fast_target_bytes = 0;
@@ -213,11 +227,6 @@ static HDL_FAST_NOINLINE void hdl_fast_io_reset(void)
     hdl_fast_fallback_target_bytes = 0;
     hdl_fast_copy_consumer_start_ticks = 0;
     hdl_fast_target_consumer_start_ticks = 0;
-    hdl_fast_source_position_valid = 0;
-    hdl_fast_source_seek_pending = 0;
-    hdl_fast_pump_mode = 0;
-    hdl_fast_pump_ack = 0;
-    hdl_fast_pump_ack_bytes = 0;
     hdl_fast_path_logged = 0;
     hdl_fast_copy_iop_stats_logged = 0;
     hdl_fast_verify_iop_stats_logged = 0;
@@ -229,6 +238,7 @@ static HDL_FAST_NOINLINE void hdl_fast_io_reset(void)
     hdl_fast_latency_reset(&hdl_fast_target_ioctl_latency);
     hdl_fast_latency_reset(&hdl_fast_copy_consumer_latency);
     hdl_fast_latency_reset(&hdl_fast_target_consumer_latency);
+#endif
 }
 
 static HDL_FAST_NOINLINE int hdl_fast_resolve_source_total(int source_fd)
@@ -256,6 +266,7 @@ static HDL_FAST_NOINLINE int hdl_fast_resolve_source_total(int source_fd)
     return 0;
 }
 
+#if HDL_PROFILE_ENABLED
 static HDL_FAST_COLD void hdl_fast_io_log_stats(int target_fd,
                                                  int verify_phase)
 {
@@ -331,6 +342,7 @@ static HDL_FAST_COLD void hdl_fast_io_log_rate(void)
         (unsigned long long)(raw_usb_permille % 10u));
     hdl_fast_rate_logged = 1;
 }
+#endif
 
 static HDL_FAST_NOINLINE s64 hdl_fast_fileXioLseek64(int fd, s64 offset,
                                                       int whence)
@@ -361,8 +373,10 @@ static HDL_FAST_NOINLINE int hdl_fast_dma_read(int command, int source_fd,
                                                 void *buffer,
                                                 unsigned int bytes)
 {
+#if HDL_PROFILE_ENABLED
     u64 call_start;
     u64 call_end;
+#endif
     int result;
 
     if (hdl_active_target_fd < 0 || buffer == NULL || bytes == 0 ||
@@ -372,12 +386,12 @@ static HDL_FAST_NOINLINE int hdl_fast_dma_read(int command, int source_fd,
 
     /* The IOP is about to DMA into cached EE memory. Write back any dirty line
      * first, then invalidate after the synchronous ioctl returns so the R5900
-     * sees the new payload instead of a stale D-cache copy. Count the touched
-     * bytes separately from useful payload so copy/coherency amplification is
-     * visible in corpus-v2 benchmark logs. */
+     * sees the new payload instead of a stale D-cache copy. */
     SyncDCache(buffer, (unsigned char *)buffer + bytes);
+#if HDL_PROFILE_ENABLED
     hdl_fast_cache_maintenance_bytes += bytes;
     call_start = GetTimerSystemTime();
+#endif
     if (command == HDL_STREAM_IOCTL2_TARGET_TO_EE) {
         hdl_stream_target_io_t request;
 
@@ -401,12 +415,16 @@ static HDL_FAST_NOINLINE int hdl_fast_dma_read(int command, int source_fd,
         result = fileXioIoctl2(hdl_active_target_fd, command,
                                &request, sizeof(request), NULL, 0);
     }
+#if HDL_PROFILE_ENABLED
     call_end = GetTimerSystemTime();
     hdl_fast_record_ioctl_latency(command, call_start, call_end);
+#endif
     if (result >= 0) {
         InvalidDCache(buffer, (unsigned char *)buffer + bytes);
+#if HDL_PROFILE_ENABLED
         hdl_fast_cache_maintenance_bytes += bytes;
         hdl_fast_sif_dma_bytes += bytes;
+#endif
     }
     return result;
 }
@@ -420,18 +438,21 @@ static HDL_FAST_NOINLINE int hdl_fast_fileXioRead(int fd, void *buffer,
         return fileXioRead(fd, buffer, size);
 
     if (fd == hdl_active_target_fd) {
+#if HDL_PROFILE_ENABLED
         if (hdl_fast_target_consumer_start_ticks != 0) {
             hdl_fast_latency_record(&hdl_fast_target_consumer_latency,
                                     hdl_fast_target_consumer_start_ticks,
                                     GetTimerSystemTime());
             hdl_fast_target_consumer_start_ticks = 0;
         }
+#endif
         hdl_fast_pump_mode = 0;
         hdl_fast_pump_ack = 0;
         hdl_fast_pump_ack_bytes = 0;
         result = hdl_fast_dma_read(HDL_STREAM_IOCTL2_TARGET_TO_EE,
                                    -1, buffer, (unsigned int)size);
         if (result != INT_MIN) {
+#if HDL_PROFILE_ENABLED
             if (result > 0) {
                 hdl_fast_target_bytes += (unsigned int)result;
                 hdl_fast_target_consumer_start_ticks = GetTimerSystemTime();
@@ -441,6 +462,7 @@ static HDL_FAST_NOINLINE int hdl_fast_fileXioRead(int fd, void *buffer,
                     hdl_fast_log_target_profile();
                 }
             }
+#endif
             return result;
         }
     } else if (hdl_active_target_fd >= 0 &&
@@ -449,9 +471,11 @@ static HDL_FAST_NOINLINE int hdl_fast_fileXioRead(int fd, void *buffer,
                           ? HDL_STREAM_IOCTL2_PUMP_TO_EE
                           : HDL_STREAM_IOCTL2_SOURCE_TO_EE;
 
+#if HDL_PROFILE_ENABLED
         if (command == HDL_STREAM_IOCTL2_PUMP_TO_EE &&
             hdl_fast_copy_start_ticks == 0)
             hdl_fast_copy_start_ticks = GetTimerSystemTime();
+#endif
         result = hdl_fast_dma_read(command, fd, buffer, (unsigned int)size);
         if (result != INT_MIN) {
             hdl_fast_source_seek_pending = 0;
@@ -460,6 +484,7 @@ static HDL_FAST_NOINLINE int hdl_fast_fileXioRead(int fd, void *buffer,
             if (result == size && command == HDL_STREAM_IOCTL2_PUMP_TO_EE) {
                 hdl_fast_pump_ack = 1;
                 hdl_fast_pump_ack_bytes = (unsigned int)size;
+#if HDL_PROFILE_ENABLED
                 hdl_fast_copy_bytes += (unsigned int)size;
                 hdl_fast_copy_consumer_start_ticks = GetTimerSystemTime();
                 if (!hdl_fast_path_logged) {
@@ -468,10 +493,13 @@ static HDL_FAST_NOINLINE int hdl_fast_fileXioRead(int fd, void *buffer,
                         (unsigned int)size);
                     hdl_fast_path_logged = 1;
                 }
+#endif
             } else {
                 hdl_fast_pump_ack = 0;
                 hdl_fast_pump_ack_bytes = 0;
+#if HDL_PROFILE_ENABLED
                 hdl_fast_copy_consumer_start_ticks = 0;
+#endif
             }
             return result;
         }
@@ -490,19 +518,23 @@ static HDL_FAST_NOINLINE int hdl_fast_fileXioRead(int fd, void *buffer,
             return seek < 0 ? (int)seek : HDL_INSTALL_COPY_FAILED;
     }
     result = fileXioRead(fd, buffer, size);
+#if HDL_PROFILE_ENABLED
     if (result > 0) {
         if (fd == hdl_active_target_fd)
             hdl_fast_fallback_target_bytes += (unsigned int)result;
         else if (hdl_fast_source_position_valid && fd == hdl_fast_source_fd)
             hdl_fast_fallback_source_bytes += (unsigned int)result;
     }
+#endif
     if (result > 0 && fd != hdl_active_target_fd &&
         hdl_fast_source_position_valid && fd == hdl_fast_source_fd)
         hdl_fast_source_position += (unsigned int)result;
     hdl_fast_source_seek_pending = 0;
     hdl_fast_pump_ack = 0;
     hdl_fast_pump_ack_bytes = 0;
+#if HDL_PROFILE_ENABLED
     hdl_fast_copy_consumer_start_ticks = 0;
+#endif
     return result;
 }
 
@@ -513,27 +545,33 @@ static HDL_FAST_NOINLINE int hdl_fast_fileXioWrite(int fd,
     if (hdl_fast_pump_ack) {
         if (fd == hdl_active_target_fd && size > 0 &&
             (unsigned int)size == hdl_fast_pump_ack_bytes) {
+#if HDL_PROFILE_ENABLED
             if (hdl_fast_copy_consumer_start_ticks != 0) {
                 hdl_fast_latency_record(&hdl_fast_copy_consumer_latency,
                                         hdl_fast_copy_consumer_start_ticks,
                                         GetTimerSystemTime());
                 hdl_fast_copy_consumer_start_ticks = 0;
             }
+#endif
             hdl_fast_pump_ack = 0;
             hdl_fast_pump_ack_bytes = 0;
+#if HDL_PROFILE_ENABLED
             if (hdl_fast_source_total != 0 &&
                 hdl_fast_source_position == hdl_fast_source_total) {
                 hdl_fast_io_log_rate();
                 hdl_fast_io_log_stats(hdl_active_target_fd, 0);
                 hdl_fast_log_copy_profile();
             }
+#endif
             return size;
         }
         /* Never fall back after PUMP_TO_EE already advanced the target. A
          * mismatched acknowledgement would otherwise write the block twice. */
         hdl_fast_pump_ack = 0;
         hdl_fast_pump_ack_bytes = 0;
+#if HDL_PROFILE_ENABLED
         hdl_fast_copy_consumer_start_ticks = 0;
+#endif
         return HDL_INSTALL_COPY_FAILED;
     }
 
@@ -541,5 +579,7 @@ static HDL_FAST_NOINLINE int hdl_fast_fileXioWrite(int fd,
     return fileXioWrite(fd, buffer, size);
 }
 
+#if HDL_PROFILE_ENABLED
 #undef HDL_FAST_COLD
+#endif
 #undef HDL_FAST_NOINLINE
