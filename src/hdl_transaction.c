@@ -8,10 +8,11 @@
 #include "sha256.h"
 
 #define HDL_TRANSACTION_LEGACY_HASH_OFFSET 480u
-#define HDL_TRANSACTION_CHECKPOINT_FLAGS_OFFSET 476u
+#define HDL_TRANSACTION_RECORD_FLAGS_OFFSET 476u
 #define HDL_TRANSACTION_CHECKPOINT_OFFSET 480u
 #define HDL_TRANSACTION_CURRENT_HASH_OFFSET 512u
-#define HDL_TRANSACTION_CHECKPOINT_VALID 0x00000001u
+#define HDL_TRANSACTION_FLAG_CHECKPOINT_VALID 0x00000001u
+#define HDL_TRANSACTION_FLAG_ALLOCATION_ARMED 0x00000002u
 
 static const unsigned char transaction_magic[8] = {
     'H', 'D', 'L', 'T', 'X', 'N', 1, 0
@@ -77,6 +78,10 @@ static int transaction_valid(const hdl_transaction_t *transaction)
         (transaction->stage != HDL_TRANSACTION_STAGE_COPYING ||
          transaction->completed_sectors == 0))
         return 0;
+    if (transaction->allocation_armed &&
+        (transaction->stage != HDL_TRANSACTION_STAGE_PLANNED ||
+         transaction->completed_sectors != 0))
+        return 0;
     if (transaction->stage == HDL_TRANSACTION_STAGE_PLANNED ||
         transaction->stage == HDL_TRANSACTION_STAGE_PARTITIONS_CREATED)
         return transaction->completed_sectors == 0;
@@ -133,13 +138,13 @@ int hdl_transaction_encode(const hdl_transaction_t *transaction,
                            unsigned char record[HDL_TRANSACTION_RECORD_SIZE])
 {
     unsigned char digest[32];
-    uint32_t checkpoint_flags = 0;
+    uint32_t record_flags = 0;
 
     if (record == NULL || !transaction_valid(transaction))
         return HDL_TRANSACTION_INVALID_ARGUMENT;
-    /* Every durable v4 COPY progress record beyond offset zero must carry the
-     * matching chaining state. Otherwise a record would claim v4 resumability
-     * while silently forcing semantics that only v2/v3 understand. */
+    /* Every durable v4+ COPY progress record beyond offset zero must carry the
+     * matching chaining state. Otherwise a record would claim checkpoint
+     * resumability while silently forcing legacy prefix-rehash semantics. */
     if (transaction->stage == HDL_TRANSACTION_STAGE_COPYING &&
         transaction->completed_sectors != 0 &&
         !transaction->source_hash_checkpoint_valid)
@@ -171,13 +176,14 @@ int hdl_transaction_encode(const hdl_transaction_t *transaction,
     record[474] = transaction->dma_type;
     record[475] = transaction->dma_mode;
     if (transaction->source_hash_checkpoint_valid) {
-        checkpoint_flags |= HDL_TRANSACTION_CHECKPOINT_VALID;
+        record_flags |= HDL_TRANSACTION_FLAG_CHECKPOINT_VALID;
         memcpy(record + HDL_TRANSACTION_CHECKPOINT_OFFSET,
                transaction->source_hash_checkpoint,
                sizeof(transaction->source_hash_checkpoint));
     }
-    write_le32(record + HDL_TRANSACTION_CHECKPOINT_FLAGS_OFFSET,
-               checkpoint_flags);
+    if (transaction->allocation_armed)
+        record_flags |= HDL_TRANSACTION_FLAG_ALLOCATION_ARMED;
+    write_le32(record + HDL_TRANSACTION_RECORD_FLAGS_OFFSET, record_flags);
     sha256_buffer(record, HDL_TRANSACTION_CURRENT_HASH_OFFSET, digest);
     memcpy(record + HDL_TRANSACTION_CURRENT_HASH_OFFSET,
            digest, sizeof(digest));
@@ -190,7 +196,8 @@ int hdl_transaction_decode(const unsigned char *record,
 {
     unsigned char digest[32];
     hdl_transaction_t decoded;
-    uint32_t checkpoint_flags = 0;
+    uint32_t record_flags = 0;
+    uint32_t allowed_flags = 0;
     uint32_t version;
     unsigned int hash_offset;
     unsigned int expected_size;
@@ -204,7 +211,8 @@ int hdl_transaction_decode(const unsigned char *record,
         version == HDL_TRANSACTION_RECORD_VERSION_DIGEST) {
         expected_size = HDL_TRANSACTION_RECORD_SIZE_LEGACY;
         hash_offset = HDL_TRANSACTION_LEGACY_HASH_OFFSET;
-    } else if (version == HDL_TRANSACTION_RECORD_VERSION_CURRENT) {
+    } else if (version == HDL_TRANSACTION_RECORD_VERSION_CHECKPOINT ||
+               version == HDL_TRANSACTION_RECORD_VERSION_CURRENT) {
         expected_size = HDL_TRANSACTION_RECORD_SIZE;
         hash_offset = HDL_TRANSACTION_CURRENT_HASH_OFFSET;
     } else {
@@ -236,17 +244,23 @@ int hdl_transaction_decode(const unsigned char *record,
     decoded.opl_compat_flags = record[473];
     decoded.dma_type = record[474];
     decoded.dma_mode = record[475];
-    if (version == HDL_TRANSACTION_RECORD_VERSION_CURRENT) {
-        checkpoint_flags = read_le32(
-            record + HDL_TRANSACTION_CHECKPOINT_FLAGS_OFFSET);
-        if ((checkpoint_flags & ~HDL_TRANSACTION_CHECKPOINT_VALID) != 0)
+    if (version == HDL_TRANSACTION_RECORD_VERSION_CHECKPOINT ||
+        version == HDL_TRANSACTION_RECORD_VERSION_CURRENT) {
+        record_flags = read_le32(record + HDL_TRANSACTION_RECORD_FLAGS_OFFSET);
+        allowed_flags = HDL_TRANSACTION_FLAG_CHECKPOINT_VALID;
+        if (version == HDL_TRANSACTION_RECORD_VERSION_CURRENT)
+            allowed_flags |= HDL_TRANSACTION_FLAG_ALLOCATION_ARMED;
+        if ((record_flags & ~allowed_flags) != 0)
             return HDL_TRANSACTION_INVALID_RECORD;
-        if ((checkpoint_flags & HDL_TRANSACTION_CHECKPOINT_VALID) != 0) {
+        if ((record_flags & HDL_TRANSACTION_FLAG_CHECKPOINT_VALID) != 0) {
             memcpy(decoded.source_hash_checkpoint,
                    record + HDL_TRANSACTION_CHECKPOINT_OFFSET,
                    sizeof(decoded.source_hash_checkpoint));
             decoded.source_hash_checkpoint_valid = 1;
         }
+        if (version == HDL_TRANSACTION_RECORD_VERSION_CURRENT &&
+            (record_flags & HDL_TRANSACTION_FLAG_ALLOCATION_ARMED) != 0)
+            decoded.allocation_armed = 1;
         if (decoded.stage == HDL_TRANSACTION_STAGE_COPYING &&
             decoded.completed_sectors != 0 &&
             !decoded.source_hash_checkpoint_valid)
