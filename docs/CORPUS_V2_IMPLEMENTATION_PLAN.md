@@ -99,6 +99,12 @@ Goal: establish evidence before altering architecture.
       to stable JSON and self-tests in CI.
 - [x] Add a same-source profiling-on/profiling-off build pair for authoritative
       instrumentation-overhead A/B on real hardware.
+- [x] Isolate IOP objects by profile mode and reject byte-identical ON/OFF IRX
+      artifacts in CI.
+- [x] Bind each benchmark provenance record to the final stripped ELF and
+      embedded `hdl_stream.irx` SHA-256 and byte size.
+- [x] Add a host preflight verifier for the frozen hardware pair and emit an
+      interleaved eight-run sample template.
 - [ ] Exercise the R5900 counter harness in a bounded hardware benchmark and
       measure empty-scope overhead before instrumenting application kernels.
 
@@ -141,22 +147,47 @@ provenance rather than substituting current PS2SDK master.
 The Phase-0 same-source A/B switch is `HDL_PROFILE=1/0`. PROFILE OFF compiles
 EE/IOP latency timers, histograms, traffic counters and phase-end telemetry out
 while preserving pump/prefetch, SIF DMA, EE cache maintenance, SHA verification,
-journal, flush and metadata durability paths. CI #660 produced both variants
-from the same head and pinned toolchain:
+journal, flush and metadata durability paths.
+
+An early A/B pair through CI #661 was invalid for IOP profiler-overhead work.
+PS2SDK's IOP build rules store objects in `obj/`, while the old top-level clean
+did not remove that directory. PROFILE OFF therefore reused the PROFILE ON
+`hdl_stream.o`, producing a byte-identical embedded IRX. The corrected module
+build makes the profile mode part of the object path as `obj/profile-0/` and
+`obj/profile-1/`, removes the object tree in the module clean target, and CI now
+fails if the two IRX files compare equal.
+
+The frozen hardware pair is CI #666 at project commit
+`7875b14d837d6332f5edc37f1c12a55527d7dd87` with PS2SDK
+`b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b` and GCC 15.2.0:
 
 ```text
                          PROFILE ON   PROFILE OFF   delta OFF vs ON
-ELF                         638388        634420          -3968 B
-.text                       233280        230440          -2840 B
-named text                  232780        229956          -2824 B
-named functions                618           609               -9
-instructions                 58246         57539             -707
+stripped ELF                638388        632884          -5504 B
+EE named text               232780        229956          -2824 B
+EE named functions             618           609               -9
+EE instructions              58246         57539             -707
 execute_transaction()         6156          6156                0
+execute_transaction insn      1540          1540                0
+hdl_stream.irx file           9861          8405          -1456 B
+hdl_stream.irx .text          8595          7139          -1456 B
+hdl_stream.irx .data           144           144                0
+```
+
+Frozen hashes:
+
+```text
+PROFILE ON ELF   964d5c30613b16e5a160b51d4473000ce6da5740596a785d100d2c68a09686d7
+PROFILE OFF ELF  4d1458ebf158c21759d1acdd3a44ecca094a5f9948c9e4461ef4a4beb8f23916
+PROFILE ON IRX   8d3dbeabadbb860888b2c3d2072e8344953bea443faefccefce006b234cdb3db
+PROFILE OFF IRX  f0b29957560ce2ef35a53e77fa8250f477d7aa6490037f00cdfe2edc04a39751
 ```
 
 These are static deltas only. The authoritative overhead result remains the
 interleaved real-console wall-time comparison defined in
-`docs/PHASE0_HARDWARE_AB_PROTOCOL.md`.
+`docs/PHASE0_HARDWARE_AB_PROTOCOL.md`. Before a hardware run,
+`tools/phase0_profile_pair_preflight.py` verifies that the selected ELF files
+match the frozen pair and can emit the eight-run sample template.
 
 Exit gate: measurements are reproducible on at least one real console and the
 instrumented build has a documented overhead A/B against its same-source
