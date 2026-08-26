@@ -21,6 +21,17 @@
  * deliberately report zero timestamps. CI rejects application fopen/open/stat
  * call sites, so a future consumer cannot silently depend on this reduced
  * timestamp contract.
+ *
+ * CURRENT IMPLEMENTATION: PS2SDK's weak _libcglue_timezone_update() is invoked
+ * unconditionally from _libcglue_init(). Its default implementation reads the
+ * OSD timezone through POSIX open/read/close, builds a TZ string with sprintf()
+ * and calls setenv(). This application never calls localtime/mktime/strftime or
+ * PS2SDK's timezone/daylight setters, and none of its persistence formats expose
+ * libc local-time semantics. A strong no-op below therefore removes startup work
+ * and the associated formatting/environment dependency chain without changing
+ * the manager's declared storage or timing contracts. If local civil time is
+ * introduced later, this policy must be removed or replaced by an explicit,
+ * tested application time contract.
  */
 
 #include <errno.h>
@@ -36,6 +47,10 @@ void _ps2sdk_fileXio_init(void)
 }
 
 void _ps2sdk_fileXio_deinit(void)
+{
+}
+
+void _libcglue_timezone_update(void)
 {
 }
 
