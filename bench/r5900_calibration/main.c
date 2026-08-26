@@ -191,8 +191,12 @@ static uint32_t subtract_floor(uint32_t value, uint32_t overhead)
 static void print_distribution(const char *name,
                                const calibration_distribution_t *value)
 {
-    scr_printf("%-11s p50=%u p95=%u p99=%u max=%u\n",
-               name, value->p50, value->p95, value->p99, value->max);
+    scr_printf("%-11s p50=%lu p95=%lu p99=%lu max=%lu\n",
+               name,
+               (unsigned long)value->p50,
+               (unsigned long)value->p95,
+               (unsigned long)value->p99,
+               (unsigned long)value->max);
 }
 
 int main(void)
@@ -264,11 +268,13 @@ int main(void)
     print_distribution("timer", &loop_timer);
 
     scr_printf("\nP50 LOOP - EMPTY\n");
-    scr_printf("cycles=%u instructions=%u timer=%u\n",
-               subtract_floor(loop_cycles.p50, empty_cycles.p50),
-               subtract_floor(loop_instructions.p50, empty_instructions.p50),
-               subtract_floor(loop_timer.p50, empty_timer.p50));
-    scr_printf("loop-body instruction floor=%u\n", expected_body_instructions);
+    scr_printf("cycles=%lu instructions=%lu timer=%lu\n",
+               (unsigned long)subtract_floor(loop_cycles.p50, empty_cycles.p50),
+               (unsigned long)subtract_floor(loop_instructions.p50,
+                                             empty_instructions.p50),
+               (unsigned long)subtract_floor(loop_timer.p50, empty_timer.p50));
+    scr_printf("loop-body instruction floor=%lu\n",
+               (unsigned long)expected_body_instructions);
     scr_printf("overflows counter=%u timer=%u failures=%u\n",
                counter_overflows, timer_overflows, failures);
     scr_printf("sink=%08x\n", (unsigned int)calibration_sink);
