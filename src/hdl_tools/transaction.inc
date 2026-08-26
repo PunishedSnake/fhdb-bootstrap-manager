@@ -256,14 +256,9 @@ static uint32_t physical_lba(const hdl_partition_plan_t *plan,
     return 0;
 }
 
-/*
- * Hash a source ISO without involving the HDD. This is primarily used when a
- * previously PAYLOAD_VERIFIED journal is resumed: the old journal format does
- * not persist a full payload SHA-256, so one source pass is still required to
- * reconstruct the expected digest. Fresh installs do not pay this second USB
- * pass because copy_payload() hashes source bytes while they are already being
- * transferred.
- */
+/* Legacy v2 PAYLOAD_VERIFIED records store only the quick source fingerprint,
+ * so recovery must rebuild the full payload SHA-256 with one source pass.
+ * Fresh installs and v3 verified journals do not pay this pass. */
 static int hash_source_payload(const hdl_transaction_t *transaction,
                                int source_fd,
                                unsigned char digest[32])
@@ -394,13 +389,9 @@ done:
     return result;
 }
 
-/*
- * Verify the installed payload from HDD only. The source digest is either
- * accumulated for free while fresh bytes are copied, or reconstructed by one
- * source-only pass when resuming a PAYLOAD_VERIFIED journal. This removes the
- * old second full USB read from the normal install path while preserving full
- * end-to-end SHA-256 verification of every payload byte.
- */
+/* Verify the installed payload from HDD only. Fresh copy computes the expected
+ * digest while bytes are already flowing from USB. A v3 PAYLOAD_VERIFIED
+ * journal persists that digest, while v2 recovery reconstructs it once. */
 static int verify_target_digest(const hdl_transaction_t *transaction,
                                 const hdl_partition_plan_t *plan,
                                 const hdl_stream_layout_t *layout,
@@ -476,9 +467,12 @@ static __attribute__((noinline)) int transaction_preflight(
         return HDL_INSTALL_NO_SPACE;
 
     /* Once METADATA_COMMITTED is durable, payload and source identity have
-     * already passed full verification. Completion recovery only needs the
-     * target layout plus metadata read-back. */
-    if (transaction->stage >= HDL_TRANSACTION_STAGE_METADATA_COMMITTED)
+     * already passed full verification. A v3 PAYLOAD_VERIFIED record also
+     * persists the full source digest, so recovery can re-verify the HDD target
+     * without reopening USB. Legacy v2 verified records retain the old path. */
+    if (transaction->stage >= HDL_TRANSACTION_STAGE_METADATA_COMMITTED ||
+        (transaction->stage == HDL_TRANSACTION_STAGE_PAYLOAD_VERIFIED &&
+         transaction->record_version >= HDL_TRANSACTION_RECORD_VERSION_CURRENT))
         return 0;
 
     result = open_source(transaction->source_path,
@@ -559,6 +553,13 @@ static __attribute__((noinline)) int transaction_copy_stage(
     if (result < 0)
         return result;
 
+    /* Before PAYLOAD_VERIFIED becomes durable, replace the quick source
+     * fingerprint with the full digest already accumulated by copy_payload().
+     * If journal_save fails, the previous on-disk COPYING record remains the
+     * recovery authority and still contains its quick fingerprint. */
+    memcpy(transaction->source_fingerprint, source_payload_digest,
+           sizeof(transaction->source_fingerprint));
+    transaction->record_version = HDL_TRANSACTION_RECORD_VERSION_CURRENT;
     result = hdl_transaction_set_stage(
         transaction, HDL_TRANSACTION_STAGE_PAYLOAD_VERIFIED,
         transaction->total_sectors);
@@ -597,18 +598,33 @@ static __attribute__((noinline)) int transaction_commit_metadata_stage(
         return 0;
 
     if (!verified_this_run) {
-        disk_status_phase_at("Hashing source for resumed verification",
-                             "One source pass required by legacy journal format");
-        result = hash_source_payload(transaction, source_fd,
-                                     source_payload_digest);
-        if (result < 0)
-            return result;
-        disk_status_phase_at("Re-verifying resumed payload on HDD",
-                             "HDD-only SHA-256 read-back against source digest");
-        result = verify_target_digest(transaction, plan, layout, target_fd,
-                                      source_payload_digest);
-        if (result < 0)
-            return result;
+        if (transaction->record_version >=
+                HDL_TRANSACTION_RECORD_VERSION_CURRENT) {
+            memcpy(source_payload_digest, transaction->source_fingerprint,
+                   sizeof(transaction->source_fingerprint));
+            disk_status_phase_at(
+                "Re-verifying resumed payload on HDD",
+                "HDD-only SHA-256 read-back against journal v3 payload digest");
+            result = verify_target_digest(transaction, plan, layout, target_fd,
+                                          source_payload_digest);
+            if (result < 0)
+                return result;
+        } else {
+            disk_status_phase_at(
+                "Hashing source for resumed verification",
+                "One source pass required by legacy v2 journal format");
+            result = hash_source_payload(transaction, source_fd,
+                                         source_payload_digest);
+            if (result < 0)
+                return result;
+            disk_status_phase_at(
+                "Re-verifying resumed payload on HDD",
+                "HDD-only SHA-256 read-back against source digest");
+            result = verify_target_digest(transaction, plan, layout, target_fd,
+                                          source_payload_digest);
+            if (result < 0)
+                return result;
+        }
     }
 
     result = transaction_build_metadata(transaction, plan, layout, metadata);
