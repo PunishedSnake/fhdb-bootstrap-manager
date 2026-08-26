@@ -79,6 +79,12 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     int selection;
     int result;
 
+    /* Phase 3 no longer calls the old pre-confirm combined APA scan. Keep its
+     * wrapper referenced for this intermediate commit so -Werror proves the
+     * behavioral change without forcing unrelated hdl_installer glue cleanup
+     * into the journal-before-write safety fix. */
+    (void)hdl_install_recheck_disk;
+
     result = scan_mass_images(&images, &count);
     if (result < 0) {
         char body[384];
