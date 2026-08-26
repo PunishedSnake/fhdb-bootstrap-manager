@@ -3,9 +3,11 @@
 
 #include <stdint.h>
 
-#define HDL_TRANSACTION_RECORD_SIZE 512u
+#define HDL_TRANSACTION_RECORD_SIZE_LEGACY 512u
+#define HDL_TRANSACTION_RECORD_SIZE 544u
 #define HDL_TRANSACTION_RECORD_VERSION_LEGACY 2u
-#define HDL_TRANSACTION_RECORD_VERSION_CURRENT 3u
+#define HDL_TRANSACTION_RECORD_VERSION_DIGEST 3u
+#define HDL_TRANSACTION_RECORD_VERSION_CURRENT 4u
 #define HDL_TRANSACTION_TARGET_MAX 33u
 #define HDL_TRANSACTION_STARTUP_MAX 60u
 #define HDL_TRANSACTION_SOURCE_PATH_MAX 160u
@@ -47,9 +49,17 @@ typedef struct {
     uint8_t opl_compat_flags;
     uint8_t dma_type;
     uint8_t dma_mode;
-    /* In-memory provenance only. Encoders always write CURRENT. A decoded
-     * legacy record keeps its original version here so recovery code can
-     * preserve v2 behavior while v3 gains stronger post-copy semantics. */
+
+    /* v4 COPY records may carry the SHA-256 chaining state for exactly
+     * completed_sectors * 2048 source bytes. It is an optimization checkpoint,
+     * not a replacement for source identity: source_fingerprint remains the
+     * quick size+first/tail fingerprint until PAYLOAD_VERIFIED. */
+    unsigned char source_hash_checkpoint[32];
+    uint32_t source_hash_checkpoint_valid;
+
+    /* In-memory provenance only. Encoders always write CURRENT. Decoded v2/v3
+     * records keep their original version so recovery preserves their legacy
+     * behavior while v4 can restore a COPY hash checkpoint directly. */
     uint32_t record_version;
 } hdl_transaction_t;
 
@@ -60,7 +70,8 @@ int hdl_transaction_set_stage(hdl_transaction_t *transaction,
                               uint64_t completed_sectors);
 int hdl_transaction_encode(const hdl_transaction_t *transaction,
                            unsigned char record[HDL_TRANSACTION_RECORD_SIZE]);
-int hdl_transaction_decode(const unsigned char record[HDL_TRANSACTION_RECORD_SIZE],
+int hdl_transaction_decode(const unsigned char *record,
+                           unsigned int record_size,
                            hdl_transaction_t *transaction);
 
 #endif
