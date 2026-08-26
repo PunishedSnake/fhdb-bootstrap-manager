@@ -35,9 +35,10 @@ static volatile uint32_t calibration_sink;
  * two ADDIU operations, BNEZ and its NOP delay slot. The one-time accumulator
  * initialization and function return sit outside that repeated four-instruction
  * body. Keeping this tiny body explicit makes the instruction-completed counter
- * sanity check independent of GCC's loop transforms.
+ * sanity check independent of GCC's loop transforms. NOCLONE keeps a stable
+ * callable symbol so CI can validate the emitted reference sequence directly.
  */
-static __attribute__((noinline)) uint32_t calibration_integer_loop(uint32_t iterations)
+static __attribute__((noinline, noclone)) uint32_t calibration_integer_loop(uint32_t iterations)
 {
     uint32_t accumulator;
 
