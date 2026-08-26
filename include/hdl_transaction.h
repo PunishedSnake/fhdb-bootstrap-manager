@@ -4,6 +4,8 @@
 #include <stdint.h>
 
 #define HDL_TRANSACTION_RECORD_SIZE 512u
+#define HDL_TRANSACTION_RECORD_VERSION_LEGACY 2u
+#define HDL_TRANSACTION_RECORD_VERSION_CURRENT 3u
 #define HDL_TRANSACTION_TARGET_MAX 33u
 #define HDL_TRANSACTION_STARTUP_MAX 60u
 #define HDL_TRANSACTION_SOURCE_PATH_MAX 160u
@@ -45,6 +47,10 @@ typedef struct {
     uint8_t opl_compat_flags;
     uint8_t dma_type;
     uint8_t dma_mode;
+    /* In-memory provenance only. Encoders always write CURRENT. A decoded
+     * legacy record keeps its original version here so recovery code can
+     * preserve v2 behavior while v3 gains stronger post-copy semantics. */
+    uint32_t record_version;
 } hdl_transaction_t;
 
 int hdl_transaction_transition_allowed(hdl_transaction_stage_t from,
