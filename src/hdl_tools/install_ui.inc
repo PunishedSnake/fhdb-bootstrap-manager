@@ -74,8 +74,8 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     hdl_partition_plan_t plan;
     hdl_transaction_t transaction;
     uint32_t maximum;
-    uint32_t free_sectors;
     unsigned int count;
+    int maximum_value;
     int selection;
     int result;
 
@@ -175,11 +175,23 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
         show_result(&transaction, result);
         return;
     }
-    result = recheck_disk(&maximum, &free_sectors);
+
+    /* Pre-confirmation only needs enough live device state to describe the
+     * planned partition layout. Exact free-space accounting in current ps2hdd
+     * itself walks APA, so doing it here and again after arbitrary user think
+     * time merely duplicates the expensive scan. execute_transaction() retains
+     * the authoritative whole-chain/free-space recheck after confirmation. */
+    result = fileXioDevctl("hdd0:", HDIOC_STATUS, NULL, 0, NULL, 0);
+    if (result == 0) {
+        maximum_value = fileXioDevctl("hdd0:", HDIOC_MAXSECTOR,
+                                      NULL, 0, NULL, 0);
+        if (maximum_value <= 0)
+            result = HDL_INSTALL_DISK_UNSAFE;
+        else
+            maximum = (uint32_t)maximum_value;
+    }
     if (result == 0)
         result = hdl_partition_plan(transaction.source_bytes, maximum, &plan);
-    if (result == 0 && plan.allocation_bytes / 512u > free_sectors)
-        result = HDL_INSTALL_NO_SPACE;
     if (result == 0) {
         transaction.partition_count = plan.count;
         if (target_exists(transaction.target))
@@ -199,7 +211,8 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
                  "Source     : %llu MiB\n"
                  "Allocation : %llu MiB in %u partition%s\n"
                  "Target     : %s\n\n"
-                 "No HDD write has happened yet.",
+                 "No HDD write has happened yet. Live APA chain and exact "
+                 "free space are revalidated immediately before allocation.",
                  transaction.game_title,
                  transaction.startup,
                  (unsigned long long)(transaction.source_bytes /
@@ -217,9 +230,7 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     }
     if (!wait_for_chord(PAD_L1 | PAD_R1 | PAD_CROSS))
         return;
-    result = journal_save(&transaction);
-    if (result == 0)
-        result = execute_transaction(&transaction);
+    result = execute_transaction(&transaction);
     show_result(&transaction, result);
 }
 
