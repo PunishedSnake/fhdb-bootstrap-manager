@@ -35,23 +35,36 @@ int gs_ui_video_mode_apply(video_mode_id_t mode);
 ui_font_id_t gs_ui_font_current(void);
 int gs_ui_font_apply(ui_font_id_t font);
 
-void gs_ui_render_menu(const char *title,
-                       const char *status,
-                       const char *const *labels,
-                       const char *const *hints,
-                       const unsigned char *enabled,
-                       unsigned int item_count,
-                       unsigned int selected);
+#if defined(__GNUC__)
+#define GS_UI_MENU_SIZE_OPT __attribute__((optimize("Os")))
+#else
+#define GS_UI_MENU_SIZE_OPT
+#endif
+
+/* Human-speed menu presentation is VBlank/controller paced. Keep these two
+ * ordinary navigation renderers compact; disk-status telemetry and lower-level
+ * GS primitives retain their independent optimization policy. */
+void GS_UI_MENU_SIZE_OPT gs_ui_render_menu(
+    const char *title,
+    const char *status,
+    const char *const *labels,
+    const char *const *hints,
+    const unsigned char *enabled,
+    unsigned int item_count,
+    unsigned int selected);
 
 /* Root-only card dashboard. It keeps the short section descriptions without
  * forcing six two-line entries into the ordinary vertical-menu geometry. */
-void gs_ui_render_dashboard(const char *title,
-                            const char *status,
-                            const char *const *labels,
-                            const char *const *hints,
-                            const unsigned char *enabled,
-                            unsigned int item_count,
-                            unsigned int selected);
+void GS_UI_MENU_SIZE_OPT gs_ui_render_dashboard(
+    const char *title,
+    const char *status,
+    const char *const *labels,
+    const char *const *hints,
+    const unsigned char *enabled,
+    unsigned int item_count,
+    unsigned int selected);
+
+#undef GS_UI_MENU_SIZE_OPT
 
 void gs_ui_render_message(const char *title,
                           const char *body,

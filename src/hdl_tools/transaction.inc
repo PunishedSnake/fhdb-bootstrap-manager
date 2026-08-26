@@ -445,56 +445,232 @@ done:
     return result;
 }
 
-static int execute_transaction(hdl_transaction_t *transaction)
+/*
+ * Phase 2 keeps execute_transaction() as the ownership/cleanup controller, but
+ * pins the coarse transaction stages behind call boundaries. Each stage is
+ * dominated by fileXio/APA/SHA work, so a function call is negligible beside
+ * the I/O while preventing LTO from folding every recovery path back into one
+ * multi-kilobyte instruction working set.
+ */
+static __attribute__((noinline)) int transaction_preflight(
+    hdl_transaction_t *transaction, hdl_partition_plan_t *plan,
+    hdl_file_source_t *source)
 {
-    hdl_partition_plan_t plan;
-    hdl_stream_layout_t layout;
-    hdl_metadata_options_t metadata_options;
-    unsigned char metadata[HDL_METADATA_SIZE];
-    hdl_file_source_t source;
     unsigned char fingerprint[32];
-    unsigned char source_payload_digest[32];
     uint32_t maximum;
     uint32_t free_sectors;
-    int target_fd = -1;
-    int verified_this_run = 0;
-    int source_digest_valid = 0;
     int result;
 
-    source.fd = -1;
-    source.bytes = transaction->source_bytes;
+    source->fd = -1;
+    source->bytes = transaction->source_bytes;
     result = recheck_disk(&maximum, &free_sectors);
     if (result < 0)
         return result;
-    result = hdl_partition_plan(transaction->source_bytes, maximum, &plan);
+    result = hdl_partition_plan(transaction->source_bytes, maximum, plan);
     if (result < 0)
         return result;
-    if (transaction->partition_count != plan.count)
+    if (transaction->partition_count != plan->count)
         return HDL_INSTALL_LAYOUT_MISMATCH;
-    if (plan.allocation_bytes / 512u > free_sectors &&
+    if (plan->allocation_bytes / 512u > free_sectors &&
         transaction->stage == HDL_TRANSACTION_STAGE_PLANNED)
         return HDL_INSTALL_NO_SPACE;
 
     /* Once METADATA_COMMITTED is durable, payload and source identity have
      * already passed full verification. Completion recovery only needs the
-     * target layout plus metadata read-back, so do not require the USB ISO to
-     * remain connected merely to move stage 5 -> COMPLETE. */
-    if (transaction->stage < HDL_TRANSACTION_STAGE_METADATA_COMMITTED) {
-        result = open_source(transaction->source_path,
-                             transaction->source_bytes, &source);
+     * target layout plus metadata read-back. */
+    if (transaction->stage >= HDL_TRANSACTION_STAGE_METADATA_COMMITTED)
+        return 0;
+
+    result = open_source(transaction->source_path,
+                         transaction->source_bytes, source);
+    if (result < 0)
+        return result;
+    result = source_fingerprint(source, fingerprint);
+    if (result == 0 && memcmp(fingerprint, transaction->source_fingerprint,
+                              sizeof(fingerprint)) != 0)
+        result = HDL_INSTALL_SOURCE_CHANGED;
+    if (result == 0)
+        result = source_identity_matches(source, transaction);
+    if (result < 0) {
+        fileXioClose(source->fd);
+        source->fd = -1;
+    }
+    return result;
+}
+
+static __attribute__((noinline)) int transaction_prepare_target(
+    hdl_transaction_t *transaction, const hdl_partition_plan_t *plan,
+    hdl_stream_layout_t *layout, int *target_fd)
+{
+    int result;
+
+    if (transaction->stage == HDL_TRANSACTION_STAGE_PLANNED) {
+        result = create_partitions(transaction, plan);
         if (result < 0)
             return result;
-        result = source_fingerprint(&source, fingerprint);
-        if (result == 0 && memcmp(fingerprint, transaction->source_fingerprint,
-                                  sizeof(fingerprint)) != 0)
-            result = HDL_INSTALL_SOURCE_CHANGED;
-        if (result == 0)
-            result = source_identity_matches(&source, transaction);
-        if (result < 0) {
-            fileXioClose(source.fd);
-            return result;
-        }
+        result = hdl_transaction_set_stage(
+            transaction, HDL_TRANSACTION_STAGE_PARTITIONS_CREATED, 0);
+        if (result < 0 || journal_save(transaction) < 0)
+            return HDL_INSTALL_JOURNAL_INVALID;
     }
+
+    *target_fd = open_target(transaction, plan, layout);
+    if (*target_fd < 0)
+        return *target_fd;
+
+    if (transaction->stage == HDL_TRANSACTION_STAGE_PARTITIONS_CREATED) {
+        result = hdl_transaction_set_stage(
+            transaction, HDL_TRANSACTION_STAGE_COPYING, 0);
+        if (result < 0 || journal_save(transaction) < 0)
+            return HDL_INSTALL_JOURNAL_INVALID;
+    }
+    return 0;
+}
+
+static __attribute__((noinline)) int transaction_copy_stage(
+    hdl_transaction_t *transaction, const hdl_partition_plan_t *plan,
+    const hdl_stream_layout_t *layout, int source_fd, int target_fd,
+    unsigned char source_payload_digest[32], int *verified_this_run)
+{
+    int result;
+
+    if (transaction->stage != HDL_TRANSACTION_STAGE_COPYING)
+        return 0;
+
+    result = copy_payload(transaction, plan, layout, source_fd, target_fd,
+                          source_payload_digest);
+    if (result < 0)
+        return result;
+    *verified_this_run = 1;
+
+    disk_status_phase_at("Flushing copied HDL payload",
+                         "HDL payload data area");
+    disk_status_io(DISK_STATUS_FLUSH,
+                   layout->starts[0], 0, transaction->total_sectors,
+                   transaction->total_sectors);
+    if (fileXioIoctl2(target_fd, HDL_STREAM_IOCTL2_FLUSH,
+                      NULL, 0, NULL, 0) < 0)
+        return HDL_INSTALL_COPY_FAILED;
+
+    disk_status_phase_at("Verifying installed payload on HDD",
+                         "HDD-only SHA-256 read-back against source digest");
+    result = verify_target_digest(transaction, plan, layout, target_fd,
+                                  source_payload_digest);
+    if (result < 0)
+        return result;
+
+    result = hdl_transaction_set_stage(
+        transaction, HDL_TRANSACTION_STAGE_PAYLOAD_VERIFIED,
+        transaction->total_sectors);
+    if (result < 0 || journal_save(transaction) < 0)
+        return HDL_INSTALL_JOURNAL_INVALID;
+    return 0;
+}
+
+static __attribute__((noinline)) int transaction_build_metadata(
+    const hdl_transaction_t *transaction, const hdl_partition_plan_t *plan,
+    const hdl_stream_layout_t *layout, unsigned char metadata[HDL_METADATA_SIZE])
+{
+    hdl_metadata_options_t options;
+
+    options.game_title = transaction->game_title;
+    options.startup = transaction->startup;
+    options.disc_type = transaction->disc_type;
+    options.layer1_start = transaction->layer1_start;
+    options.hdl_compat_flags = transaction->hdl_compat_flags;
+    options.opl_compat_flags = transaction->opl_compat_flags;
+    options.dma_type = transaction->dma_type;
+    options.dma_mode = transaction->dma_mode;
+    return hdl_metadata_build(plan, layout->starts, layout->count,
+                              &options, metadata);
+}
+
+static __attribute__((noinline)) int transaction_commit_metadata_stage(
+    hdl_transaction_t *transaction, const hdl_partition_plan_t *plan,
+    const hdl_stream_layout_t *layout, int source_fd, int target_fd,
+    unsigned char source_payload_digest[32], int verified_this_run)
+{
+    unsigned char metadata[HDL_METADATA_SIZE];
+    int result;
+
+    if (transaction->stage != HDL_TRANSACTION_STAGE_PAYLOAD_VERIFIED)
+        return 0;
+
+    if (!verified_this_run) {
+        disk_status_phase_at("Hashing source for resumed verification",
+                             "One source pass required by legacy journal format");
+        result = hash_source_payload(transaction, source_fd,
+                                     source_payload_digest);
+        if (result < 0)
+            return result;
+        disk_status_phase_at("Re-verifying resumed payload on HDD",
+                             "HDD-only SHA-256 read-back against source digest");
+        result = verify_target_digest(transaction, plan, layout, target_fd,
+                                      source_payload_digest);
+        if (result < 0)
+            return result;
+    }
+
+    result = transaction_build_metadata(transaction, plan, layout, metadata);
+    if (result < 0)
+        return result;
+    disk_status_phase_at("Committing verified game metadata last",
+                         "Main partition attribute area / HDL metadata");
+    disk_status_io(DISK_STATUS_WRITE,
+                   layout->starts[0] + HDL_METADATA_LBA_OFFSET,
+                   2u, transaction->total_sectors,
+                   transaction->total_sectors);
+    result = fileXioIoctl2(target_fd,
+                           HDL_STREAM_IOCTL2_COMMIT_METADATA,
+                           metadata, sizeof(metadata), NULL, 0);
+    if (result < 0)
+        return HDL_INSTALL_METADATA_FAILED;
+
+    result = hdl_transaction_set_stage(
+        transaction, HDL_TRANSACTION_STAGE_METADATA_COMMITTED,
+        transaction->total_sectors);
+    if (result < 0 || journal_save(transaction) < 0)
+        return HDL_INSTALL_JOURNAL_INVALID;
+    return 0;
+}
+
+static __attribute__((noinline)) int transaction_finish_metadata_stage(
+    hdl_transaction_t *transaction, const hdl_partition_plan_t *plan,
+    const hdl_stream_layout_t *layout)
+{
+    unsigned char metadata[HDL_METADATA_SIZE];
+    int result;
+
+    if (transaction->stage != HDL_TRANSACTION_STAGE_METADATA_COMMITTED)
+        return 0;
+
+    result = transaction_build_metadata(transaction, plan, layout, metadata);
+    if (result < 0 ||
+        !target_metadata_matches(transaction->target, metadata))
+        return HDL_INSTALL_METADATA_FAILED;
+
+    result = hdl_transaction_set_stage(
+        transaction, HDL_TRANSACTION_STAGE_COMPLETE,
+        transaction->total_sectors);
+    if (result < 0)
+        return result;
+    journal_remove();
+    return 0;
+}
+
+static int execute_transaction(hdl_transaction_t *transaction)
+{
+    hdl_partition_plan_t plan;
+    hdl_stream_layout_t layout;
+    hdl_file_source_t source;
+    unsigned char source_payload_digest[32];
+    int target_fd = -1;
+    int verified_this_run = 0;
+    int result;
+
+    result = transaction_preflight(transaction, &plan, &source);
+    if (result < 0)
+        return result;
 
     pad_activity_begin();
     disk_status_begin_at("HDL game installation",
@@ -504,138 +680,26 @@ static int execute_transaction(hdl_transaction_t *transaction)
      * install or resume. Validation may still read first, but the transaction
      * owns an armed write path until it exits. */
     disk_status_set_write_intent(1);
-    if (transaction->stage == HDL_TRANSACTION_STAGE_PLANNED) {
-        result = create_partitions(transaction, &plan);
-        if (result < 0)
-            goto done;
-        result = hdl_transaction_set_stage(
-            transaction, HDL_TRANSACTION_STAGE_PARTITIONS_CREATED, 0);
-        if (result < 0 || journal_save(transaction) < 0) {
-            result = HDL_INSTALL_JOURNAL_INVALID;
-            goto done;
-        }
-    }
-    target_fd = open_target(transaction, &plan, &layout);
-    if (target_fd < 0) {
-        result = target_fd;
+
+    result = transaction_prepare_target(transaction, &plan, &layout, &target_fd);
+    if (result < 0)
         goto done;
-    }
-    if (transaction->stage == HDL_TRANSACTION_STAGE_PARTITIONS_CREATED) {
-        result = hdl_transaction_set_stage(
-            transaction, HDL_TRANSACTION_STAGE_COPYING, 0);
-        if (result < 0 || journal_save(transaction) < 0) {
-            result = HDL_INSTALL_JOURNAL_INVALID;
-            goto done;
-        }
-    }
-    if (transaction->stage == HDL_TRANSACTION_STAGE_COPYING) {
-        result = copy_payload(transaction, &plan, &layout,
-                              source.fd, target_fd, source_payload_digest);
-        if (result < 0)
-            goto done;
-        source_digest_valid = 1;
-        disk_status_phase_at("Flushing copied HDL payload",
-                             "HDL payload data area");
-        disk_status_io(DISK_STATUS_FLUSH,
-                       layout.starts[0], 0, transaction->total_sectors,
-                       transaction->total_sectors);
-        if (fileXioIoctl2(target_fd, HDL_STREAM_IOCTL2_FLUSH,
-                          NULL, 0, NULL, 0) < 0) {
-            result = HDL_INSTALL_COPY_FAILED;
-            goto done;
-        }
-        disk_status_phase_at("Verifying installed payload on HDD",
-                             "HDD-only SHA-256 read-back against source digest");
-        result = verify_target_digest(transaction, &plan, &layout,
-                                      target_fd, source_payload_digest);
-        if (result < 0)
-            goto done;
-        verified_this_run = 1;
-        result = hdl_transaction_set_stage(
-            transaction, HDL_TRANSACTION_STAGE_PAYLOAD_VERIFIED,
-            transaction->total_sectors);
-        if (result < 0 || journal_save(transaction) < 0) {
-            result = HDL_INSTALL_JOURNAL_INVALID;
-            goto done;
-        }
-    }
-    if (transaction->stage == HDL_TRANSACTION_STAGE_PAYLOAD_VERIFIED) {
-        if (!verified_this_run) {
-            disk_status_phase_at("Hashing source for resumed verification",
-                                 "One source pass required by legacy journal format");
-            result = hash_source_payload(transaction, source.fd,
-                                         source_payload_digest);
-            if (result < 0)
-                goto done;
-            source_digest_valid = 1;
-            disk_status_phase_at("Re-verifying resumed payload on HDD",
-                                 "HDD-only SHA-256 read-back against source digest");
-            result = verify_target_digest(transaction, &plan, &layout,
-                                          target_fd, source_payload_digest);
-            if (result < 0)
-                goto done;
-        }
-        if (!source_digest_valid && !verified_this_run) {
-            result = HDL_INSTALL_VERIFY_FAILED;
-            goto done;
-        }
-        metadata_options.game_title = transaction->game_title;
-        metadata_options.startup = transaction->startup;
-        metadata_options.disc_type = transaction->disc_type;
-        metadata_options.layer1_start = transaction->layer1_start;
-        metadata_options.hdl_compat_flags = transaction->hdl_compat_flags;
-        metadata_options.opl_compat_flags = transaction->opl_compat_flags;
-        metadata_options.dma_type = transaction->dma_type;
-        metadata_options.dma_mode = transaction->dma_mode;
-        result = hdl_metadata_build(&plan, layout.starts, layout.count,
-                                    &metadata_options, metadata);
-        if (result < 0)
-            goto done;
-        disk_status_phase_at("Committing verified game metadata last",
-                             "Main partition attribute area / HDL metadata");
-        disk_status_io(DISK_STATUS_WRITE,
-                       layout.starts[0] + HDL_METADATA_LBA_OFFSET,
-                       2u, transaction->total_sectors,
-                       transaction->total_sectors);
-        result = fileXioIoctl2(target_fd,
-                               HDL_STREAM_IOCTL2_COMMIT_METADATA,
-                               metadata, sizeof(metadata), NULL, 0);
-        if (result < 0) {
-            result = HDL_INSTALL_METADATA_FAILED;
-            goto done;
-        }
-        result = hdl_transaction_set_stage(
-            transaction, HDL_TRANSACTION_STAGE_METADATA_COMMITTED,
-            transaction->total_sectors);
-        if (result < 0 || journal_save(transaction) < 0) {
-            result = HDL_INSTALL_JOURNAL_INVALID;
-            goto done;
-        }
-    }
-    if (transaction->stage == HDL_TRANSACTION_STAGE_METADATA_COMMITTED) {
-        metadata_options.game_title = transaction->game_title;
-        metadata_options.startup = transaction->startup;
-        metadata_options.disc_type = transaction->disc_type;
-        metadata_options.layer1_start = transaction->layer1_start;
-        metadata_options.hdl_compat_flags = transaction->hdl_compat_flags;
-        metadata_options.opl_compat_flags = transaction->opl_compat_flags;
-        metadata_options.dma_type = transaction->dma_type;
-        metadata_options.dma_mode = transaction->dma_mode;
-        result = hdl_metadata_build(&plan, layout.starts, layout.count,
-                                    &metadata_options, metadata);
-        if (result < 0 ||
-            !target_metadata_matches(transaction->target, metadata)) {
-            result = HDL_INSTALL_METADATA_FAILED;
-            goto done;
-        }
-        result = hdl_transaction_set_stage(
-            transaction, HDL_TRANSACTION_STAGE_COMPLETE,
-            transaction->total_sectors);
-        if (result < 0)
-            goto done;
-        journal_remove();
-    }
+    result = transaction_copy_stage(transaction, &plan, &layout,
+                                    source.fd, target_fd,
+                                    source_payload_digest,
+                                    &verified_this_run);
+    if (result < 0)
+        goto done;
+    result = transaction_commit_metadata_stage(
+        transaction, &plan, &layout, source.fd, target_fd,
+        source_payload_digest, verified_this_run);
+    if (result < 0)
+        goto done;
+    result = transaction_finish_metadata_stage(transaction, &plan, &layout);
+    if (result < 0)
+        goto done;
     result = 0;
+
 done:
     if (target_fd >= 0)
         fileXioClose(target_fd);
