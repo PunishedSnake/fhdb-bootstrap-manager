@@ -30,6 +30,16 @@ static int choose_media_type(uint32_t suggested)
     return choice < 0 ? -1 : (choice == 0 ? 0x12 : 0x14);
 }
 
+static int preconfirm_target_exists(const char *target)
+{
+    iox_stat_t stat;
+    char path[64];
+
+    if (target_path("hdd0:", target, path, sizeof(path)) < 0)
+        return 1;
+    return fileXioGetStat(path, &stat) >= 0;
+}
+
 static HDL_INSTALL_UI_STAGE void show_result(const hdl_transaction_t *transaction,
                                              int result)
 {
@@ -79,11 +89,11 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     int selection;
     int result;
 
-    /* Phase 3 no longer calls the old pre-confirm combined APA scan. Keep its
-     * wrapper referenced for this intermediate commit so -Werror proves the
-     * behavioral change without forcing unrelated hdl_installer glue cleanup
-     * into the journal-before-write safety fix. */
+    /* Phase 3 no longer calls the old pre-confirm combined APA scan/cache.
+     * Keep both wrappers referenced for this intermediate commit so -Werror
+     * can validate the dataflow change independently from glue removal. */
     (void)hdl_install_recheck_disk;
+    (void)hdl_cached_target_exists;
 
     result = scan_mass_images(&images, &count);
     if (result < 0) {
@@ -200,7 +210,11 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
         result = hdl_partition_plan(transaction.source_bytes, maximum, &plan);
     if (result == 0) {
         transaction.partition_count = plan.count;
-        if (target_exists(transaction.target))
+        /* Keep collision feedback before the destructive chord for now, but
+         * bypass the retired combined-scan cache. Current ps2hdd getstat uses
+         * apaFindPartition(), so this remaining APA lookup is the next Phase 3
+         * candidate rather than being silently mistaken for a cheap query. */
+        if (preconfirm_target_exists(transaction.target))
             result = HDL_INSTALL_TARGET_EXISTS;
     }
     if (result < 0) {
