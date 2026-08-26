@@ -12,6 +12,8 @@ PS2SDK_REF=${PS2SDK_SOURCE_REF:-unavailable}
 PS2SDK_SHA=${PS2SDK_SOURCE_SHA:-unavailable}
 PS2DEV_BUNDLE_REF=${PS2DEV_BUNDLE_REF:-unavailable}
 HDL_PROFILE_VALUE=${HDL_PROFILE:-1}
+BENCHMARK_ELF_PATH=${BENCHMARK_ELF:-PS2_HDD_BOOTSTRAP_MANAGER.ELF}
+HDL_STREAM_IRX_PATH=${HDL_STREAM_IRX:-hdl_stream.irx}
 
 case "$HDL_PROFILE_VALUE" in
     0|1) ;;
@@ -30,6 +32,29 @@ if [ "${PS2SDK:-}" != "" ] && git -C "$PS2SDK" rev-parse HEAD >/dev/null 2>&1; t
     PS2SDK_SHA=$(git -C "$PS2SDK" rev-parse HEAD)
     PS2SDK_REF=$(git -C "$PS2SDK" describe --always --tags 2>/dev/null || printf '%s' "$PS2SDK_REF")
 fi
+
+file_sha256()
+{
+    if [ -f "$1" ]; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        printf 'UNRECORDED'
+    fi
+}
+
+file_bytes()
+{
+    if [ -f "$1" ]; then
+        wc -c < "$1" | tr -d ' '
+    else
+        printf 'UNRECORDED'
+    fi
+}
+
+BENCHMARK_ELF_SHA=$(file_sha256 "$BENCHMARK_ELF_PATH")
+BENCHMARK_ELF_BYTES=$(file_bytes "$BENCHMARK_ELF_PATH")
+HDL_STREAM_IRX_SHA=$(file_sha256 "$HDL_STREAM_IRX_PATH")
+HDL_STREAM_IRX_BYTES=$(file_bytes "$HDL_STREAM_IRX_PATH")
 
 cat > "$OUT" <<EOF
 # Build-side half of the corpus-v2 benchmark record.
@@ -51,7 +76,13 @@ toolchain_target: "$CC_TARGET"
 toolchain_gcc: "$CC_VERSION"
 toolchain_container: "ps2dev/ps2dev:v2.0.0"
 hdl_profile_enabled: "$HDL_PROFILE_VALUE"
-build_flags: "-O2 -flto -G0 -fdata-sections -ffunction-sections -DHDL_PROFILE_ENABLED=$HDL_PROFILE_VALUE; ld --gc-sections"
+build_flags: "EE: -O2 -flto -G0 -fdata-sections -ffunction-sections -DHDL_PROFILE_ENABLED=$HDL_PROFILE_VALUE; ld --gc-sections; hdl_stream IOP: PS2SDK -Os baseline with appended -O2 -DHDL_PROFILE_ENABLED=$HDL_PROFILE_VALUE"
+benchmark_elf: "$BENCHMARK_ELF_PATH"
+benchmark_elf_sha256: "$BENCHMARK_ELF_SHA"
+benchmark_elf_bytes: "$BENCHMARK_ELF_BYTES"
+hdl_stream_irx: "$HDL_STREAM_IRX_PATH"
+hdl_stream_irx_sha256: "$HDL_STREAM_IRX_SHA"
+hdl_stream_irx_bytes: "$HDL_STREAM_IRX_BYTES"
 active_irx: UNRECORDED
 embedded_irx: "iomanX fileXio secrman freesio2 freepad mcman mcserv secrsif poweroff bdm bdmfs_fatfs usbd usbmass_bd ps2dev9 ata_bd ps2fs ps2hdd-bdm hdl_stream"
 workload: UNRECORDED
