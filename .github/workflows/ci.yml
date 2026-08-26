@@ -19,6 +19,8 @@ jobs:
         run: python3 tools/hardware_fault_injector.py selftest
       - name: Self-test HDL performance log parser
         run: python3 tools/parse_hdl_perf.py --selftest
+      - name: Self-test HDL PROFILE A/B comparator
+        run: python3 tools/compare_hdl_profile_ab.py --selftest
       - name: Enforce direct-fileXio runtime policy
         run: |
           python3 tools/check_filexio_fdman_policy.py --selftest

@@ -81,7 +81,7 @@ device sector/transfer unit, VIF/GIF packet, or another explicit contract.
 Goal: establish evidence before altering architecture.
 
 - [x] Record project SHA/ref, pinned PS2SDK source ref/SHA, toolchain identity and
-      build flags automatically in `BENCHMARK_PROVENANCE.yml`.
+      build flags automatically in benchmark provenance artifacts.
 - [ ] Record console SCPH/hardware revision, adapters, runtime active IRX and
       workload during a real-hardware benchmark. Build CI intentionally leaves
       those fields `UNRECORDED` rather than inferring them.
@@ -97,7 +97,7 @@ Goal: establish evidence before altering architecture.
 - [x] Preserve linker map, symbol sizes and optimization audit in CI artifacts.
 - [x] Add a host parser that converts `HDDMAN.LOG` corpus-v2 performance records
       to stable JSON and self-tests in CI.
-- [ ] Add a same-source profiling-on/profiling-off build pair for authoritative
+- [x] Add a same-source profiling-on/profiling-off build pair for authoritative
       instrumentation-overhead A/B on real hardware.
 - [ ] Exercise the R5900 counter harness in a bounded hardware benchmark and
       measure empty-scope overhead before instrumenting application kernels.
@@ -107,11 +107,11 @@ Goal: establish evidence before altering architecture.
 The first EE profiler pass increased `execute_transaction()` from the audited
 6420 B baseline to 7492 B under LTO. This was rejected. Profiling helpers were
 then isolated with selective `noinline` and report paths with `cold,noinline`.
-The instrumented transaction body became 6176 B, smaller than baseline, while
-retaining the counters. This proves only static footprint, not runtime overhead.
+The instrumented transaction body later became 6156 B after Phase-1 work while
+retaining the counters. Static footprint alone is not a runtime-overhead claim.
 
-The IOP path now records logarithmic microsecond latency histograms without
-`printf` in the hot path. Current categories are:
+The IOP path records logarithmic microsecond latency histograms without `printf`
+in the hot path. Current categories are:
 
 ```text
 usb-direct-read
@@ -138,21 +138,43 @@ out PS2SDK `v2.0.0`; that annotated tag resolves to commit
 `b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b`. CI records that exact source
 provenance rather than substituting current PS2SDK master.
 
+The Phase-0 same-source A/B switch is `HDL_PROFILE=1/0`. PROFILE OFF compiles
+EE/IOP latency timers, histograms, traffic counters and phase-end telemetry out
+while preserving pump/prefetch, SIF DMA, EE cache maintenance, SHA verification,
+journal, flush and metadata durability paths. CI #660 produced both variants
+from the same head and pinned toolchain:
+
+```text
+                         PROFILE ON   PROFILE OFF   delta OFF vs ON
+ELF                         638388        634420          -3968 B
+.text                       233280        230440          -2840 B
+named text                  232780        229956          -2824 B
+named functions                618           609               -9
+instructions                 58246         57539             -707
+execute_transaction()         6156          6156                0
+```
+
+These are static deltas only. The authoritative overhead result remains the
+interleaved real-console wall-time comparison defined in
+`docs/PHASE0_HARDWARE_AB_PROTOCOL.md`.
+
 Exit gate: measurements are reproducible on at least one real console and the
-instrumented build has a documented overhead A/B against an uninstrumented build.
+instrumented build has a documented overhead A/B against its same-source
+PROFILE-OFF companion.
 
 ## Phase 1: remove known unnecessary code/work
 
-- [ ] Replace the broad `draw2d` dependency used by the UI with the minimum GIF
-      primitives actually required, if the ELF A/B confirms removal of unused
-      arc/trigonometry/libm code.
-- [ ] Audit formatted-I/O callsites and replace hot/control-only formatting with
-      bounded lightweight formatting where this materially reduces `.text`.
-- [ ] Investigate current PS2SDK fileXio/newlib timestamp glue that pulls scanf/
-      timezone machinery into the ELF. Treat any SDK change as a separate,
-      source-pinned compatibility patch.
-- [ ] Remove source-level work duplicated across transaction stages when the
-      result can be safely retained under the same ownership/lifetime.
+- [x] Evaluate replacing the broad `draw2d` dependency with minimum GIF
+      primitives. The tested shim was rejected because final `.text` grew by
+      480 B; the existing dependency remains the smaller measured result.
+- [x] Audit formatted-I/O callsites and replace the unused floating formatter
+      dependency with the bounded integer-only formatting contract guarded by CI.
+- [x] Audit current PS2SDK fileXio/Newlib timestamp and timezone glue. Keep direct
+      fileXio application semantics, remove unused local-time bootstrap work, and
+      guard the source contract in CI.
+- [x] Remove source-level work duplicated across transaction stages where the
+      result can safely remain under the same ownership/lifetime. The normal
+      metadata-commit path now reuses its canonical 1024-byte block for read-back.
 
 Exit gate: same functional output, smaller ELF/hot code footprint, no regression
 in hardware smoke tests.

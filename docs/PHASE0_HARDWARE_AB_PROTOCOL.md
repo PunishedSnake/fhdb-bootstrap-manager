@@ -138,6 +138,38 @@ Run at least four complete comparable samples, preferably two in each half of an
 interleaved order, for an initial engineering answer. Add samples if wall time
 or PROFILE ON tail latency is unstable.
 
+## Host comparison record
+
+Store the comparable run timings in a JSON array. Every sample must include:
+
+```json
+{
+  "mode": "OFF",
+  "project_git_sha": "<same CI head SHA for every sample>",
+  "workload_id": "<stable workload/device/layout identifier>",
+  "correctness_hash": "<same verified result for every sample>",
+  "source_bytes": 0,
+  "total_us": 0,
+  "copy_us": 0,
+  "verify_us": 0
+}
+```
+
+`copy_us` and `verify_us` are optional if the external measurement setup cannot
+isolate those phases. `source_bytes` and `total_us` are mandatory. Compare the
+record with:
+
+```text
+python3 tools/compare_hdl_profile_ab.py samples.json --output profile-ab.json
+```
+
+The comparator refuses mixed project SHAs, workloads, correctness hashes or
+source sizes and requires four samples of each mode by default. It reports
+p50/p95/p99/max for available wall-time metrics plus signed PROFILE ON vs OFF
+percent deltas. Throughput is derived from the recorded bytes and time. Rich EE
+and IOP latency distributions remain sourced from `parse_hdl_perf.py` for
+PROFILE ON only.
+
 ## Phase-0 acceptance
 
 Phase 0 may be marked hardware-complete only when:
