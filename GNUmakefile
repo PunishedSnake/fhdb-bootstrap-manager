@@ -13,5 +13,8 @@ EE_LDFLAGS += -Wl,--wrap=snprintf -Wl,--wrap=vsnprintf
 filexio_fdman_policy_ps2.o: src/filexio_fdman_policy_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
+# GNU ld --wrap rewrites references after the LTO plugin has performed its own
+# reachability pass. Keep these two externally-named shims as ordinary object
+# code so LTO cannot discard them before ld creates __wrap_* references.
 printf_policy_ps2.o: src/printf_policy_ps2.c
-	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+	$(EE_CC) $(EE_CFLAGS) -fno-lto $(EE_INCS) -c $< -o $@
