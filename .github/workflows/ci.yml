@@ -129,6 +129,32 @@ jobs:
           cat OPTIMIZATION_AUDIT_PROFILE_OFF.txt
           sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
           sha256sum PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF | tee HDL_PROFILE_PAIR.sha256
+      - name: Build isolated resume-hash experiment after frozen gate
+        run: >-
+          docker run --rm
+          -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make python3 >/dev/null &&
+          sh tools/build_resume_hash_experiment.sh &&
+          mips64r5900el-ps2-elf-size
+          PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF
+          > PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.sections &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF
+          PS2_HDD_BOOTSTRAP_MANAGER.ELF &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
+          PS2_HDD_BOOTSTRAP_MANAGER.map'
+      - name: Record resume-hash experiment identity
+        run: |
+          echo "--- resume-hash experiment ---"
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.sha256
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.size
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.sections
+          echo "--- resume-hash optimization audit ---"
+          cat OPTIMIZATION_AUDIT_RESUME_HASH.txt
+          python3 tools/phase0_profile_pair_preflight.py \
+            --profile-on PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF \
+            --profile-off PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF \
+            --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+          sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: PS2-HDD-Bootstrap-Manager
@@ -159,6 +185,12 @@ jobs:
             bench/r5900_calibration/R5900_COUNTER_CALIBRATION.map
             bench/r5900_calibration/R5900_COUNTER_CALIBRATION.sections
             bench/r5900_calibration/R5900_COUNTER_CALIBRATION.disasm
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.size
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.map
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.sections
+            OPTIMIZATION_AUDIT_RESUME_HASH.txt
             HDDMAN.CFG
             LICENSE
             THIRD_PARTY_NOTICES.md
