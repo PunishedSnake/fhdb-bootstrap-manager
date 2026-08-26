@@ -72,17 +72,16 @@ static int delete_installed_game(const hdl_game_entry_t *game,
     char path[64];
     int result;
 
-    /* Before the user arms deletion these are genuinely read-only safety
-     * checks, so keep the ordinary READ monitor semantics here. */
-    result = recheck_disk(&maximum, &free_sectors);
-    if (result == 0)
-        result = journal_blocks_game_delete(game->id);
+    /* The confirmation screen is separated from the destructive operation by
+     * an arbitrary human delay, so a full APA walk here cannot authorize the
+     * later write. Before asking for confirmation, reject a journal-owned or
+     * already-changed exact target only. The authoritative whole-chain scan is
+     * retained below, after the chord, immediately inside the armed write path. */
+    result = journal_blocks_game_delete(game->id);
     if (result == 0)
         result = verify_game_snapshot(game, total_sectors);
     if (result < 0)
         return result;
-    (void)maximum;
-    (void)free_sectors;
 
     scr_clear();
     scr_printf("Delete installed HDL game\n\n");
