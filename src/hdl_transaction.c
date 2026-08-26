@@ -128,6 +128,9 @@ int hdl_transaction_set_stage(hdl_transaction_t *transaction,
     updated = *transaction;
     updated.stage = stage;
     updated.completed_sectors = completed_sectors;
+    if (transaction->stage == HDL_TRANSACTION_STAGE_PLANNED &&
+        stage == HDL_TRANSACTION_STAGE_PARTITIONS_CREATED)
+        updated.allocation_armed = 0;
     if (!transaction_valid(&updated))
         return HDL_TRANSACTION_PROGRESS_INVALID;
     *transaction = updated;
