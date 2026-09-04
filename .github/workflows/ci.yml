@@ -23,6 +23,10 @@ jobs:
         run: python3 tools/compare_hdl_profile_ab.py --selftest
       - name: Self-test Phase-0 frozen pair preflight
         run: python3 tools/phase0_profile_pair_preflight.py --selftest
+      - name: Self-test resume-hash A/B preflight
+        run: python3 tools/resume_hash_ab_preflight.py --selftest
+      - name: Self-test resume-hash A/B comparator
+        run: python3 tools/compare_hdl_resume_hash_ab.py --selftest
       - name: Self-test R5900 calibration disassembly guard
         run: python3 tools/check_r5900_calibration_disasm.py --selftest
       - name: Enforce direct-fileXio runtime policy
@@ -132,24 +136,49 @@ jobs:
       - name: Build isolated resume-hash experiment after frozen gate
         run: >-
           docker run --rm
+          -e PROJECT_GIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          -e PROJECT_GIT_REF="${{ github.head_ref || github.ref }}"
+          -e PS2DEV_BUNDLE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_SHA="b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b"
           -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
           sh -c 'apk add --no-cache make python3 >/dev/null &&
           sh tools/build_resume_hash_experiment.sh &&
           mips64r5900el-ps2-elf-size
-          PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF
-          > PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.sections &&
+          PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF
+          > PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.sections &&
+          mips64r5900el-ps2-elf-size
+          PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF
+          > PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.sections &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.sections
+          PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.sections &&
           cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF
           PS2_HDD_BOOTSTRAP_MANAGER.ELF &&
           cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
           PS2_HDD_BOOTSTRAP_MANAGER.map'
-      - name: Record resume-hash experiment identity
+      - name: Record and validate resume-hash experiment identity
         run: |
-          echo "--- resume-hash experiment ---"
-          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.sha256
-          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.size
-          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.sections
-          echo "--- resume-hash optimization audit ---"
-          cat OPTIMIZATION_AUDIT_RESUME_HASH.txt
+          python3 tools/resume_hash_ab_preflight.py \
+            --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --identity-output RESUME_HASH_AB_IDENTITY.json \
+            --profile-off-template RESUME_HASH_AB_PROFILE_OFF_TEMPLATE.json \
+            --profile-on-template RESUME_HASH_AB_PROFILE_ON_TEMPLATE.json
+          echo "--- resume-hash PROFILE OFF ---"
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF.sha256
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF.size
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.sections
+          cat BENCHMARK_PROVENANCE_RESUME_HASH_PROFILE_OFF.yml
+          echo "--- resume-hash PROFILE ON ---"
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF.sha256
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF.size
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.sections
+          cat BENCHMARK_PROVENANCE_RESUME_HASH_PROFILE_ON.yml
+          echo "--- resume-hash identity ---"
+          cat RESUME_HASH_AB_IDENTITY.json
+          echo "--- resume-hash PROFILE OFF optimization audit ---"
+          cat OPTIMIZATION_AUDIT_RESUME_HASH_PROFILE_OFF.txt
+          echo "--- resume-hash PROFILE ON optimization audit ---"
+          cat OPTIMIZATION_AUDIT_RESUME_HASH_PROFILE_ON.txt
           python3 tools/phase0_profile_pair_preflight.py \
             --profile-on PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF \
             --profile-off PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF \
@@ -191,6 +220,25 @@ jobs:
             PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.map
             PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.sections
             OPTIMIZATION_AUDIT_RESUME_HASH.txt
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF.size
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.map
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.sections
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF.size
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.map
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.sections
+            HDL_STREAM_RESUME_HASH_PROFILE_OFF.irx
+            HDL_STREAM_RESUME_HASH_PROFILE_ON.irx
+            OPTIMIZATION_AUDIT_RESUME_HASH_PROFILE_OFF.txt
+            OPTIMIZATION_AUDIT_RESUME_HASH_PROFILE_ON.txt
+            BENCHMARK_PROVENANCE_RESUME_HASH_PROFILE_OFF.yml
+            BENCHMARK_PROVENANCE_RESUME_HASH_PROFILE_ON.yml
+            RESUME_HASH_AB_IDENTITY.json
+            RESUME_HASH_AB_PROFILE_OFF_TEMPLATE.json
+            RESUME_HASH_AB_PROFILE_ON_TEMPLATE.json
             HDDMAN.CFG
             LICENSE
             THIRD_PARTY_NOTICES.md
