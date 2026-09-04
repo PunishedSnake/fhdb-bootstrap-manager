@@ -221,19 +221,49 @@ in hardware smoke tests.
 - [ ] Audit compiler-generated 64-bit divide/mod helpers and eliminate only cases
       whose arithmetic contract proves a cheaper transformation correct.
 
+Current note: the isolated resume-hash experiment grows `execute_transaction()`
+to 6556 B in PROFILE OFF and 6572 B in PROFILE ON, so the I-cache concern remains
+real. Phase 2 is nevertheless held behind the Phase-0/Phase-1 real-hardware gate
+rather than treating static size as a timing result.
+
 Exit gate: smaller active I-cache footprint plus equal correctness/error paths.
 
 ## Phase 3: storage, APA and HDL dataflow
 
-- [ ] Describe APA catalogue, ISO source, HDL transaction and payload stream with
-      producer/consumer/lifetime/ownership contracts.
-- [ ] Add a persistent compact HDL catalogue index with version, drive identity,
-      APA-chain validation and checksum; mismatch always falls back to full scan.
+- [x] Describe APA catalogue, ISO source, HDL transaction, SHA checkpoint and
+      payload stream with producer/consumer/lifetime/ownership contracts in
+      `docs/HDL_DATAFLOW_CONTRACTS.md`.
+- [x] Audit recovery producer lifetime and isolate the resume-hash checkpoint
+      experiment. A matching COPY checkpoint removes prefix replay; a matching
+      full `PAYLOAD_VERIFIED` checkpoint also removes source reopen/fingerprint/
+      ISO-probe work while retaining full HDD SHA-256 read-back.
+- [ ] Evaluate a persistent compact HDL catalogue index only after identifying a
+      cheap, trustworthy drive/APA mutation-generation signal. If validation
+      requires the same full chain walk, retain the current lazy session cache
+      instead of adding a cache that merely moves work around.
 - [ ] Keep large sequential transfers and persistent descriptors; avoid repeated
-      small fileXio/RPC control-plane operations.
+      small fileXio/RPC control-plane operations outside semantically required
+      journal/checkpoint boundaries.
 - [ ] Re-measure USB source, HDD target and verification independently.
 - [ ] Tune chunk/batch size only with a sweep on the same device/workload.
-- [ ] Audit sync/flush frequency against transaction durability requirements.
+- [x] Audit checkpoint/journal small-file frequency for the current recovery
+      experiment: the 256-byte sidecar is written at the existing 32 MiB journal
+      boundary plus orderly cancel, not per 64 KiB payload chunk. Broader HDD/
+      filesystem flush-frequency changes remain measurement-gated.
+
+### Phase-3 implementation notes
+
+The current experiment identity is CI #706 at project commit
+`a43b073c32348e020c234fff64615c8c4cddc98d`. The frozen baseline remains CI
+#666. The matched experiment keeps `hdl_stream.irx` byte-identical to its
+corresponding frozen PROFILE mode, so the resume-hash/source-lifetime experiment
+is EE-only.
+
+`docs/HDL_RESUME_HASH_BENCHMARK.md` is the hardware correctness/performance gate.
+Its PROFILE OFF pair is the release-like acceptance pair; PROFILE ON exists for
+USB/HDD/SIF/EE attribution. The experiment remains **HIPOTEZA DO TESTU** until
+real hardware validates recovery gain, uninterrupted-install regression and
+crash-window behaviour.
 
 Exit gate: lower non-hideable storage time without weakening journal or metadata
 commit safety.
@@ -242,15 +272,27 @@ commit safety.
 
 - [x] Instrument queue-adjacent prefetch wait, service/device work and SIF
       completion independently enough to locate the dominant 64 KiB stage.
-- [ ] Maintain the IOP-local producer path where the final device consumer is on
-      the IOP; do not bounce payload through EE without a consumer requirement.
+- [x] Maintain the IOP-local producer path where the final device consumer is on
+      the IOP. Current fast COPY reads into IOP staging, writes directly to
+      ps2hdd, and sends only the EE SHA consumer copy over SIF.
 - [ ] Keep control metadata coarse-grained and bulk payload on DMA/data-plane paths.
-- [ ] Express double buffering as explicit producer/consumer ownership states.
+- [ ] Express double buffering as explicit producer/consumer ownership states in
+      code only if the current semaphore/stage protocol needs further evolution;
+      the current ownership contract is documented in `HDL_DATAFLOW_CONTRACTS.md`.
 - [ ] Evaluate triple buffering only if telemetry shows producer/consumer jitter
       that a third slot can actually hide within the IOP RAM budget.
-- [ ] Add a static IOP RAM budget including IRX, staging buffers, fragment maps,
-      stacks and safety headroom.
+- [x] Add a static incremental IOP RAM budget for IRX sections, staging buffers,
+      fragment map, prefetch stack and compiler-observed stream-object size in
+      `docs/HDL_IOP_RAM_BUDGET.md`. System-wide free-memory headroom remains a
+      required real-runtime measurement before any buffer growth.
+- [ ] Record active IOP module text/data/BSS, owned stacks and minimum free IOP
+      memory on real hardware before any triple-buffer/ring expansion.
 - [ ] Sweep IOP worker priorities only after measuring service slack and stalls.
+
+Current known `hdl_stream` worst-case incremental subtotal for one active
+installer stream is 192314 B in PROFILE OFF and 194458 B in PROFILE ON, excluding
+ThreadMan control allocations and the rest of the active IOP runtime. Those
+unknowns are deliberately not guessed.
 
 Exit gate: higher overlap/lower p99 with no IOP starvation or device regressions.
 
