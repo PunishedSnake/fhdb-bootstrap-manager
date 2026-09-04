@@ -1,27 +1,38 @@
 #!/bin/sh
 set -eu
 
-# Build the isolated Phase-5 transaction-workspace v1 experiment without
-# changing default runtime source. CI #724 is the frozen v1 point.
+# Build the active isolated Phase-5 incremental experiment without changing
+# default runtime sources. CI #724 remains the frozen workspace-v1 point.
 #
-# One 64 KiB / 64-byte-aligned EE workspace is owned by execute_transaction()
-# across COPY/source-hash and HDD verification. Source admission keeps its
-# shorter helper-local lifetime after v2 showed static/controller growth.
+# Active experiment:
+#   1. materialize workspace v1 for COPY/source-hash + HDD verify;
+#   2. replace source_fingerprint()'s helper-local memalign(64, 64 KiB) with
+#      ordinary malloc(64 KiB), because pinned fileXioRead does not require a
+#      64-byte caller address.
+#
+# The custom hdl0: SIF/DMA transaction workspace remains 64-byte aligned.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BACKUP=$(mktemp -d)
 TRANSACTION="$ROOT/src/hdl_tools/transaction.inc"
+SOURCE_UI="$ROOT/src/hdl_tools/source_ui.inc"
 
 restore_sources() {
     if [ -f "$BACKUP/transaction.inc" ]; then
         cp "$BACKUP/transaction.inc" "$TRANSACTION"
+    fi
+    if [ -f "$BACKUP/source_ui.inc" ]; then
+        cp "$BACKUP/source_ui.inc" "$SOURCE_UI"
     fi
     rm -rf "$BACKUP"
 }
 trap restore_sources EXIT HUP INT TERM
 
 cp "$TRANSACTION" "$BACKUP/transaction.inc"
+cp "$SOURCE_UI" "$BACKUP/source_ui.inc"
 python3 "$ROOT/tools/materialize_transaction_workspace.py" \
     "$TRANSACTION" "$TRANSACTION"
+python3 "$ROOT/tools/materialize_source_fingerprint_malloc.py" \
+    "$SOURCE_UI"
 
 python3 "$ROOT/tools/allocation_inventory.py" \
     --root "$ROOT" \
@@ -61,7 +72,8 @@ hdl_transaction_workspace_version: "1"
 hdl_transaction_workspace_materializer: "tools/materialize_transaction_workspace.py"
 hdl_transaction_workspace_bytes: "65536"
 hdl_transaction_workspace_alignment: "64"
-hdl_transaction_workspace_source_admission: "helper-local"
+hdl_source_fingerprint_heap_experiment: "malloc"
+hdl_source_fingerprint_alignment_requirement: "ordinary-fileXio-no-64B-contract"
 EOF
 }
 
