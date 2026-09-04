@@ -27,7 +27,8 @@ trap restore_sources EXIT HUP INT TERM
 cp "$SOURCE_UI" "$BACKUP/source_ui.inc"
 cp "$TRANSACTION" "$BACKUP/transaction.inc"
 cp "$ROOT/src/hdl_tools/source_ui_resume_hash.inc" "$SOURCE_UI"
-cp "$ROOT/src/hdl_tools/transaction_resume_hash.inc" "$TRANSACTION"
+python3 "$ROOT/tools/materialize_resume_hash_transaction.py" \
+    "$ROOT/src/hdl_tools/transaction_resume_hash.inc" "$TRANSACTION"
 
 build_variant()
 {
