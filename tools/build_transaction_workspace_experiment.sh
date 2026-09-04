@@ -1,36 +1,28 @@
 #!/bin/sh
 set -eu
 
-# Build the active isolated Phase-5 transaction-workspace experiment without
-# changing default runtime sources. V1 is frozen at CI #724. Active v2 extends
-# ownership backwards through execute_transaction() source admission so its
-# fingerprint, COPY/source-hash and HDD verify phases borrow one 64 KiB /
-# 64-byte-aligned EE workspace. The pre-confirmation UI fingerprint remains
-# helper-owned and short-lived.
+# Build the isolated Phase-5 transaction-workspace v1 experiment without
+# changing default runtime source. CI #724 is the frozen v1 point.
+#
+# One 64 KiB / 64-byte-aligned EE workspace is owned by execute_transaction()
+# across COPY/source-hash and HDD verification. Source admission keeps its
+# shorter helper-local lifetime after v2 showed static/controller growth.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BACKUP=$(mktemp -d)
 TRANSACTION="$ROOT/src/hdl_tools/transaction.inc"
-SOURCE_UI="$ROOT/src/hdl_tools/source_ui.inc"
 
 restore_sources() {
     if [ -f "$BACKUP/transaction.inc" ]; then
         cp "$BACKUP/transaction.inc" "$TRANSACTION"
-    fi
-    if [ -f "$BACKUP/source_ui.inc" ]; then
-        cp "$BACKUP/source_ui.inc" "$SOURCE_UI"
     fi
     rm -rf "$BACKUP"
 }
 trap restore_sources EXIT HUP INT TERM
 
 cp "$TRANSACTION" "$BACKUP/transaction.inc"
-cp "$SOURCE_UI" "$BACKUP/source_ui.inc"
-python3 "$ROOT/tools/materialize_transaction_workspace_v2.py" \
-    "$TRANSACTION" "$SOURCE_UI"
+python3 "$ROOT/tools/materialize_transaction_workspace.py" \
+    "$TRANSACTION" "$TRANSACTION"
 
-# Record the full source-level allocation inventory while v2 is materialized.
-# The transaction should now have one 64 KiB owner instead of separate source
-# admission, bulk-copy/source-hash and target-verify allocation lifetimes.
 python3 "$ROOT/tools/allocation_inventory.py" \
     --root "$ROOT" \
     --output "$ROOT/ALLOCATION_INVENTORY_TX_WORKSPACE.json"
@@ -65,12 +57,11 @@ build_variant()
         sh tools/build_benchmark_provenance.sh "$provenance"
     cat >> "$provenance" <<EOF
 hdl_transaction_workspace_enabled: "1"
-hdl_transaction_workspace_version: "2"
-hdl_transaction_workspace_materializer: "tools/materialize_transaction_workspace_v2.py"
+hdl_transaction_workspace_version: "1"
+hdl_transaction_workspace_materializer: "tools/materialize_transaction_workspace.py"
 hdl_transaction_workspace_bytes: "65536"
 hdl_transaction_workspace_alignment: "64"
-hdl_transaction_workspace_source_admission: "borrowed"
-hdl_preconfirmation_fingerprint_allocation: "unchanged"
+hdl_transaction_workspace_source_admission: "helper-local"
 EOF
 }
 
