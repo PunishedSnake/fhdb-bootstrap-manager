@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Validate and bind the isolated HDL transaction-workspace A/B pair."""
+"""Validate and bind the active HDL transaction-workspace v2 A/B pair.
+
+V1 is frozen at CI #724. Active v2 extends the single transaction-owned 64 KiB
+workspace backwards through execute_transaction() source admission while keeping
+the pre-confirmation source fingerprint helper-owned and short-lived.
+"""
 
 from __future__ import annotations
 
@@ -45,15 +50,16 @@ def validate_frozen(label: str, elf: dict[str, object], irx: dict[str, object]) 
 
 def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -> dict:
     return {
-        "experiment": "hdl-transaction-workspace-v1",
+        "experiment": "hdl-transaction-workspace-v2",
         "profile": profile,
-        "workload": "successful-hdl-transaction-copy-and-verify",
+        "workload": "successful-hdl-transaction-source-admission-copy-and-verify",
         "expected_source_change": {
             "workspace_bytes": 65536,
             "workspace_alignment": 64,
-            "baseline_phase_local_memalign_free_pairs": 2,
+            "baseline_transaction_memalign_free_pairs": 3,
             "experiment_transaction_owned_memalign_free_pairs": 1,
-            "pair_reduction": 1,
+            "pair_reduction": 2,
+            "preconfirmation_fingerprint_unchanged": True,
             "transport_change": False,
             "iop_binary_change": False,
         },
@@ -74,6 +80,7 @@ def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -
                 "index": i + 1,
                 "variant": variant,
                 "transaction_elapsed_us": None,
+                "source_admission_elapsed_us": None,
                 "copy_elapsed_us": None,
                 "verify_elapsed_us": None,
                 "correctness_hash": None,
@@ -83,6 +90,7 @@ def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -
         ],
         "report": {
             "transaction_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
+            "source_admission_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
             "copy_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
             "verify_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
             "correctness_failures": None,
@@ -119,16 +127,17 @@ def main() -> int:
     validate_frozen("ON", baseline_on, baseline_irx_on)
 
     if experiment_irx_off["sha256"] != baseline_irx_off["sha256"]:
-        raise SystemExit("PROFILE OFF workspace experiment changed hdl_stream.irx")
+        raise SystemExit("PROFILE OFF workspace-v2 experiment changed hdl_stream.irx")
     if experiment_irx_on["sha256"] != baseline_irx_on["sha256"]:
-        raise SystemExit("PROFILE ON workspace experiment changed hdl_stream.irx")
+        raise SystemExit("PROFILE ON workspace-v2 experiment changed hdl_stream.irx")
     if experiment_off["sha256"] == baseline_off["sha256"]:
-        raise SystemExit("PROFILE OFF workspace experiment did not change the EE ELF")
+        raise SystemExit("PROFILE OFF workspace-v2 experiment did not change the EE ELF")
     if experiment_on["sha256"] == baseline_on["sha256"]:
-        raise SystemExit("PROFILE ON workspace experiment did not change the EE ELF")
+        raise SystemExit("PROFILE ON workspace-v2 experiment did not change the EE ELF")
 
     identity = {
-        "experiment": "hdl-transaction-workspace-v1",
+        "experiment": "hdl-transaction-workspace-v2",
+        "v1_frozen_ci": 724,
         "project_git_sha": args.project_git_sha,
         "frozen_phase0_commit": "7875b14d837d6332f5edc37f1c12a55527d7dd87",
         "ps2sdk_commit": "b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b",
@@ -137,8 +146,14 @@ def main() -> int:
             "bytes": 65536,
             "alignment": 64,
             "owner": "execute_transaction",
-            "borrowers": ["copy_payload", "hash_source_payload", "verify_target_digest"],
-            "expected_removed_general_heap_pairs_per_successful_path": 1,
+            "borrowers": [
+                "source_fingerprint_with_workspace",
+                "copy_payload",
+                "hash_source_payload",
+                "verify_target_digest",
+            ],
+            "preconfirmation_source_fingerprint": "helper-owned allocation unchanged",
+            "expected_removed_general_heap_pairs_per_transaction": 2,
         },
         "PROFILE_OFF": {
             "baseline_elf": baseline_off,
