@@ -127,6 +127,7 @@ def sample_template(identity: dict[str, Any], profile: str) -> dict[str, Any]:
             "completed_sectors": 0,
             "checkpoint_status": "FILL_ME",
             "checkpoint_restored_bytes": 0,
+            "source_reopen_skipped": False,
         })
     return {
         "identity": {
@@ -139,7 +140,9 @@ def sample_template(identity: dict[str, Any], profile: str) -> dict[str, Any]:
         "note": (
             "Replace every FILL_ME and zero measurement. For recovery workloads, "
             "checkpoint_status is restored or fallback for EXP and not-applicable "
-            "for BASE. Keep one workload/depth per comparator input."
+            "for BASE. source_reopen_skipped must be true only for a restored "
+            "PAYLOAD_VERIFIED EXP run whose log confirms the source-free path. "
+            "Keep one workload/depth per comparator input."
         ),
         "samples": samples,
     }
@@ -171,6 +174,7 @@ def selftest() -> None:
     assert len(template["samples"]) == 8
     assert sum(sample["mode"] == "BASE" for sample in template["samples"]) == 4
     assert sum(sample["mode"] == "EXP" for sample in template["samples"]) == 4
+    assert all(not sample["source_reopen_skipped"] for sample in template["samples"])
 
     broken = {mode: {key: dict(value) if isinstance(value, dict) else value
                      for key, value in experiment[mode].items()}
