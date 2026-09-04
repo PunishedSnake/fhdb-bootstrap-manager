@@ -2,21 +2,17 @@
 set -eu
 
 # Build the active isolated Phase-5 incremental experiment without changing
-# default runtime sources. CI #724 remains the frozen workspace-v1 point.
+# default runtime sources. Frozen references:
+#   workspace v1                        CI #724
+#   workspace v1 + fingerprint malloc   CI #739
 #
-# Active experiment:
-#   1. materialize workspace v1 for COPY/source-hash + HDD verify;
-#   2. replace source_fingerprint()'s helper-local memalign(64, 64 KiB) with
-#      ordinary malloc(64 KiB), because pinned fileXioRead does not require a
-#      64-byte caller address.
-#
-# CI #743 tested natural alignment for two 1 KiB storage scratch buffers and
-# found zero section/BSS/text/instruction benefit, so those alignments remain.
-# The custom hdl0: SIF/DMA transaction workspace remains 64-byte aligned.
+# Active experiment additionally bounds forensic HDDMETA read-back verification
+# scratch to 64 KiB while preserving exact byte-for-byte comparison.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BACKUP=$(mktemp -d)
 TRANSACTION="$ROOT/src/hdl_tools/transaction.inc"
 SOURCE_UI="$ROOT/src/hdl_tools/source_ui.inc"
+FORENSIC_SNAPSHOT="$ROOT/src/forensic_snapshot.c"
 
 restore_sources() {
     if [ -f "$BACKUP/transaction.inc" ]; then
@@ -25,16 +21,23 @@ restore_sources() {
     if [ -f "$BACKUP/source_ui.inc" ]; then
         cp "$BACKUP/source_ui.inc" "$SOURCE_UI"
     fi
+    if [ -f "$BACKUP/forensic_snapshot.c" ]; then
+        cp "$BACKUP/forensic_snapshot.c" "$FORENSIC_SNAPSHOT"
+    fi
     rm -rf "$BACKUP"
 }
 trap restore_sources EXIT HUP INT TERM
 
 cp "$TRANSACTION" "$BACKUP/transaction.inc"
 cp "$SOURCE_UI" "$BACKUP/source_ui.inc"
+cp "$FORENSIC_SNAPSHOT" "$BACKUP/forensic_snapshot.c"
+
 python3 "$ROOT/tools/materialize_transaction_workspace.py" \
     "$TRANSACTION" "$TRANSACTION"
 python3 "$ROOT/tools/materialize_source_fingerprint_malloc.py" \
     "$SOURCE_UI"
+python3 "$ROOT/tools/materialize_forensic_snapshot_bounded_verify.py" \
+    "$FORENSIC_SNAPSHOT"
 
 python3 "$ROOT/tools/allocation_inventory.py" \
     --root "$ROOT" \
@@ -71,11 +74,12 @@ build_variant()
     cat >> "$provenance" <<EOF
 hdl_transaction_workspace_enabled: "1"
 hdl_transaction_workspace_version: "1"
-hdl_transaction_workspace_materializer: "tools/materialize_transaction_workspace.py"
 hdl_transaction_workspace_bytes: "65536"
 hdl_transaction_workspace_alignment: "64"
 hdl_source_fingerprint_heap_experiment: "malloc"
-hdl_source_fingerprint_alignment_requirement: "ordinary-fileXio-no-64B-contract"
+forensic_snapshot_bounded_verify_enabled: "1"
+forensic_snapshot_verify_chunk_bytes: "65536"
+forensic_snapshot_verify_policy: "exact-byte-compare"
 EOF
 }
 
