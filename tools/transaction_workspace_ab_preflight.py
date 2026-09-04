@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Validate and bind the active Phase-5 incremental A/B pair.
+"""Validate and bind the active Phase-5 workspace-v1 + fingerprint-malloc A/B.
 
-Frozen references:
-- Phase-0 baseline: CI #666
-- transaction workspace v1: CI #724
-- workspace v1 + source-fingerprint malloc: CI #739
-
-The active experiment adds natural alignment for two 1024-byte storage scratch
-buffers that are consumed only by ordinary fileXio reads and EE CPU code.
+Frozen Phase-0 remains the correctness/identity baseline. Workspace v1 itself is
+frozen at CI #724. CI #743 tested natural alignment for two 1 KiB storage
+scratch buffers and found no section/BSS/text/instruction benefit, so that
+layout-only experiment is not part of the active pair.
 """
 
 from __future__ import annotations
@@ -51,34 +48,19 @@ WORKSPACE_V1 = {
     },
 }
 
-FINGERPRINT_MALLOC = {
-    "OFF": {
-        "elf_sha256": "97e2a802952ae6f3b46c9fa0148359db8f8b69e22923f8105378f094de59c28b",
-        "elf_bytes": 632756,
-        "named_text": 229756,
-        "instructions": 57488,
-        "execute_transaction_bytes": 6008,
-        "execute_transaction_instructions": 1502,
-    },
-    "ON": {
-        "elf_sha256": "c8da50fe5147c3a24dc2f26d4ab910660bac615bf8e26f48e0bff3a2483f578b",
-        "elf_bytes": 638132,
-        "named_text": 232552,
-        "instructions": 58189,
-        "execute_transaction_bytes": 6008,
-        "execute_transaction_instructions": 1502,
-    },
-}
-
 ORDER = ["BASE", "EXP", "EXP", "BASE", "EXP", "BASE", "BASE", "EXP"]
 
 
 def info(path: Path) -> dict[str, object]:
     data = path.read_bytes()
-    return {"path": path.name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    return {
+        "path": path.name,
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
 
 
-def validate_frozen(label: str, elf: dict[str, object], irx: dict[str, object]) -> None:
+def validate_frozen(label: str, elf: dict[str,object], irx: dict[str,object]) -> None:
     expected = FROZEN[label]
     if elf["sha256"] != expected["elf_sha256"] or elf["bytes"] != expected["elf_bytes"]:
         raise SystemExit(f"{label} baseline ELF is not the frozen Phase-0 binary")
@@ -88,28 +70,23 @@ def validate_frozen(label: str, elf: dict[str, object], irx: dict[str, object]) 
 
 def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -> dict:
     return {
-        "experiment": "hdl-workspace-v1-fingerprint-malloc-storage-scratch-natural",
+        "experiment": "hdl-workspace-v1-source-fingerprint-malloc",
         "profile": profile,
-        "workload": "functional-storage-snapshot-plus-successful-hdl-transaction",
+        "workload": "successful-hdl-transaction-copy-and-verify",
         "expected_source_change": {
             "transaction_workspace_version": 1,
-            "source_fingerprint_allocator": "malloc(65536)",
-            "storage_scratch_sites": [
-                "header_backup.c::backup_scratch",
-                "repair_snapshot.c::snapshot_verify",
-            ],
-            "storage_scratch_bytes_each": 1024,
-            "storage_scratch_old_alignment": 64,
-            "storage_scratch_new_alignment": "natural",
-            "storage_scratch_consumer": "ordinary fileXio read + EE CPU parse/memcmp",
+            "workspace_bytes": 65536,
+            "workspace_alignment": 64,
+            "source_fingerprint_allocator_before": "memalign(64,65536)",
+            "source_fingerprint_allocator_after": "malloc(65536)",
+            "source_fingerprint_reads": 2,
+            "source_fingerprint_filexio_alignment_required": False,
             "custom_hdl_sif_dma_alignment_changed": False,
-            "pad_alignment_changed": False,
-            "gif_dma_alignment_changed": False,
+            "transport_change": False,
             "iop_binary_change": False,
         },
         "baseline": baseline,
         "workspace_v1_reference": WORKSPACE_V1[profile],
-        "fingerprint_malloc_reference": FINGERPRINT_MALLOC[profile],
         "experiment_binary": experiment,
         "hdl_stream_irx": irx,
         "hardware": {
@@ -125,17 +102,20 @@ def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -
             {
                 "index": i + 1,
                 "variant": variant,
-                "snapshot_save_result": None,
-                "snapshot_readback_match": None,
-                "header_backup_result": None,
                 "source_fingerprint_elapsed_us": None,
                 "transaction_elapsed_us": None,
+                "copy_elapsed_us": None,
+                "verify_elapsed_us": None,
                 "correctness_hash": None,
+                "result": None,
             }
             for i, variant in enumerate(ORDER)
         ],
         "report": {
+            "source_fingerprint_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
             "transaction_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
+            "copy_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
+            "verify_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
             "correctness_failures": None,
         },
     }
@@ -168,39 +148,53 @@ def main() -> int:
 
     validate_frozen("OFF", baseline_off, baseline_irx_off)
     validate_frozen("ON", baseline_on, baseline_irx_on)
+
     if experiment_irx_off["sha256"] != baseline_irx_off["sha256"]:
-        raise SystemExit("PROFILE OFF alignment experiment changed hdl_stream.irx")
+        raise SystemExit("PROFILE OFF incremental experiment changed hdl_stream.irx")
     if experiment_irx_on["sha256"] != baseline_irx_on["sha256"]:
-        raise SystemExit("PROFILE ON alignment experiment changed hdl_stream.irx")
-    if experiment_off["sha256"] == FINGERPRINT_MALLOC["OFF"]["elf_sha256"]:
-        raise SystemExit("PROFILE OFF storage-scratch experiment did not change the EE ELF")
-    if experiment_on["sha256"] == FINGERPRINT_MALLOC["ON"]["elf_sha256"]:
-        raise SystemExit("PROFILE ON storage-scratch experiment did not change the EE ELF")
+        raise SystemExit("PROFILE ON incremental experiment changed hdl_stream.irx")
+    if experiment_off["sha256"] == baseline_off["sha256"]:
+        raise SystemExit("PROFILE OFF incremental experiment did not change the EE ELF")
+    if experiment_on["sha256"] == baseline_on["sha256"]:
+        raise SystemExit("PROFILE ON incremental experiment did not change the EE ELF")
 
     identity = {
-        "experiment": "hdl-workspace-v1-fingerprint-malloc-storage-scratch-natural",
+        "experiment": "hdl-workspace-v1-source-fingerprint-malloc",
         "project_git_sha": args.project_git_sha,
         "frozen_phase0_commit": "7875b14d837d6332f5edc37f1c12a55527d7dd87",
         "workspace_v1_frozen_ci": 724,
-        "fingerprint_malloc_frozen_ci": 739,
-        "workspace_v2_rejected_ci": 733,
         "workspace_v1_reference": WORKSPACE_V1,
-        "fingerprint_malloc_reference": FINGERPRINT_MALLOC,
+        "workspace_v2_rejected_ci": 733,
+        "storage_scratch_natural_rejected_ci": 743,
         "ps2sdk_commit": "b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b",
         "toolchain": "mips64r5900el-ps2-elf GCC 15.2.0",
         "change": {
-            "sites": ["header_backup.c::backup_scratch", "repair_snapshot.c::snapshot_verify"],
-            "old_alignment": 64,
-            "new_alignment": "natural",
-            "consumer": "ordinary pinned fileXio read + EE CPU parse/memcmp",
-            "direct_dma_consumer": False,
+            "function": "source_fingerprint",
+            "allocator_before": "memalign(64,65536)",
+            "allocator_after": "malloc(65536)",
+            "consumer": "ordinary pinned fileXioRead + EE SHA-256",
+            "custom_sif_dma_buffer_changed": False,
         },
-        "PROFILE_OFF": {"baseline_elf": baseline_off, "experiment_elf": experiment_off, "hdl_stream_irx": baseline_irx_off},
-        "PROFILE_ON": {"baseline_elf": baseline_on, "experiment_elf": experiment_on, "hdl_stream_irx": baseline_irx_on},
+        "PROFILE_OFF": {
+            "baseline_elf": baseline_off,
+            "experiment_elf": experiment_off,
+            "hdl_stream_irx": baseline_irx_off,
+        },
+        "PROFILE_ON": {
+            "baseline_elf": baseline_on,
+            "experiment_elf": experiment_on,
+            "hdl_stream_irx": baseline_irx_on,
+        },
     }
     args.identity_output.write_text(json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    args.profile_off_template.write_text(json.dumps(sample_template("OFF", baseline_off, experiment_off, baseline_irx_off), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    args.profile_on_template.write_text(json.dumps(sample_template("ON", baseline_on, experiment_on, baseline_irx_on), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    args.profile_off_template.write_text(
+        json.dumps(sample_template("OFF", baseline_off, experiment_off, baseline_irx_off), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    args.profile_on_template.write_text(
+        json.dumps(sample_template("ON", baseline_on, experiment_on, baseline_irx_on), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return 0
 
 
