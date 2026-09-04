@@ -4,6 +4,10 @@ set -eu
 # Build the resume-hash experiment without letting its alternate fragments
 # become the default source tree. The frozen PROFILE pair is built and validated
 # separately before this script is run in CI.
+#
+# Build both profiler modes so hardware work can keep one variable per A/B:
+#   frozen PROFILE OFF vs resume-hash PROFILE OFF -> release-like timing
+#   frozen PROFILE ON  vs resume-hash PROFILE ON  -> identical telemetry
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BACKUP=$(mktemp -d)
 SOURCE_UI="$ROOT/src/hdl_tools/source_ui.inc"
@@ -25,16 +29,47 @@ cp "$TRANSACTION" "$BACKUP/transaction.inc"
 cp "$ROOT/src/hdl_tools/source_ui_resume_hash.inc" "$SOURCE_UI"
 cp "$ROOT/src/hdl_tools/transaction_resume_hash.inc" "$TRANSACTION"
 
+build_variant()
+{
+    profile=$1
+    label=$2
+    elf="PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_${label}.ELF"
+    map="PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_${label}.map"
+    irx="HDL_STREAM_RESUME_HASH_PROFILE_${label}.irx"
+    audit="OPTIMIZATION_AUDIT_RESUME_HASH_PROFILE_${label}.txt"
+    provenance="BENCHMARK_PROVENANCE_RESUME_HASH_PROFILE_${label}.yml"
+
+    make clean
+    make HDL_PROFILE="$profile" HDL_RESUME_HASH_CHECKPOINT=1
+    cp hdl_stream.irx "$irx"
+    python3 tools/optimization_audit.py \
+        --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF \
+        --output "$audit"
+    make HDL_PROFILE="$profile" HDL_RESUME_HASH_CHECKPOINT=1 release
+    cp PS2_HDD_BOOTSTRAP_MANAGER.ELF "$elf"
+    cp PS2_HDD_BOOTSTRAP_MANAGER.map "$map"
+    sha256sum "$elf" > "$elf.sha256"
+    wc -c "$elf" > "$elf.size"
+    HDL_PROFILE="$profile" \
+    HDL_RESUME_HASH_CHECKPOINT=1 \
+    BENCHMARK_ELF="$elf" \
+    HDL_STREAM_IRX="$irx" \
+        sh tools/build_benchmark_provenance.sh "$provenance"
+}
+
 cd "$ROOT"
-make clean
-make HDL_PROFILE=0 HDL_RESUME_HASH_CHECKPOINT=1
-python3 tools/optimization_audit.py \
-    --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF \
-    --output OPTIMIZATION_AUDIT_RESUME_HASH.txt
-make HDL_PROFILE=0 HDL_RESUME_HASH_CHECKPOINT=1 release
-cp PS2_HDD_BOOTSTRAP_MANAGER.ELF PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF
-cp PS2_HDD_BOOTSTRAP_MANAGER.map PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.map
-sha256sum PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF \
-    > PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.sha256
-wc -c PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF \
-    > PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.size
+build_variant 0 OFF
+build_variant 1 ON
+
+# Preserve the original experiment artifact names as PROFILE OFF aliases while
+# the benchmark documentation/tools migrate to the explicit pair names.
+cp PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF \
+   PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF
+cp PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.map \
+   PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.map
+cp PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF.sha256 \
+   PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.sha256
+cp PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF.size \
+   PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.size
+cp OPTIMIZATION_AUDIT_RESUME_HASH_PROFILE_OFF.txt \
+   OPTIMIZATION_AUDIT_RESUME_HASH.txt
