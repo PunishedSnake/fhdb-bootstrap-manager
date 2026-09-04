@@ -100,8 +100,13 @@ benchmark_elf_bytes: "$BENCHMARK_ELF_BYTES"
 hdl_stream_irx: "$HDL_STREAM_IRX_PATH"
 hdl_stream_irx_sha256: "$HDL_STREAM_IRX_SHA"
 hdl_stream_irx_bytes: "$HDL_STREAM_IRX_BYTES"
+# active_irx is a real-runtime observation and remains deliberately unknown in CI.
 active_irx: UNRECORDED
+# embedded_irx describes payloads compiled into the EE image, not runtime state.
 embedded_irx: "iomanX fileXio secrman freesio2 freepad mcman mcserv secrsif poweroff bdm bdmfs_fatfs usbd usbmass_bd ps2dev9 ata_bd ps2fs ps2hdd-bdm hdl_stream"
+# Expected application-owned post-reset load sequence from src/platform.c.
+# ROM/kernel modules outside this list are why active_irx still requires hardware.
+app_irx_load_order: "iomanX fileXio secrman freesio2 freepad mcman mcserv secrsif poweroff bdm bdmfs_fatfs usbd ps2dev9 ata_bd ps2hdd-bdm hdl_stream ps2fs usbmass_bd"
 workload: UNRECORDED
 direction: UNRECORDED
 buffering: UNRECORDED
