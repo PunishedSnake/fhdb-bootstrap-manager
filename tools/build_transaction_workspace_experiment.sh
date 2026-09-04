@@ -23,6 +23,13 @@ cp "$TRANSACTION" "$BACKUP/transaction.inc"
 python3 "$ROOT/tools/materialize_transaction_workspace.py" \
     "$TRANSACTION" "$TRANSACTION"
 
+# Record the full source-level allocation inventory while the experiment source
+# is materialized. This proves the ownership rewrite actually removed the two
+# phase-local memalign/free pairs rather than relying on a comment or filename.
+python3 "$ROOT/tools/allocation_inventory.py" \
+    --root "$ROOT" \
+    --output "$ROOT/ALLOCATION_INVENTORY_TX_WORKSPACE.json"
+
 build_variant()
 {
     profile=$1
