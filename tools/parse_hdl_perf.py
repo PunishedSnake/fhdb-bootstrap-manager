@@ -55,7 +55,7 @@ RESUME_PREFIX_RESTORE_RE = re.compile(
 )
 RESUME_FULL_RESTORE_RE = re.compile(
     PREFIX
-    + r"HDL restored complete source SHA checkpoint bytes=(\d+); skipped full USB hash pass"
+    + r"HDL restored complete source SHA checkpoint bytes=(\d+); skipped full USB hash pass( and source reopen)?"
 )
 RESUME_PREFIX_FALLBACK_RE = re.compile(
     PREFIX
@@ -184,7 +184,10 @@ def parse_log(text: str) -> dict[str, object]:
         match = RESUME_FULL_RESTORE_RE.search(line)
         if match:
             result["resume_hash"]["full_restores"].append(  # type: ignore[index]
-                {"bytes": int(match.group(1))}
+                {
+                    "bytes": int(match.group(1)),
+                    "source_reopen_skipped": match.group(2) is not None,
+                }
             )
             continue
 
@@ -238,7 +241,7 @@ def selftest() -> None:
 [0047] HDL perf copy traffic useful=1048576 sif-dma=1048576 ee-cache-maint=2097152 fallback-source=0
 [0048] HDL restored source SHA checkpoint bytes=33554432; skipped prefix rehash
 [0049] HDL source SHA checkpoint unavailable result=-5; using safe prefix rehash
-[0050] HDL restored complete source SHA checkpoint bytes=1073741824; skipped full USB hash pass
+[0050] HDL restored complete source SHA checkpoint bytes=1073741824; skipped full USB hash pass and source reopen
 [0051] HDL complete source SHA checkpoint unavailable result=-7; using safe full source hash
 [0052] HDL source SHA checkpoint save failed progress=32768 result=-12; journal remains authoritative
 [0053] HDL transaction target=PP.TEST stage=6 progress=524288/524288 result=0
@@ -253,6 +256,7 @@ def selftest() -> None:
     assert parsed["resume_hash"]["prefix_restores"][0]["bytes"] == 33554432  # type: ignore[index]
     assert parsed["resume_hash"]["prefix_fallback_results"] == [-5]  # type: ignore[index]
     assert parsed["resume_hash"]["full_restores"][0]["bytes"] == 1073741824  # type: ignore[index]
+    assert parsed["resume_hash"]["full_restores"][0]["source_reopen_skipped"]  # type: ignore[index]
     assert parsed["resume_hash"]["full_fallback_results"] == [-7]  # type: ignore[index]
     assert parsed["resume_hash"]["checkpoint_write_failures"][0]["progress"] == 32768  # type: ignore[index]
     assert parsed["resume_hash"]["transactions"][0]["result"] == 0  # type: ignore[index]
