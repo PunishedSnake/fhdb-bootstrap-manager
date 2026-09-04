@@ -35,8 +35,10 @@ def function_span(text: str, name: str) -> tuple[int, int]:
     if start < 0:
         raise MaterializeError(f"missing function {name}")
     next_start = text.find("\nstatic int ", start + len(start_token))
+    # execute_transaction() is intentionally the final function in the real
+    # include. EOF is therefore a valid exact bound, not a parser failure.
     if next_start < 0:
-        raise MaterializeError(f"cannot bound function {name}")
+        next_start = len(text)
     return start, next_start
 
 
@@ -218,8 +220,9 @@ def materialize(text: str) -> str:
     return text
 
 
-def selftest() -> None:
-    fixture = r'''static int hash_source_payload(const hdl_transaction_t *transaction,
+def fixture(final_sentinel: bool) -> str:
+    tail = "\nstatic int sentinel(void) { return 0; }\n" if final_sentinel else "\n"
+    return r'''static int hash_source_payload(const hdl_transaction_t *transaction,
                                int source_fd,
                                unsigned char digest[32])
 {
@@ -282,16 +285,23 @@ done:
         fileXioClose(target_fd);
     return result;
 }
+''' + tail
 
-static int sentinel(void) { return 0; }
-'''
-    out = materialize(fixture)
+
+def assert_materialized(out: str) -> None:
     assert MARKER in out
     assert out.count("memalign(64, HDL_INSTALL_IO_BYTES)") == 1
     assert out.count("free(workspace);") == 1
     assert "source_payload_digest,\n                              workspace" in out
     assert "source_payload_digest, workspace" in out or \
            "source_payload_digest,\n                                         workspace" in out
+
+
+def selftest() -> None:
+    # Cover both a function followed by another static function and the real
+    # transaction.inc shape where execute_transaction() ends at EOF.
+    assert_materialized(materialize(fixture(True)))
+    assert_materialized(materialize(fixture(False)))
 
 
 def main() -> int:
