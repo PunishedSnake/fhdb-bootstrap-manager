@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 OUT=${1:-BENCHMARK_PROVENANCE.yml}
 CC=${EE_CC:-mips64r5900el-ps2-elf-gcc}
 GIT_SHA=${PROJECT_GIT_SHA:-$(git rev-parse HEAD 2>/dev/null || printf 'unavailable')}
@@ -67,6 +68,20 @@ file_bytes()
     fi
 }
 
+# Keep the build-side expected load sequence tied to the actual platform source.
+# The capture intentionally records only exec_irx(<symbol>_irx, ...) calls in
+# load_modules(). ps2hdd_posix is the embedded C symbol for PS2SDK's ps2hdd-bdm.
+APP_IRX_LOAD_ORDER=$(
+    sed -n 's/.*exec_irx(\([A-Za-z0-9_]*\)_irx,.*/\1/p' \
+        "$ROOT/src/platform.c" |
+    tr '\n' ' ' |
+    sed -e 's/ $//' -e 's/ps2hdd_posix/ps2hdd-bdm/'
+)
+if [ -z "$APP_IRX_LOAD_ORDER" ]; then
+    printf 'could not derive IOP load order from src/platform.c\n' >&2
+    exit 2
+fi
+
 BENCHMARK_ELF_SHA=$(file_sha256 "$BENCHMARK_ELF_PATH")
 BENCHMARK_ELF_BYTES=$(file_bytes "$BENCHMARK_ELF_PATH")
 HDL_STREAM_IRX_SHA=$(file_sha256 "$HDL_STREAM_IRX_PATH")
@@ -104,9 +119,9 @@ hdl_stream_irx_bytes: "$HDL_STREAM_IRX_BYTES"
 active_irx: UNRECORDED
 # embedded_irx describes payloads compiled into the EE image, not runtime state.
 embedded_irx: "iomanX fileXio secrman freesio2 freepad mcman mcserv secrsif poweroff bdm bdmfs_fatfs usbd usbmass_bd ps2dev9 ata_bd ps2fs ps2hdd-bdm hdl_stream"
-# Expected application-owned post-reset load sequence from src/platform.c.
+# Application-owned post-reset load sequence derived from src/platform.c.
 # ROM/kernel modules outside this list are why active_irx still requires hardware.
-app_irx_load_order: "iomanX fileXio secrman freesio2 freepad mcman mcserv secrsif poweroff bdm bdmfs_fatfs usbd ps2dev9 ata_bd ps2hdd-bdm hdl_stream ps2fs usbmass_bd"
+app_irx_load_order: "$APP_IRX_LOAD_ORDER"
 workload: UNRECORDED
 direction: UNRECORDED
 buffering: UNRECORDED
