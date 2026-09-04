@@ -29,6 +29,8 @@ jobs:
         run: python3 tools/compare_hdl_resume_hash_ab.py --selftest
       - name: Self-test R5900 calibration disassembly guard
         run: python3 tools/check_r5900_calibration_disasm.py --selftest
+      - name: Self-test allocation inventory
+        run: python3 tools/allocation_inventory.py --selftest
       - name: Enforce direct-fileXio runtime policy
         run: |
           python3 tools/check_filexio_fdman_policy.py --selftest
@@ -60,6 +62,8 @@ jobs:
           sh tools/r5900_toolchain_audit.sh GCC_R5900_TARGET.txt &&
           python3 tools/corpus_v2_project_audit.py
           --output CORPUS_V2_PROJECT_AUDIT.txt &&
+          python3 tools/allocation_inventory.py
+          --output ALLOCATION_INVENTORY.json &&
           python3 tools/printf_format_audit.py
           --output PRINTF_FORMAT_AUDIT.txt &&
           make clean && make HDL_PROFILE=1 &&
@@ -205,6 +209,7 @@ jobs:
             OPTIMIZATION_AUDIT_PROFILE_ON.txt
             OPTIMIZATION_AUDIT_PROFILE_OFF.txt
             CORPUS_V2_PROJECT_AUDIT.txt
+            ALLOCATION_INVENTORY.json
             PRINTF_FORMAT_AUDIT.txt
             GCC_R5900_TARGET.txt
             BENCHMARK_PROVENANCE_PROFILE_ON.yml
