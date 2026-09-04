@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Validate and bind the active HDL transaction-workspace v1 A/B pair.
+"""Validate and bind the active Phase-5 workspace-v1 + fingerprint-malloc A/B.
 
-V1 is frozen at CI #724. V2 source-admission reuse was built at CI #733 but is
-not the active experiment because it increased execute_transaction/static text
-for only one additional per-transaction alloc/free removal.
+Frozen Phase-0 remains the correctness/identity baseline. Workspace v1 itself is
+frozen at CI #724, so the new experiment can also be compared incrementally
+against those exact v1 ELF hashes after CI produces the new artifacts.
 """
 
 from __future__ import annotations
@@ -25,6 +25,25 @@ FROZEN = {
         "elf_bytes": 638388,
         "irx_sha256": "8d3dbeabadbb860888b2c3d2072e8344953bea443faefccefce006b234cdb3db",
         "irx_bytes": 9861,
+    },
+}
+
+WORKSPACE_V1 = {
+    "OFF": {
+        "elf_sha256": "23bbf6dfc28eb87bc7d484875a8940b9309eb5e3994d9c922388c9a0249415c6",
+        "elf_bytes": 632756,
+        "named_text": 229764,
+        "instructions": 57491,
+        "execute_transaction_bytes": 6008,
+        "execute_transaction_instructions": 1502,
+    },
+    "ON": {
+        "elf_sha256": "09185cd6a21bbb9990d0b7f8cfe70fa80b4e9ba01a00e9648cb9fa70d9b3d693",
+        "elf_bytes": 638260,
+        "named_text": 232560,
+        "instructions": 58190,
+        "execute_transaction_bytes": 6008,
+        "execute_transaction_instructions": 1502,
     },
 }
 
@@ -50,19 +69,23 @@ def validate_frozen(label: str, elf: dict[str, object], irx: dict[str, object]) 
 
 def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -> dict:
     return {
-        "experiment": "hdl-transaction-workspace-v1",
+        "experiment": "hdl-workspace-v1-source-fingerprint-malloc",
         "profile": profile,
         "workload": "successful-hdl-transaction-copy-and-verify",
         "expected_source_change": {
+            "transaction_workspace_version": 1,
             "workspace_bytes": 65536,
             "workspace_alignment": 64,
-            "baseline_phase_local_memalign_free_pairs": 2,
-            "experiment_transaction_owned_memalign_free_pairs": 1,
-            "pair_reduction": 1,
+            "source_fingerprint_allocator_before": "memalign(64,65536)",
+            "source_fingerprint_allocator_after": "malloc(65536)",
+            "source_fingerprint_reads": 2,
+            "source_fingerprint_filexio_alignment_required": False,
+            "custom_hdl_sif_dma_alignment_changed": False,
             "transport_change": False,
             "iop_binary_change": False,
         },
         "baseline": baseline,
+        "workspace_v1_reference": WORKSPACE_V1[profile],
         "experiment_binary": experiment,
         "hdl_stream_irx": irx,
         "hardware": {
@@ -78,6 +101,7 @@ def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -
             {
                 "index": i + 1,
                 "variant": variant,
+                "source_fingerprint_elapsed_us": None,
                 "transaction_elapsed_us": None,
                 "copy_elapsed_us": None,
                 "verify_elapsed_us": None,
@@ -87,6 +111,7 @@ def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -
             for i, variant in enumerate(ORDER)
         ],
         "report": {
+            "source_fingerprint_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
             "transaction_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
             "copy_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
             "verify_elapsed_us": {"p50": None, "p95": None, "p99": None, "max": None},
@@ -124,29 +149,29 @@ def main() -> int:
     validate_frozen("ON", baseline_on, baseline_irx_on)
 
     if experiment_irx_off["sha256"] != baseline_irx_off["sha256"]:
-        raise SystemExit("PROFILE OFF workspace experiment changed hdl_stream.irx")
+        raise SystemExit("PROFILE OFF incremental experiment changed hdl_stream.irx")
     if experiment_irx_on["sha256"] != baseline_irx_on["sha256"]:
-        raise SystemExit("PROFILE ON workspace experiment changed hdl_stream.irx")
+        raise SystemExit("PROFILE ON incremental experiment changed hdl_stream.irx")
     if experiment_off["sha256"] == baseline_off["sha256"]:
-        raise SystemExit("PROFILE OFF workspace experiment did not change the EE ELF")
+        raise SystemExit("PROFILE OFF incremental experiment did not change the EE ELF")
     if experiment_on["sha256"] == baseline_on["sha256"]:
-        raise SystemExit("PROFILE ON workspace experiment did not change the EE ELF")
+        raise SystemExit("PROFILE ON incremental experiment did not change the EE ELF")
 
     identity = {
-        "experiment": "hdl-transaction-workspace-v1",
+        "experiment": "hdl-workspace-v1-source-fingerprint-malloc",
         "project_git_sha": args.project_git_sha,
         "frozen_phase0_commit": "7875b14d837d6332f5edc37f1c12a55527d7dd87",
-        "v1_frozen_ci": 724,
-        "v2_rejected_ci": 733,
+        "workspace_v1_frozen_ci": 724,
+        "workspace_v1_reference": WORKSPACE_V1,
+        "workspace_v2_rejected_ci": 733,
         "ps2sdk_commit": "b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b",
         "toolchain": "mips64r5900el-ps2-elf GCC 15.2.0",
-        "workspace": {
-            "bytes": 65536,
-            "alignment": 64,
-            "owner": "execute_transaction",
-            "borrowers": ["copy_payload", "hash_source_payload", "verify_target_digest"],
-            "source_admission": "helper-local allocation retained",
-            "expected_removed_general_heap_pairs_per_successful_path": 1,
+        "change": {
+            "function": "source_fingerprint",
+            "allocator_before": "memalign(64,65536)",
+            "allocator_after": "malloc(65536)",
+            "consumer": "ordinary pinned fileXioRead + EE SHA-256",
+            "custom_sif_dma_buffer_changed": False,
         },
         "PROFILE_OFF": {
             "baseline_elf": baseline_off,
