@@ -12,6 +12,7 @@ PS2SDK_REF=${PS2SDK_SOURCE_REF:-unavailable}
 PS2SDK_SHA=${PS2SDK_SOURCE_SHA:-unavailable}
 PS2DEV_BUNDLE_REF=${PS2DEV_BUNDLE_REF:-unavailable}
 HDL_PROFILE_VALUE=${HDL_PROFILE:-1}
+HDL_RESUME_HASH_CHECKPOINT_VALUE=${HDL_RESUME_HASH_CHECKPOINT:-0}
 BENCHMARK_ELF_PATH=${BENCHMARK_ELF:-PS2_HDD_BOOTSTRAP_MANAGER.ELF}
 HDL_STREAM_IRX_PATH=${HDL_STREAM_IRX:-hdl_stream.irx}
 
@@ -22,6 +23,21 @@ case "$HDL_PROFILE_VALUE" in
         exit 2
         ;;
 esac
+
+case "$HDL_RESUME_HASH_CHECKPOINT_VALUE" in
+    0|1) ;;
+    *)
+        printf 'HDL_RESUME_HASH_CHECKPOINT must be 0 or 1, got %s\n' \
+            "$HDL_RESUME_HASH_CHECKPOINT_VALUE" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$HDL_RESUME_HASH_CHECKPOINT_VALUE" = "1" ]; then
+    RESUME_HASH_EE_FLAG=" -DHDL_RESUME_HASH_CHECKPOINT_ENABLED=1"
+else
+    RESUME_HASH_EE_FLAG=""
+fi
 
 # A development environment may preserve the ps2sdk .git directory. Prefer the
 # exact installed checkout when available. Tagged ps2dev Docker images strip
@@ -76,7 +92,8 @@ toolchain_target: "$CC_TARGET"
 toolchain_gcc: "$CC_VERSION"
 toolchain_container: "ps2dev/ps2dev:v2.0.0"
 hdl_profile_enabled: "$HDL_PROFILE_VALUE"
-build_flags: "EE: -O2 -flto -G0 -fdata-sections -ffunction-sections -DHDL_PROFILE_ENABLED=$HDL_PROFILE_VALUE; ld --gc-sections; hdl_stream IOP: PS2SDK -Os baseline with appended -O2 -DHDL_PROFILE_ENABLED=$HDL_PROFILE_VALUE"
+hdl_resume_hash_checkpoint_enabled: "$HDL_RESUME_HASH_CHECKPOINT_VALUE"
+build_flags: "EE: -O2 -flto -G0 -fdata-sections -ffunction-sections -DHDL_PROFILE_ENABLED=$HDL_PROFILE_VALUE$RESUME_HASH_EE_FLAG; ld --gc-sections; hdl_stream IOP: PS2SDK -Os baseline with appended -O2 -DHDL_PROFILE_ENABLED=$HDL_PROFILE_VALUE"
 benchmark_elf: "$BENCHMARK_ELF_PATH"
 benchmark_elf_sha256: "$BENCHMARK_ELF_SHA"
 benchmark_elf_bytes: "$BENCHMARK_ELF_BYTES"
