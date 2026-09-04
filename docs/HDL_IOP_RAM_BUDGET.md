@@ -20,8 +20,8 @@ inventory.
   only if it hides measured exposed latency without creating another resource
   bottleneck;
 - pinned PS2SDK `b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b`: current API/data contracts;
-- project CI #706: final `hdl_stream.irx` loaded section sizes for the matched
-  PROFILE pair.
+- project CI #706: final `hdl_stream.irx` loaded section sizes and compiler output
+  for the matched PROFILE pair.
 
 ## Epistemic labels
 
@@ -40,7 +40,10 @@ inventory.
 - the prefetch worker is created only when two stages are available;
 - CI #706 reports final loaded `hdl_stream.irx` sections of 7139 B text + 144 B
   data for PROFILE OFF and 8595 B text + 144 B data for PROFILE ON, with zero
-  reported BSS in those final IRX images.
+  reported BSS in those final IRX images;
+- CI #706 disassembly shows the compiler-generated `AllocSysMemory` size for
+  `hdl_stream_file_t` is `0x288` = 648 B in PROFILE OFF and `0x538` = 1336 B in
+  PROFILE ON.
 
 **CURRENT IMPLEMENTATION**
 
@@ -130,16 +133,18 @@ create the prefetch worker.
 
 ### Stream object and ThreadMan bookkeeping
 
-The exact IOP ABI `sizeof(hdl_stream_file_t)` is not emitted by current CI.
-Manual field accounting puts it around 0.65 KiB without profiling and around
-1.3 KiB with PROFILE ON, but this document deliberately does not promote those
-manual layout estimates to POTWIERDZONE bytes.
+The final CI #706 machine code exposes the exact size passed to IOP
+`AllocSysMemory` for the stream object:
 
-For planning, reserve **1536 B per current stream object** as a conservative
-project accounting value until CI emits the compiler-observed size. This reserve
-is an engineering budget, not a hardware fact.
+```text
+PROFILE OFF sizeof(hdl_stream_file_t) = 0x288 = 648 B
+PROFILE ON  sizeof(hdl_stream_file_t) = 0x538 = 1336 B
+```
 
-Thread and semaphore kernel-control allocations are listed as **UNMEASURED** and
+The PROFILE ON increase is expected because latency histograms and traffic
+counters live inside the stream object.
+
+Thread and semaphore kernel-control allocations are still **UNMEASURED** and
 must be added to the runtime inventory before claiming exact system free RAM.
 
 ## Current incremental worst-case service envelope
@@ -152,15 +157,15 @@ IRX loaded sections                    7283 B         8739 B
 two-stage allocation                 131135 B       131135 B
 max fragment map                      49152 B        49152 B
 prefetch stack                         4096 B         4096 B
-stream-object planning reserve         1536 B         1536 B
+stream object                           648 B         1336 B
                                   ----------     ----------
-known/reserved subtotal              193202 B       194658 B
+known subtotal                       192314 B       194458 B
 ThreadMan control objects            UNMEASURED     UNMEASURED
 other active IRX/runtime             NOT INCLUDED   NOT INCLUDED
 ```
 
-The subtotal is roughly 190 KiB. It is **not** a claim that only this amount of
-IOP RAM is consumed by the whole application stack.
+The known subtotal is roughly 188-190 KiB. It is **not** a claim that only this
+amount of IOP RAM is consumed by the whole application stack.
 
 For one-stage low-memory fallback, remove one 64 KiB stage and the dedicated
 prefetch stack. Correctness remains available while overlap is reduced.
