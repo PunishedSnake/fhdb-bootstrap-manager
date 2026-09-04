@@ -40,6 +40,14 @@ build_variant()
     provenance="BENCHMARK_PROVENANCE_RESUME_HASH_PROFILE_${label}.yml"
 
     make clean
+    # Root clean removes the public hdl_stream.irx but deliberately does not
+    # invoke the nested IOP Makefile. Its profile-specific objects and the
+    # absolute-path notiopmod intermediates can therefore survive and make a
+    # subsequent PROFILE variant reuse the wrong linked IRX. Clean the actual
+    # producer explicitly so OFF/ON experiment builds are independent.
+    make -C iop/hdl_stream clean \
+        IOP_BIN="$ROOT/hdl_stream.irx" \
+        HDL_PROFILE="$profile"
     make HDL_PROFILE="$profile" HDL_RESUME_HASH_CHECKPOINT=1
     cp hdl_stream.irx "$irx"
     python3 tools/optimization_audit.py \
