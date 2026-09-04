@@ -2,45 +2,39 @@
 set -eu
 
 # Build the active isolated Phase-5 incremental experiment without changing
-# default runtime sources. CI #724 remains frozen workspace v1 and CI #739 is
-# the frozen workspace-v1 + source-fingerprint-malloc reference.
+# default runtime sources. CI #724 remains the frozen workspace-v1 point.
 #
-# Active experiment additionally removes explicit 64-byte alignment from two
-# 1024-byte storage scratch buffers whose only consumers are ordinary fileXio
-# reads plus EE CPU parse/memcmp. No direct DMA, libpad or hdl0: buffer changes.
+# Active experiment:
+#   1. materialize workspace v1 for COPY/source-hash + HDD verify;
+#   2. replace source_fingerprint()'s helper-local memalign(64, 64 KiB) with
+#      ordinary malloc(64 KiB), because pinned fileXioRead does not require a
+#      64-byte caller address.
+#
+# CI #743 tested natural alignment for two 1 KiB storage scratch buffers and
+# found zero section/BSS/text/instruction benefit, so those alignments remain.
+# The custom hdl0: SIF/DMA transaction workspace remains 64-byte aligned.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BACKUP=$(mktemp -d)
 TRANSACTION="$ROOT/src/hdl_tools/transaction.inc"
 SOURCE_UI="$ROOT/src/hdl_tools/source_ui.inc"
-HEADER_BACKUP="$ROOT/src/header_backup.c"
-REPAIR_SNAPSHOT="$ROOT/src/repair_snapshot.c"
 
 restore_sources() {
-    for name in transaction.inc source_ui.inc header_backup.c repair_snapshot.c; do
-        if [ -f "$BACKUP/$name" ]; then
-            case "$name" in
-                transaction.inc) cp "$BACKUP/$name" "$TRANSACTION" ;;
-                source_ui.inc) cp "$BACKUP/$name" "$SOURCE_UI" ;;
-                header_backup.c) cp "$BACKUP/$name" "$HEADER_BACKUP" ;;
-                repair_snapshot.c) cp "$BACKUP/$name" "$REPAIR_SNAPSHOT" ;;
-            esac
-        fi
-    done
+    if [ -f "$BACKUP/transaction.inc" ]; then
+        cp "$BACKUP/transaction.inc" "$TRANSACTION"
+    fi
+    if [ -f "$BACKUP/source_ui.inc" ]; then
+        cp "$BACKUP/source_ui.inc" "$SOURCE_UI"
+    fi
     rm -rf "$BACKUP"
 }
 trap restore_sources EXIT HUP INT TERM
 
 cp "$TRANSACTION" "$BACKUP/transaction.inc"
 cp "$SOURCE_UI" "$BACKUP/source_ui.inc"
-cp "$HEADER_BACKUP" "$BACKUP/header_backup.c"
-cp "$REPAIR_SNAPSHOT" "$BACKUP/repair_snapshot.c"
-
 python3 "$ROOT/tools/materialize_transaction_workspace.py" \
     "$TRANSACTION" "$TRANSACTION"
 python3 "$ROOT/tools/materialize_source_fingerprint_malloc.py" \
     "$SOURCE_UI"
-python3 "$ROOT/tools/materialize_storage_scratch_natural_alignment.py" \
-    "$HEADER_BACKUP" "$REPAIR_SNAPSHOT"
 
 python3 "$ROOT/tools/allocation_inventory.py" \
     --root "$ROOT" \
@@ -82,8 +76,6 @@ hdl_transaction_workspace_bytes: "65536"
 hdl_transaction_workspace_alignment: "64"
 hdl_source_fingerprint_heap_experiment: "malloc"
 hdl_source_fingerprint_alignment_requirement: "ordinary-fileXio-no-64B-contract"
-storage_scratch_alignment_experiment: "natural"
-storage_scratch_alignment_sites: "header_backup.backup_scratch repair_snapshot.snapshot_verify"
 EOF
 }
 
