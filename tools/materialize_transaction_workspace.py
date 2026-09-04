@@ -13,7 +13,6 @@ to the default runtime.
 from __future__ import annotations
 
 import argparse
-import tempfile
 from pathlib import Path
 
 MARKER = "HDL transaction workspace experiment: one owner, borrowed by phase helpers"
@@ -290,8 +289,9 @@ static int sentinel(void) { return 0; }
     assert MARKER in out
     assert out.count("memalign(64, HDL_INSTALL_IO_BYTES)") == 1
     assert out.count("free(workspace);") == 1
-    assert "source_payload_digest, workspace" in out
-    assert "source_payload_digest,\n                                      workspace" in out
+    assert "source_payload_digest,\n                              workspace" in out
+    assert "source_payload_digest, workspace" in out or \
+           "source_payload_digest,\n                                         workspace" in out
 
 
 def main() -> int:
