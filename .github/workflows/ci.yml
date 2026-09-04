@@ -31,6 +31,8 @@ jobs:
         run: python3 tools/check_r5900_calibration_disasm.py --selftest
       - name: Self-test allocation inventory
         run: python3 tools/allocation_inventory.py --selftest
+      - name: Self-test transaction workspace materializer
+        run: python3 tools/materialize_transaction_workspace.py --selftest
       - name: Enforce reviewed explicit alignment policy
         run: |
           python3 tools/check_alignment_policy.py --selftest
@@ -141,6 +143,47 @@ jobs:
           cat OPTIMIZATION_AUDIT_PROFILE_OFF.txt
           sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
           sha256sum PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF | tee HDL_PROFILE_PAIR.sha256
+      - name: Build isolated transaction-workspace experiment after frozen gate
+        run: >-
+          docker run --rm
+          -e PROJECT_GIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          -e PROJECT_GIT_REF="${{ github.head_ref || github.ref }}"
+          -e PS2DEV_BUNDLE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_SHA="b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b"
+          -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make python3 >/dev/null &&
+          sh tools/build_transaction_workspace_experiment.sh &&
+          mips64r5900el-ps2-elf-size
+          PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF
+          > PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.sections &&
+          mips64r5900el-ps2-elf-size
+          PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF
+          > PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.sections'
+      - name: Record and validate transaction-workspace experiment identity
+        run: |
+          python3 tools/transaction_workspace_ab_preflight.py \
+            --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "--- transaction workspace PROFILE OFF ---"
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF.sha256
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF.size
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.sections
+          cat BENCHMARK_PROVENANCE_TX_WORKSPACE_PROFILE_OFF.yml
+          echo "--- transaction workspace PROFILE ON ---"
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF.sha256
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF.size
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.sections
+          cat BENCHMARK_PROVENANCE_TX_WORKSPACE_PROFILE_ON.yml
+          echo "--- transaction workspace identity ---"
+          cat TRANSACTION_WORKSPACE_AB_IDENTITY.json
+          echo "--- transaction workspace PROFILE OFF optimization audit ---"
+          cat OPTIMIZATION_AUDIT_TX_WORKSPACE_PROFILE_OFF.txt
+          echo "--- transaction workspace PROFILE ON optimization audit ---"
+          cat OPTIMIZATION_AUDIT_TX_WORKSPACE_PROFILE_ON.txt
+          python3 tools/phase0_profile_pair_preflight.py \
+            --profile-on PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF \
+            --profile-off PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF \
+            --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}"
       - name: Build isolated resume-hash experiment after frozen gate
         run: >-
           docker run --rm
@@ -223,6 +266,25 @@ jobs:
             bench/r5900_calibration/R5900_COUNTER_CALIBRATION.map
             bench/r5900_calibration/R5900_COUNTER_CALIBRATION.sections
             bench/r5900_calibration/R5900_COUNTER_CALIBRATION.disasm
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF.size
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.map
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.sections
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF.size
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.map
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.sections
+            HDL_STREAM_TX_WORKSPACE_PROFILE_OFF.irx
+            HDL_STREAM_TX_WORKSPACE_PROFILE_ON.irx
+            OPTIMIZATION_AUDIT_TX_WORKSPACE_PROFILE_OFF.txt
+            OPTIMIZATION_AUDIT_TX_WORKSPACE_PROFILE_ON.txt
+            BENCHMARK_PROVENANCE_TX_WORKSPACE_PROFILE_OFF.yml
+            BENCHMARK_PROVENANCE_TX_WORKSPACE_PROFILE_ON.yml
+            TRANSACTION_WORKSPACE_AB_IDENTITY.json
+            TRANSACTION_WORKSPACE_AB_PROFILE_OFF_TEMPLATE.json
+            TRANSACTION_WORKSPACE_AB_PROFILE_ON_TEMPLATE.json
             PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF
             PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.sha256
             PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.size
