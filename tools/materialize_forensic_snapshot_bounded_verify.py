@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Materialize the isolated bounded HDDMETA read-back experiment.
+"""Materialize the isolated bounded HDDMETA read-back v2 experiment.
 
 The baseline forensic snapshot keeps two complete images live: the canonical
 serialized HDDMETA image and an equally large read-back buffer used only for
-byte-for-byte verification. This experiment keeps the canonical image but bounds
-the read-back scratch to 64 KiB and compares every returned chunk exactly.
+byte-for-byte verification. Bounded v1 (CI #749) reduced that second allocation
+to 64 KiB but used two fileXioLseek RPCs to prove the file size before reading.
+
+V2 keeps the same bounded memory model and exact byte comparison while removing
+those seek RPCs. It reads exactly the expected byte count and then requires one
+additional one-byte read to return EOF, which still rejects both truncation and
+trailing data.
 
 No on-disk format, hash, slot, overwrite, error, or repair policy changes.
 """
@@ -14,7 +19,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-MARKER = "bounded forensic snapshot read-back experiment"
+MARKER = "bounded forensic snapshot read-back v2 experiment"
 CHUNK_DEFINE = "#define SNAPSHOT_VERIFY_CHUNK_BYTES (64u * 1024u)"
 
 
@@ -31,7 +36,7 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 def materialize(text: str) -> str:
     if MARKER in text:
-        raise MaterializeError("forensic bounded verify already materialized")
+        raise MaterializeError("forensic bounded verify v2 already materialized")
 
     text = replace_once(
         text,
@@ -42,9 +47,10 @@ def materialize(text: str) -> str:
     )
 
     anchor = "int forensic_snapshot_save(unsigned int storage,\n"
-    helper = r'''/* bounded forensic snapshot read-back experiment.
- * Keep exact byte-for-byte verification but do not duplicate the complete
- * variable-size HDDMETA image merely to read it back. */
+    helper = r'''/* bounded forensic snapshot read-back v2 experiment.
+ * Keep exact byte-for-byte verification without duplicating the complete
+ * variable-size HDDMETA image. After the expected bytes are consumed, one
+ * final read must report EOF so trailing data is rejected without seek RPCs. */
 static int snapshot_file_matches_bounded(const char *path,
                                          const unsigned char *expected,
                                          unsigned int size,
@@ -61,12 +67,6 @@ static int snapshot_file_matches_bounded(const char *path,
     fd = fileXioOpen(path, FIO_O_RDONLY, 0);
     if (fd < 0)
         return fd;
-    result = fileXioLseek(fd, 0, FIO_SEEK_END);
-    if (result < 0 || (unsigned int)result != size ||
-        fileXioLseek(fd, 0, FIO_SEEK_SET) < 0) {
-        fileXioClose(fd);
-        return -1;
-    }
 
     while (offset < size) {
         unsigned int bytes = size - offset;
@@ -90,8 +90,11 @@ static int snapshot_file_matches_bounded(const char *path,
         offset += bytes;
     }
 
+    result = fileXioRead(fd, scratch, 1);
     fileXioClose(fd);
-    return 1;
+    if (result < 0)
+        return result;
+    return result == 0 ? 1 : 0;
 }
 
 '''
@@ -142,6 +145,8 @@ static int snapshot_file_matches_bounded(const char *path,
         raise MaterializeError("full-size verify allocation survived")
     if text.count("snapshot_file_matches_bounded(") != 3:
         raise MaterializeError("unexpected bounded compare helper/call count")
+    if "fileXioLseek(fd" in text[text.index(MARKER):text.index(anchor)]:
+        raise MaterializeError("seek-based size check survived in bounded helper")
     return text
 
 
@@ -181,6 +186,9 @@ int forensic_snapshot_save(unsigned int storage,
     assert "verify = malloc(verify_size);" in out
     assert "verify = malloc(image_size);" not in out
     assert out.count("snapshot_file_matches_bounded(") == 3
+    helper = out[out.index(MARKER):out.index("int forensic_snapshot_save")]
+    assert "fileXioLseek" not in helper
+    assert "fileXioRead(fd, scratch, 1)" in helper
 
 
 def main() -> int:
