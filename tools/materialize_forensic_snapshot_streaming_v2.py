@@ -3,8 +3,10 @@
 
 The first prototype used the identifier `result` both for the forensic-result
 parameter and for the local write return code in generated `snapshot_write_streamed`.
-That prototype is retained as review history; this wrapper materializes it and
-renames only the conflicting local state before the generated C is compiled.
+It also made a successful write depend on `fileXioClose()` returning success,
+while the current `write_whole_file()` contract ignores close's return value and
+relies on mandatory read-back verification. This wrapper fixes only those two
+prototype differences before the generated C is compiled.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from pathlib import Path
 
 import materialize_forensic_snapshot_streaming as v1
 
-MARKER = "streaming APAMETA1 snapshot experiment v2 scope fix"
+MARKER = "streaming APAMETA1 snapshot experiment v2 scope/close fix"
 
 
 def materialize(text: str) -> str:
@@ -30,12 +32,14 @@ def materialize(text: str) -> str:
          "        write_result = snapshot_write_exact(fd, chunk, bytes);\n"),
         ("        if (result < 0) {\n", "        if (write_result < 0) {\n"),
         ("            return result;\n", "            return write_result;\n"),
+        ("    return fileXioClose(fd) < 0 ? -1 : 0;\n",
+         "    fileXioClose(fd);\n    return 0;\n"),
     ]
     for old, new in replacements:
         count = body.count(old)
         if count != 1:
             raise v1.MaterializeError(
-                f"streaming v2 scope fix expected one {old!r}, found {count}"
+                f"streaming v2 fix expected one {old!r}, found {count}"
             )
         body = body.replace(old, new, 1)
 
@@ -52,6 +56,8 @@ def materialize(text: str) -> str:
         raise v1.MaterializeError("conflicting write result identifier survived")
     if "int write_result;" not in fixed:
         raise v1.MaterializeError("write_result fix missing")
+    if "return fileXioClose(fd) < 0" in fixed:
+        raise v1.MaterializeError("close-return semantic change survived")
     return out
 
 
@@ -82,6 +88,7 @@ int forensic_snapshot_save(unsigned int storage, const void *result,
     assert "int write_result;" in body
     assert "write_result = snapshot_write_exact" in body
     assert "return write_result;" in body
+    assert "fileXioClose(fd);\n    return 0;" in body
 
 
 def main() -> int:
