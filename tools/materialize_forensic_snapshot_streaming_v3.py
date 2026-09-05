@@ -16,6 +16,10 @@ from pathlib import Path
 import materialize_forensic_snapshot_streaming_v2 as v2
 
 MARKER = "streaming APAMETA1 v3 cold noinline boundary"
+ATTRIBUTE_SIGNATURE = (
+    "__attribute__((noinline, cold))\n"
+    "int forensic_snapshot_save("
+)
 
 
 def materialize(text: str) -> str:
@@ -36,10 +40,12 @@ def materialize(text: str) -> str:
     body = body.replace(old, new, 1)
     out = out[:start] + body + out[end:]
 
-    fixed_start, fixed_end = v2.v1.function_span(out, "forensic_snapshot_save")
-    fixed = out[fixed_start:fixed_end]
-    if "__attribute__((noinline, cold))" not in fixed:
-        raise v2.v1.MaterializeError("cold/noinline boundary missing")
+    # function_span() intentionally starts at the function declaration. Once the
+    # attribute is added on the preceding line it is therefore outside a second
+    # span lookup. Validate the generated source directly instead of treating
+    # that parser behaviour as a missing attribute.
+    if out.count(ATTRIBUTE_SIGNATURE) != 1:
+        raise v2.v1.MaterializeError("cold/noinline boundary missing or duplicated")
     return out
 
 
@@ -65,10 +71,8 @@ int forensic_snapshot_save(unsigned int storage, const void *result,
 '''
     out = materialize(fixture)
     assert MARKER in out
-    start, end = v2.v1.function_span(out, "forensic_snapshot_save")
-    body = out[start:end]
-    assert "__attribute__((noinline, cold))" in body
-    assert "workspace = malloc(workspace_bytes);" in body
+    assert out.count(ATTRIBUTE_SIGNATURE) == 1
+    assert "workspace = malloc(workspace_bytes);" in out
 
 
 def main() -> int:
