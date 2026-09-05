@@ -7,10 +7,11 @@ set -eu
 #   workspace v1 + fingerprint malloc   CI #739
 #   bounded HDDMETA read-back v1        CI #749
 #   bounded HDDMETA read-back v2        CI #752 / identical runtime CI #757
+#   streaming APAMETA1 v2               CI #762
 #
-# Active experiment replaces the full canonical APAMETA1 image with one bounded
-# streaming workspace while preserving exact serialized bytes and exact read-back.
-# The independent APAMETA1 reference vector is validated before materialization.
+# Active v3 keeps streaming-v2 dataflow/memory semantics but forces
+# forensic_snapshot_save() to stay cold and noinline so LTO cannot inflate the
+# repair-plan UI controller with snapshot serialization machinery.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BACKUP=$(mktemp -d)
 TRANSACTION="$ROOT/src/hdl_tools/transaction.inc"
@@ -33,7 +34,7 @@ trap restore_sources EXIT HUP INT TERM
 
 cd "$ROOT"
 python3 tools/forensic_snapshot_reference.py --selftest
-python3 tools/materialize_forensic_snapshot_streaming_v2.py --selftest
+python3 tools/materialize_forensic_snapshot_streaming_v3.py --selftest
 
 cp "$TRANSACTION" "$BACKUP/transaction.inc"
 cp "$SOURCE_UI" "$BACKUP/source_ui.inc"
@@ -43,7 +44,7 @@ python3 "$ROOT/tools/materialize_transaction_workspace.py" \
     "$TRANSACTION" "$TRANSACTION"
 python3 "$ROOT/tools/materialize_source_fingerprint_malloc.py" \
     "$SOURCE_UI"
-python3 "$ROOT/tools/materialize_forensic_snapshot_streaming_v2.py" \
+python3 "$ROOT/tools/materialize_forensic_snapshot_streaming_v3.py" \
     "$FORENSIC_SNAPSHOT"
 
 python3 "$ROOT/tools/allocation_inventory.py" \
@@ -85,7 +86,8 @@ hdl_transaction_workspace_bytes: "65536"
 hdl_transaction_workspace_alignment: "64"
 hdl_source_fingerprint_heap_experiment: "malloc"
 forensic_snapshot_streaming_enabled: "1"
-forensic_snapshot_streaming_version: "2"
+forensic_snapshot_streaming_version: "3"
+forensic_snapshot_cold_noinline: "1"
 forensic_snapshot_stream_chunk_bytes: "65536"
 forensic_snapshot_actual_chunk_bytes: "65536"
 forensic_snapshot_digest_cache_bytes_max: "65536"
