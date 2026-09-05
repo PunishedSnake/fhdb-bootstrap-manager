@@ -1,19 +1,24 @@
 # Allocation and lifetime audit
 
 This document classifies the major dynamic allocations by producer, consumer,
-lifetime and ownership before Phase-5 allocator work. The goal is not to replace
-`malloc()` because it exists. The project corpus requires allocation changes to
-remove measured churn, copies, fragmentation risk or peak working-set pressure.
+lifetime, memory domain and ownership before further Phase-5 allocator work. The
+goal is not to replace `malloc()` because it exists. The project corpus requires
+allocation changes to remove measured churn, copies, fragmentation risk or peak
+working-set pressure.
 
 ## Source-of-truth routing
 
-- `PS2_Memory_Allocators_optimization_research_corpus_v2.md`: classify by
-  lifetime; alignment is a consumer contract; avoid per-item churn on hot paths;
-- `PS2_Data_Oriented_Design_optimization_research_corpus_v2.md`: producer,
-  consumer, lifetime, ownership and representation decide reuse;
-- `PS2_PERFORMANCE_BIBLE.md`: remove work/copies/allocations before specialised
-  kernels, but only where the workload exposes the cost;
-- project CI #712 source audit plus current branch source.
+- `PS2_Optimization_Library_v2_MANIFEST.md`
+- `PS2_PERFORMANCE_BIBLE.md`
+- `PS2_Memory_Allocators_optimization_research_corpus_v2.md`
+- `PS2_Data_Oriented_Design_optimization_research_corpus_v2.md`
+- `PS2_Whole_System_Scheduling_research_corpus_v2.md`
+- `PS2_IOP_SIF_optimization_research_corpus_v2.md`
+- pinned PS2SDK `b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b`
+
+The corpus rule applied here is: classify producer, consumer, lifetime and the
+actual alignment domain before choosing an allocator. A pool/arena is not
+implicitly better than the current heap merely because it sounds console-like.
 
 ## Epistemic labels
 
@@ -22,91 +27,55 @@ remove measured churn, copies, fragmentation risk or peak working-set pressure.
 - **INFERENCJA**: likely optimization consequence, not yet hardware measured.
 - **HIPOTEZA DO TESTU**: change requiring real-PS2 A/B before acceptance.
 
-## Highest-value candidate: one transaction-owned 64 KiB I/O workspace
-
-### Current allocation pattern
-
-The HDL transaction uses `HDL_INSTALL_IO_BYTES = 64 KiB` buffers in three
-sequential helpers:
+`tools/allocation_inventory.py` is a static direct-call inventory. It now covers:
 
 ```text
-hash_source_payload()
-  memalign(64, 64 KiB)
-  source SHA reconstruction
+EE/libc heap
+  malloc
+  calloc
+  realloc
+  memalign
   free
 
-copy_payload()
-  memalign(64, 64 KiB)
-  source read / IOP pump DMA destination / EE SHA consumer
-  free
-
-verify_target_digest()
-  memalign(64, 64 KiB)
-  HDD -> EE DMA destination / target SHA consumer
-  free
+IOP SysMem
+  AllocSysMemory
+  FreeSysMemory
 ```
 
-A normal fresh install executes copy then target verification. A resumed
-`PAYLOAD_VERIFIED` legacy/fallback path executes source hash then target
-verification. The helpers do not own their buffers concurrently.
+It deliberately does not guess ThreadMan implementation-owned backing memory
+from `CreateThread`/`CreateSema` call counts. Those costs remain part of the
+runtime IOP-memory gate.
 
-### Alignment contract
-
-**POTWIERDZONE:** keep 64-byte alignment. `hdl_fast_dma_read()` explicitly rejects
-an EE destination whose address is not 64-byte aligned. This is the custom SIF/
-cache transport contract, unlike the ordinary fileXio scratch buffers audited in
-`ALIGNMENT_CONTRACT_AUDIT.md`.
-
-### Lifetime conclusion
-
-**POTWIERDZONE:** these three buffers have transaction-local, mutually exclusive
-lifetimes.
-
-**INFERENCJA:** a single transaction-owned 64 KiB workspace can serve all three
-helpers and remove repeated allocator calls without increasing peak payload
-memory or changing SIF/HDD/source representation.
-
-Candidate ownership:
+## Lifetime classes
 
 ```text
-execute_transaction owns workspace
-  FREE/UNUSED before allocation
-  SOURCE_HASH while hash_source_payload consumes it
-  COPY_IO while copy_payload consumes it
-  TARGET_VERIFY while verify_target_digest consumes it
-  released once at transaction exit
+permanent        process lifetime
+menu/session     one UI/session/catalogue lifetime
+action           one bounded user operation
+transaction      one HDL install/recovery transaction
+stream           one open streaming service instance
+phase-temporary  one scan/hash/copy/verify sub-phase
 ```
 
-No helper may retain the pointer after return.
+These are review labels derived from current ownership structure, not allocator
+latency measurements.
 
-### Proposed post-gate A/B
+# EE/libc heap
 
-Baseline: current helper-local allocations.
+## Boot-chain and generic bounded-file helpers
 
-Experiment:
+| Site | Lifetime | Producer / consumer | Current action |
+| --- | --- | --- | --- |
+| `boot_chain_ps2.c:read_skip_hdd_setting` | phase-temporary | small config reader -> parser | keep |
+| `boot_chain_ps2.c:scan_sysconf_partition` | phase-temporary | config reader -> parser | keep |
+| `bootstrap_source.c:load_payload_file` | action | file -> bootstrap payload validation/write flow | keep unless payload peak is measured problematic |
+| `storage.c:read_bounded_file` | caller-owned action | bounded file -> caller | keep generic helper |
+| `hdd_read.c:hdd_read_payload_image` | action | HDD payload -> recovery consumer | returned dataset, not disposable scratch |
 
-1. allocate one `memalign(64, HDL_INSTALL_IO_BYTES)` workspace only for stages
-   that need source/copy/target hashing;
-2. pass pointer + capacity to each helper;
-3. remove helper-local alloc/free pairs;
-4. preserve all fileXio/SIF/cache/journal/error semantics;
-5. free exactly once on transaction exit.
+These are ordinary CPU/fileXio data. None has a demonstrated need for a custom
+allocator today.
 
-Measure:
-
-```text
-allocator calls per transaction
-peak EE heap delta
-copy/verify p50/p95/p99/max
-total transaction p50/p95/p99/max
-execute_transaction/static text delta
-correctness hash
-```
-
-Priority: **HIGH after the frozen resume-hash hardware gate**, because it changes
-an active bulk transaction path but does not require a new representation.
-
-## USB ISO catalogue array
+## USB ISO selection array
 
 Producer: `scan_mass_images()`.
 
@@ -115,26 +84,23 @@ Current representation:
 ```text
 initial capacity: 32 hdl_image_entry_t
 allocation: calloc
- growth: doubling below 1024, then +1024 entries
+growth: doubling below 1024, then +1024 entries
 consumer: ISO selection UI + selected path/size handoff
-lifetime: one begin_new_install selection session
-release: before destructive confirmation / execute_transaction
+lifetime: one begin_new_install source-selection session
+release: before the long-running destructive transaction
 ```
 
-**POTWIERDZONE:** the array is freed after the selected ISO fields have been
-copied into the transaction, before the long-running HDD transaction begins.
+The resume-hash `.inc` contains the alternate build equivalent; both fragments
+are not linked simultaneously.
 
-**INFERENCJA:** this is a sensible variable-cardinality session allocation. Do
-not replace it with a giant permanent table without measured directory-size or
-allocation-jitter evidence.
+**POTWIERDZONE:** the array is function/session owned and released after the
+selected source identity is copied out.
 
-Potential improvement only if logs show large catalogues/realloc churn:
+**INFERENCJA:** this is an appropriate variable-cardinality session allocation.
+Do not replace it with a giant permanent table without catalogue cardinality or
+allocator-jitter evidence.
 
-- count/size directory entries first only if the second scan is cheaper than
-  growth for the real workload;
-- or use a bounded chunked/session arena if large catalogues are common.
-
-Priority: **LOW until catalogue cardinality is measured.**
+Priority: **LOW until large source catalogues are measured.**
 
 ## Installed HDL catalogue array
 
@@ -143,159 +109,249 @@ Producer: raw APA chain walker.
 Current representation:
 
 ```text
-initial capacity: 64 entries on first growth
- growth: capacity * 2
+first capacity: 64 entries
+growth: capacity * 2
 consumer: installed-games menu/details/delete selection
-lifetime: one menu session
-metadata: loaded lazily by visible page and cached in each entry
-release: leaving menu; rebuilt after successful deletion
+lifetime: one catalogue/menu session
+metadata: lazy per visible page, stored inside each entry
+release: catalog_free()
 ```
 
 **POTWIERDZONE:** `realloc` occurs only while discovering main HDL partitions;
 metadata itself is not separately heap-allocated per game.
 
-**INFERENCJA:** the growable session array is appropriate unless very large HDL
-catalogues demonstrate allocator/copy cost. A persistent index does not solve
-this automatically because invalidation must still be cheaper than the APA walk.
+**INFERENCJA:** geometric growth already avoids per-entry allocation churn. A
+pool or persistent index is not justified until game-count/catalogue latency is
+measured and invalidation can be made cheaper than the APA walk.
 
-Priority: **LOW/MEDIUM depending measured game count and catalogue latency.**
+Priority: **LOW/MEDIUM depending real catalogue size.**
+
+## HDL transaction / streaming workspaces
+
+Default source contains separate 64 KiB helper allocations for:
+
+```text
+source_fingerprint()
+hash_source_payload()
+copy_payload()
+verify_target_digest()
+```
+
+The three transaction helpers use a 64-byte-aligned EE destination because the
+custom `hdl0:` SIF/DMA path explicitly requires that destination contract. That
+alignment must not be confused with ordinary fileXio caller alignment.
+
+### CI #724: transaction workspace v1
+
+**POTWIERDZONE:** COPY/source-hash and target-verify workspaces have mutually
+exclusive lifetimes.
+
+The isolated v1 experiment gives ownership to `execute_transaction()` and lends
+one 64 KiB / 64-byte-aligned workspace sequentially to those helpers. It removes
+one general-heap allocation/free pair on the successful bulk path without
+increasing peak workspace.
+
+### CI #733: workspace v2, rejected/held
+
+Extending the same workspace backwards into source admission removes another
+allocation pair but grows the transaction control path and lengthens workspace
+lifetime. One extra allocation per transaction is too small a prize to accept
+that trade without real hardware evidence.
+
+### CI #739: source fingerprint `memalign` -> `malloc`
+
+Pinned `fileXioRead()` accepts ordinary caller alignment, so the standalone
+source-fingerprint buffer has no demonstrated 64-byte API requirement.
+
+Static result versus workspace v1 is slightly smaller and does not grow
+`execute_transaction()`. This remains **HIPOTEZA DO TESTU** because fileXio's
+unaligned-edge handling can cost time even when the API contract permits it.
+
+The custom SIF/DMA transaction workspace remains 64-byte aligned.
 
 ## Forensic HDDMETA snapshot
 
 Producer: `build_snapshot_image()`.
 
-Current peak state during save:
+Baseline save keeps two variable-size allocations live:
 
 ```text
-image  = malloc(image_size)
-verify = malloc(image_size)
-write image
-read entire file into verify
-memcmp(verify, image, image_size)
-free both
+canonical image = 64 + patch_count * (4 + 32 + 1024) + 32
+verify buffer   = canonical image size
 ```
 
-`image_size` scales with `patch_count` because every touched original 1024-byte
-APA header is embedded in the safety record.
-
-**POTWIERDZONE:** two equal-size buffers are simultaneously live solely for
-read-back verification.
-
-**INFERENCJA:** the second full-size allocation can be removed without weakening
-verification by reading the saved file back in a bounded scratch window and
-comparing each window to the still-owned canonical `image`. This retains exact
-byte-for-byte verification rather than replacing it with an unchecked write.
-
-Alternative: compare a streamed read-back hash against a canonical image hash,
-but exact chunk comparison is simpler and preserves the current error contract.
-
-Priority: **MEDIUM for peak-memory robustness, LOW for normal performance**
-because forensic repair is an exceptional cold path.
-
-## Bootstrap payload (`MBR.XLF`)
-
-Producer: `load_payload_file()`.
+At the current maximum `patch_count = 2048`:
 
 ```text
-allocation: malloc(file size), bounded by HDD_MAX_MBR_PAYLOAD_SIZE
-consumer: KELF/layout validation and subsequent bootstrap write workflow
-ownership: bootstrap_source_t.payload
-lifetime: prepare -> caller operations -> bootstrap_source_release
+canonical image              2,170,976 B
+baseline full verify         2,170,976 B
+baseline pair peak           4,341,952 B
 ```
 
-**POTWIERDZONE:** this is not transient read scratch. The loaded representation
-is itself consumed across multiple stages.
+### CI #749: bounded read-back v1
 
-**INFERENCJA:** retaining one owned payload buffer is correct. Replacing it with
-chunked streaming would complicate KELF/layout consumers and should not be done
-without evidence that payload peak memory is a problem.
-
-Priority: **KEEP unless memory measurements disagree.**
-
-## Raw active bootstrap payload read
-
-Producer: `hdd_read_payload_image()`.
+The first isolated bounded experiment keeps the canonical image but replaces the
+second full-size allocation with at most 64 KiB and compares every returned
+chunk byte-for-byte. It preserves format, slot selection, non-overwrite policy,
+truncation detection and full read-back verification.
 
 ```text
-allocation: malloc(total selected payload bytes)
-producer scratch: fixed HDD_TRANSFER_BYTES temporary
-consumer: caller receives payload_out
-ownership transfer: function -> caller
+canonical image              2,170,976 B
+bounded verify                  65,536 B
+experiment pair peak         2,236,512 B
+peak reduction               2,105,440 B
 ```
 
-**POTWIERDZONE:** the heap allocation is the returned dataset, not helper-local
-scratch. It cannot be removed without changing the API/consumer representation.
+### CI #752: bounded read-back v2
 
-Priority: **KEEP; redesign only with an explicit streaming consumer.**
+V1 used two `fileXioLseek()` RPCs inside each exact-compare call to prove file
+size. V2 instead:
 
-## Boot-chain text/config files
+1. reads exactly the expected bytes with short-read handling;
+2. compares every chunk exactly;
+3. performs one final one-byte read which must return EOF.
 
-Current source allocates bounded text buffers for complete small configuration
-files and frees them at the end of the corresponding probe/parse operation.
+This still rejects truncation and trailing data while removing both seek RPCs.
+Compared with CI #749, CI #752 reduces `.text` by 32 B, named text by 36 B and
+eight R5900 instructions in both PROFILE modes. `execute_transaction()` and the
+IOP binary remain unchanged.
 
-**INFERENCJA:** these are cold startup/configuration allocations. Replacing them
-with custom pools is lower value than transaction/storage work unless startup
-profiling identifies allocator cost or fragmentation.
+**POTWIERDZONE:** maximum pair peak is reduced by 2,105,440 B relative to the
+original full-image verify representation.
 
-Priority: **LOW.**
+**HIPOTEZA DO TESTU:** real PS2 must still verify recovery correctness and
+fileXio latency. This is primarily a peak-working-set optimization, not a hot
+transaction speedup claim.
 
-## Rescue/forensic/general storage allocations
+The next architectural candidate is eliminating the full canonical image with a
+streaming APAMETA1 serializer. That would alter producer lifetime and write
+structure and therefore requires an isolated experiment plus stronger reference
+serialization tests before hardware use.
 
-The source audit identifies additional allocations in `rescue_storage.c`,
-`forensic_snapshot.c`, `bootstrap_source.c`, `storage.c` and boot tooling. They
-are mostly operation/session-owned bounded records rather than per-64-KiB hot
-loop allocations.
+# IOP SysMem
 
-Rule for subsequent review:
+The custom `hdl_stream` service has three direct SysMem ownership classes.
+
+## Stream object
+
+Current source:
 
 ```text
-if allocation happens once per user operation:
-  measure peak bytes and failure behaviour first
-if allocation happens at each bulk phase boundary:
-  consider lifetime reuse
-if allocation happens inside a chunk/item loop:
-  treat as immediate review trigger
+AllocSysMemory(ALLOC_FIRST, sizeof(*stream), NULL)
 ```
 
-The current HDL fast 64-KiB loop does **not** allocate per chunk. Its allocation
-churn is per phase, which is why one transaction workspace is the appropriate
-first allocator experiment rather than an arena rewrite.
+Lifetime: one open `hdl0:` stream.
 
-## Phase-5 priority order
+Owner: `stream_open()` -> `stream_close()`.
 
-1. **After hardware gate:** A/B one transaction-owned 64 KiB aligned workspace.
-2. Record EE heap before/after transaction and at major phase boundaries if a
-   current safe heap query is available without materially perturbing the path.
-3. If exceptional recovery memory matters, replace forensic full-size read-back
-   duplicate with bounded exact chunk comparison.
-4. Measure ISO/game catalogue cardinality before changing their growth strategy.
-5. Leave payload-owning allocations intact until a consumer can operate on a
+The object stores partition geometry, source-map state, staging ownership,
+prefetch handles and optional PROFILE counters. Pooling a single stream object
+has no demonstrated benefit.
+
+## Staging allocation
+
+Preferred admission:
+
+```text
+AllocSysMemory(ALLOC_FIRST,
+               2 * HDL_STREAM_IOP_STAGE_BYTES + 63,
+               NULL)
+```
+
+Low-memory fallback:
+
+```text
+AllocSysMemory(ALLOC_FIRST,
+               HDL_STREAM_IOP_STAGE_BYTES + 63,
+               NULL)
+```
+
+The two calls are mutually exclusive outcomes. The allocation is manually
+rounded to a 64-byte stage address and remains owned for the stream lifetime.
+
+**POTWIERDZONE:** failure to obtain double buffering falls back to one stage; it
+does not fail stream admission if one stage still fits.
+
+This is an explicit resilience/ownership policy. Do not replace it with a larger
+ring until real IOP memory and stall telemetry justify more buffering.
+
+## Direct-BDM USB fragment map
+
+Current source allocates:
+
+```text
+fragment_count * sizeof(bd_fragment_t)
+```
+
+with `AllocSysMemory`, up to the current 4096-fragment hard limit.
+
+Lifetime: one usable direct-BDM source mapping. It is released when source
+mapping is reset/disabled or when the stream closes.
+
+The static IOP budget records the current worst-case map as 49,152 B.
+
+This is producer representation state, not generic scratch. Any compaction must
+preserve fragmented-file correctness and the sequential cursor behaviour that
+avoids rescanning thousands of fragments for every 64 KiB block.
+
+## IOP memory outside the direct SysMem inventory
+
+ThreadMan owns backing memory for resources including:
+
+```text
+prefetch worker thread
+request semaphore
+done semaphore
+stopped semaphore
+```
+
+The worker requests a 4096-byte stack, but ThreadMan control-object overhead is
+not inferred here. `docs/HDL_IOP_RAM_BUDGET.md` correctly leaves that overhead
+unmeasured until real hardware records active modules and minimum free IOP RAM.
+
+# Phase-5 priority order
+
+1. Keep **CI #752 bounded HDDMETA v2** as the current peak-memory candidate.
+2. Hardware A/B transaction workspace v1 and source-fingerprint allocator policy.
+3. Build a reference serializer test before attempting streaming canonical
+   HDDMETA generation.
+4. Measure ISO/game catalogue cardinality before changing growth strategy.
+5. Leave payload-owning allocations intact until their consumers can use a
    different representation.
-6. Do not introduce custom pools/arenas merely to reduce the count of `malloc`
-   strings in source.
+6. Do not introduce global pools/arenas or global 64-byte heap alignment merely
+   to reduce allocator call counts in source.
+7. Do not expand IOP staging before runtime free-memory and latency attribution
+   are available.
 
-## Acceptance record for allocator changes
+## Acceptance record for allocator/lifetime changes
 
 ```yaml
 allocation_site:
+memory_domain:
 producer:
 consumer:
-lifetime:
-bytes:
-alignment:
+lifetime_before:
+lifetime_after:
+bytes_requested:
+alignment_before:
+alignment_after:
 ownership_before:
 ownership_after:
 alloc_calls_before:
 alloc_calls_after:
-peak_heap_before:
-peak_heap_after:
+peak_bytes_before:
+peak_bytes_after:
+elf_text_delta:
+correctness_hash:
+console_scp:
+hardware_revision:
+active_irx:
+sample_count:
 p50:
 p95:
 p99:
 max:
-correctness_hash:
-error_path_test:
 ```
 
-Allocator optimization is accepted only if it removes a real cost or reduces a
-meaningful peak-memory risk while preserving ownership/error semantics.
+Static source inventory can prove call structure, ownership and requested-size
+bounds. It cannot prove fragmentation, allocator latency or whole-system speedup.
