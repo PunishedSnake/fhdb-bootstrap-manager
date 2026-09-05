@@ -17,25 +17,224 @@ jobs:
         run: make test-host
       - name: Self-test guarded hardware fault injector
         run: python3 tools/hardware_fault_injector.py selftest
+      - name: Self-test HDL performance log parser
+        run: python3 tools/parse_hdl_perf.py --selftest
+      - name: Self-test HDL PROFILE A/B comparator
+        run: python3 tools/compare_hdl_profile_ab.py --selftest
+      - name: Self-test Phase-0 frozen pair preflight
+        run: python3 tools/phase0_profile_pair_preflight.py --selftest
+      - name: Self-test resume-hash A/B preflight
+        run: python3 tools/resume_hash_ab_preflight.py --selftest
+      - name: Self-test resume-hash A/B comparator
+        run: python3 tools/compare_hdl_resume_hash_ab.py --selftest
+      - name: Self-test R5900 calibration disassembly guard
+        run: python3 tools/check_r5900_calibration_disasm.py --selftest
+      - name: Self-test allocation inventory
+        run: python3 tools/allocation_inventory.py --selftest
+      - name: Self-test transaction workspace materializer
+        run: python3 tools/materialize_transaction_workspace.py --selftest
+      - name: Enforce reviewed explicit alignment policy
+        run: |
+          python3 tools/check_alignment_policy.py --selftest
+          python3 tools/check_alignment_policy.py
+      - name: Enforce direct-fileXio runtime policy
+        run: |
+          python3 tools/check_filexio_fdman_policy.py --selftest
+          python3 tools/check_filexio_fdman_policy.py
+      - name: Enforce no-local-time libcglue policy
+        run: |
+          python3 tools/check_libcglue_time_policy.py --selftest
+          python3 tools/check_libcglue_time_policy.py
+      - name: Enforce integer-only formatter policy
+        run: |
+          python3 tools/printf_format_audit.py --selftest
+          python3 tools/check_integer_format_policy.py --selftest
+          python3 tools/check_integer_format_policy.py
 
   ps2-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build, audit and strip PS2 ELF with PS2DEV v2.0.0
+      - name: Build PROFILE pair and calibration ELF with PS2DEV v2.0.0
         run: >-
-          docker run --rm -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          docker run --rm
+          -e PROJECT_GIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          -e PROJECT_GIT_REF="${{ github.head_ref || github.ref }}"
+          -e PS2DEV_BUNDLE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_SHA="b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b"
+          -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
           sh -c 'apk add --no-cache make python3 >/dev/null &&
           sh tools/r5900_toolchain_audit.sh GCC_R5900_TARGET.txt &&
           python3 tools/corpus_v2_project_audit.py
           --output CORPUS_V2_PROJECT_AUDIT.txt &&
-          make clean && make &&
+          python3 tools/allocation_inventory.py
+          --output ALLOCATION_INVENTORY.json &&
+          python3 tools/printf_format_audit.py
+          --output PRINTF_FORMAT_AUDIT.txt &&
+          make clean && make HDL_PROFILE=1 &&
+          cp hdl_stream.irx HDL_STREAM_PROFILE_ON.irx &&
           python3 tools/optimization_audit.py
           --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF
-          --output OPTIMIZATION_AUDIT.txt &&
-          make release'
-      - name: Record artifact checksum
-        run: sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+          --output OPTIMIZATION_AUDIT_PROFILE_ON.txt &&
+          make HDL_PROFILE=1 release &&
+          HDL_PROFILE=1 sh tools/build_benchmark_provenance.sh
+          BENCHMARK_PROVENANCE_PROFILE_ON.yml &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER.ELF
+          PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER.map
+          PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map &&
+          make clean && make HDL_PROFILE=0 &&
+          cp hdl_stream.irx HDL_STREAM_PROFILE_OFF.irx &&
+          python3 tools/optimization_audit.py
+          --elf PS2_HDD_BOOTSTRAP_MANAGER.ELF
+          --output OPTIMIZATION_AUDIT_PROFILE_OFF.txt &&
+          make HDL_PROFILE=0 release &&
+          HDL_PROFILE=0 sh tools/build_benchmark_provenance.sh
+          BENCHMARK_PROVENANCE_PROFILE_OFF.yml &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER.ELF
+          PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER.map
+          PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.map &&
+          mipsel-none-elf-size HDL_STREAM_PROFILE_ON.irx
+          HDL_STREAM_PROFILE_OFF.irx > HDL_STREAM_PROFILE_PAIR.sections &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF
+          PS2_HDD_BOOTSTRAP_MANAGER.ELF &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
+          PS2_HDD_BOOTSTRAP_MANAGER.map &&
+          make -C bench/r5900_calibration clean all &&
+          mips64r5900el-ps2-elf-size
+          bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF
+          > bench/r5900_calibration/R5900_COUNTER_CALIBRATION.sections &&
+          mips64r5900el-ps2-elf-objdump -dr
+          bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF
+          > bench/r5900_calibration/R5900_COUNTER_CALIBRATION.disasm &&
+          sha256sum bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF
+          > bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF.sha256'
+      - name: Validate PROFILE split and record checksums
+        run: |
+          if cmp -s HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx; then
+            echo "::error::PROFILE ON/OFF embedded hdl_stream IRX files are byte-identical"
+            exit 1
+          fi
+          sha256sum HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx | tee HDL_STREAM_PROFILE_PAIR.sha256
+          wc -c HDL_STREAM_PROFILE_ON.irx HDL_STREAM_PROFILE_OFF.irx | tee HDL_STREAM_PROFILE_PAIR.sizes
+          cat HDL_STREAM_PROFILE_PAIR.sections
+          python3 tools/phase0_profile_pair_preflight.py \
+            --profile-on PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF \
+            --profile-off PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF \
+            --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --output-template PHASE0_AB_SAMPLES_TEMPLATE.json
+          python3 tools/check_r5900_calibration_disasm.py \
+            --disasm bench/r5900_calibration/R5900_COUNTER_CALIBRATION.disasm
+          echo "--- R5900 calibration ELF ---"
+          cat bench/r5900_calibration/R5900_COUNTER_CALIBRATION.sections
+          cat bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF.sha256
+          echo "--- calibration_integer_loop disassembly ---"
+          awk '/<calibration_integer_loop>:/ {show=1; count=0} show {print; count++} show && count >= 12 {exit}' \
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.disasm
+          echo "--- PROFILE ON provenance ---"
+          cat BENCHMARK_PROVENANCE_PROFILE_ON.yml
+          echo "--- PROFILE OFF provenance ---"
+          cat BENCHMARK_PROVENANCE_PROFILE_OFF.yml
+          echo "--- PROFILE ON optimization audit ---"
+          cat OPTIMIZATION_AUDIT_PROFILE_ON.txt
+          echo "--- PROFILE OFF optimization audit ---"
+          cat OPTIMIZATION_AUDIT_PROFILE_OFF.txt
+          sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
+          sha256sum PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF | tee HDL_PROFILE_PAIR.sha256
+      - name: Build isolated transaction-workspace experiment after frozen gate
+        run: >-
+          docker run --rm
+          -e PROJECT_GIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          -e PROJECT_GIT_REF="${{ github.head_ref || github.ref }}"
+          -e PS2DEV_BUNDLE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_SHA="b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b"
+          -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make python3 >/dev/null &&
+          sh tools/build_transaction_workspace_experiment.sh &&
+          mips64r5900el-ps2-elf-size
+          PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF
+          > PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.sections &&
+          mips64r5900el-ps2-elf-size
+          PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF
+          > PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.sections'
+      - name: Record and validate transaction-workspace experiment identity
+        run: |
+          python3 tools/transaction_workspace_ab_preflight.py \
+            --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "--- transaction workspace PROFILE OFF ---"
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF.sha256
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF.size
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.sections
+          cat BENCHMARK_PROVENANCE_TX_WORKSPACE_PROFILE_OFF.yml
+          echo "--- transaction workspace PROFILE ON ---"
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF.sha256
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF.size
+          cat PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.sections
+          cat BENCHMARK_PROVENANCE_TX_WORKSPACE_PROFILE_ON.yml
+          echo "--- transaction workspace identity ---"
+          cat TRANSACTION_WORKSPACE_AB_IDENTITY.json
+          echo "--- transaction workspace PROFILE OFF optimization audit ---"
+          cat OPTIMIZATION_AUDIT_TX_WORKSPACE_PROFILE_OFF.txt
+          echo "--- transaction workspace PROFILE ON optimization audit ---"
+          cat OPTIMIZATION_AUDIT_TX_WORKSPACE_PROFILE_ON.txt
+          python3 tools/phase0_profile_pair_preflight.py \
+            --profile-on PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF \
+            --profile-off PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF \
+            --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Build isolated resume-hash experiment after frozen gate
+        run: >-
+          docker run --rm
+          -e PROJECT_GIT_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          -e PROJECT_GIT_REF="${{ github.head_ref || github.ref }}"
+          -e PS2DEV_BUNDLE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_REF="v2.0.0"
+          -e PS2SDK_SOURCE_SHA="b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b"
+          -v "$PWD:/work" -w /work ps2dev/ps2dev:v2.0.0
+          sh -c 'apk add --no-cache make python3 >/dev/null &&
+          sh tools/build_resume_hash_experiment.sh &&
+          mips64r5900el-ps2-elf-size
+          PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF
+          > PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.sections &&
+          mips64r5900el-ps2-elf-size
+          PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF
+          > PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.sections &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.sections
+          PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.sections &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF
+          PS2_HDD_BOOTSTRAP_MANAGER.ELF &&
+          cp PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
+          PS2_HDD_BOOTSTRAP_MANAGER.map'
+      - name: Record and validate resume-hash experiment identity
+        run: |
+          python3 tools/resume_hash_ab_preflight.py \
+            --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --identity-output RESUME_HASH_AB_IDENTITY.json \
+            --profile-off-template RESUME_HASH_AB_PROFILE_OFF_TEMPLATE.json \
+            --profile-on-template RESUME_HASH_AB_PROFILE_ON_TEMPLATE.json
+          echo "--- resume-hash PROFILE OFF ---"
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF.sha256
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF.size
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.sections
+          cat BENCHMARK_PROVENANCE_RESUME_HASH_PROFILE_OFF.yml
+          echo "--- resume-hash PROFILE ON ---"
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF.sha256
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF.size
+          cat PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.sections
+          cat BENCHMARK_PROVENANCE_RESUME_HASH_PROFILE_ON.yml
+          echo "--- resume-hash identity ---"
+          cat RESUME_HASH_AB_IDENTITY.json
+          echo "--- resume-hash PROFILE OFF optimization audit ---"
+          cat OPTIMIZATION_AUDIT_RESUME_HASH_PROFILE_OFF.txt
+          echo "--- resume-hash PROFILE ON optimization audit ---"
+          cat OPTIMIZATION_AUDIT_RESUME_HASH_PROFILE_ON.txt
+          python3 tools/phase0_profile_pair_preflight.py \
+            --profile-on PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF \
+            --profile-off PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF \
+            --project-git-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+          sha256sum PS2_HDD_BOOTSTRAP_MANAGER.ELF | tee PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: PS2-HDD-Bootstrap-Manager
@@ -43,9 +242,74 @@ jobs:
             PS2_HDD_BOOTSTRAP_MANAGER.ELF
             PS2_HDD_BOOTSTRAP_MANAGER.ELF.sha256
             PS2_HDD_BOOTSTRAP_MANAGER.map
-            OPTIMIZATION_AUDIT.txt
+            PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_ON.map
+            PS2_HDD_BOOTSTRAP_MANAGER_PROFILE_OFF.map
+            HDL_PROFILE_PAIR.sha256
+            HDL_STREAM_PROFILE_ON.irx
+            HDL_STREAM_PROFILE_OFF.irx
+            HDL_STREAM_PROFILE_PAIR.sha256
+            HDL_STREAM_PROFILE_PAIR.sizes
+            HDL_STREAM_PROFILE_PAIR.sections
+            PHASE0_AB_SAMPLES_TEMPLATE.json
+            OPTIMIZATION_AUDIT_PROFILE_ON.txt
+            OPTIMIZATION_AUDIT_PROFILE_OFF.txt
             CORPUS_V2_PROJECT_AUDIT.txt
+            ALLOCATION_INVENTORY.json
+            PRINTF_FORMAT_AUDIT.txt
             GCC_R5900_TARGET.txt
+            BENCHMARK_PROVENANCE_PROFILE_ON.yml
+            BENCHMARK_PROVENANCE_PROFILE_OFF.yml
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.ELF.sha256
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.map
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.sections
+            bench/r5900_calibration/R5900_COUNTER_CALIBRATION.disasm
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.ELF.size
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.map
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_OFF.sections
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.ELF.size
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.map
+            PS2_HDD_BOOTSTRAP_MANAGER_TX_WORKSPACE_PROFILE_ON.sections
+            HDL_STREAM_TX_WORKSPACE_PROFILE_OFF.irx
+            HDL_STREAM_TX_WORKSPACE_PROFILE_ON.irx
+            OPTIMIZATION_AUDIT_TX_WORKSPACE_PROFILE_OFF.txt
+            OPTIMIZATION_AUDIT_TX_WORKSPACE_PROFILE_ON.txt
+            BENCHMARK_PROVENANCE_TX_WORKSPACE_PROFILE_OFF.yml
+            BENCHMARK_PROVENANCE_TX_WORKSPACE_PROFILE_ON.yml
+            TRANSACTION_WORKSPACE_AB_IDENTITY.json
+            TRANSACTION_WORKSPACE_AB_PROFILE_OFF_TEMPLATE.json
+            TRANSACTION_WORKSPACE_AB_PROFILE_ON_TEMPLATE.json
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.ELF.size
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.map
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH.sections
+            OPTIMIZATION_AUDIT_RESUME_HASH.txt
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.ELF.size
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.map
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_OFF.sections
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF.sha256
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.ELF.size
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.map
+            PS2_HDD_BOOTSTRAP_MANAGER_RESUME_HASH_PROFILE_ON.sections
+            HDL_STREAM_RESUME_HASH_PROFILE_OFF.irx
+            HDL_STREAM_RESUME_HASH_PROFILE_ON.irx
+            OPTIMIZATION_AUDIT_RESUME_HASH_PROFILE_OFF.txt
+            OPTIMIZATION_AUDIT_RESUME_HASH_PROFILE_ON.txt
+            BENCHMARK_PROVENANCE_RESUME_HASH_PROFILE_OFF.yml
+            BENCHMARK_PROVENANCE_RESUME_HASH_PROFILE_ON.yml
+            RESUME_HASH_AB_IDENTITY.json
+            RESUME_HASH_AB_PROFILE_OFF_TEMPLATE.json
+            RESUME_HASH_AB_PROFILE_ON_TEMPLATE.json
             HDDMAN.CFG
             LICENSE
             THIRD_PARTY_NOTICES.md

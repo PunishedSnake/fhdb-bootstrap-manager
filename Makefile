@@ -1,10 +1,31 @@
 EE_BIN = PS2_HDD_BOOTSTRAP_MANAGER.ELF
 EE_MAP = PS2_HDD_BOOTSTRAP_MANAGER.map
-EE_OBJS = main.o manager_menu_ps2.o app_ui_ps2.o disk_status_ps2.o gs_ui_ps2.o gs_debug_compat_ps2.o app_error.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o forensic_controller_ps2.o platform.o storage.o video_mode.o ui_layout.o ui_font.o spleen_font_data.o header_backup.o repair_snapshot.o forensic_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o apa_forensic.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o hdd_forensic_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o hdl_iso.o hdl_partition.o hdl_transaction.o hdl_installer_ps2.o
+EE_OBJS = main.o manager_menu_ps2.o app_ui_ps2.o disk_status_ps2.o gs_ui_ps2.o gs_debug_compat_ps2.o app_error.o bootstrap_controller_ps2.o diagnostics_controller_ps2.o forensic_controller_ps2.o platform.o storage.o video_mode.o ui_layout.o ui_font.o spleen_font_data.o header_backup.o repair_snapshot.o forensic_snapshot.o rescue_image.o rescue_storage.o bootstrap_source.o bootstrap_signing.o apa.o apa_repair.o apa_forensic.o repair_health.o hdd_bounds.o hdd_read.o hdd_write.o hdd_repair_ps2.o hdd_forensic_repair_ps2.o repair_controller_ps2.o hdd_recovery_wrap.o bootstrap_transaction.o bootstrap_transaction_ps2.o boot_chain.o boot_chain_ps2.o boot_payload.o boot_payload_ps2.o boot_diagnostics_ps2.o boot_report.o boot_report_ps2.o boot_report_session.o session_log.o kelf.o sha256.o capsule_format.o mbr_compat.o hdl_iso.o hdl_partition.o hdl_transaction.o hdl_installer_ps2.o r5900_perf.o
 EE_LIBS = -ldebug -ldraw -lgraph -lpacket -ldma -lm -lpad -lfileXio -lpatches -lpoweroff -lsecr -lkernel
+
+# Phase-0 profiler perturbation must be measurable with the same source and the
+# same optimization flags. HDL_PROFILE=1 is the current instrumented default;
+# HDL_PROFILE=0 compiles EE/IOP HDL telemetry out without changing dataflow.
+HDL_PROFILE ?= 1
+ifeq ($(filter $(HDL_PROFILE),0 1),)
+$(error HDL_PROFILE must be 0 or 1)
+endif
+
+# Phase-2 recovery experiment. Keep this disabled in the frozen Phase-0 pair:
+# the experiment removes already-completed USB rehash work after interruption,
+# but must earn its place with real-hardware A/B before becoming the default.
+HDL_RESUME_HASH_CHECKPOINT ?= 0
+ifeq ($(filter $(HDL_RESUME_HASH_CHECKPOINT),0 1),)
+$(error HDL_RESUME_HASH_CHECKPOINT must be 0 or 1)
+endif
+
 # LTO lets the R5900 compiler optimize across the deliberately small modules
 # while section GC still removes unused recovery/UI helpers from the final ELF.
-EE_CFLAGS = -O2 -flto -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude
+EE_CFLAGS = -O2 -flto -G0 -Wall -Wextra -Werror -std=gnu99 -fdata-sections -ffunction-sections -Iinclude -DHDL_PROFILE_ENABLED=$(HDL_PROFILE)
+ifeq ($(HDL_RESUME_HASH_CHECKPOINT),1)
+EE_CFLAGS += -DHDL_RESUME_HASH_CHECKPOINT_ENABLED=1
+EE_OBJS += hdl_hash_checkpoint.o
+endif
 # Keep a linker map for every build. The R5900 has a 16 KiB I-cache, so archive
 # provenance, section growth and final placement are performance data, not just
 # link-time trivia. This also lets CI explain why heavyweight Newlib routines
@@ -43,10 +64,11 @@ HOST_HDD_REPAIR_FIXTURE_TEST = tests/test_hdd_repair_fixtures
 HOST_HDL_ISO_TEST = tests/test_hdl_iso
 HOST_HDL_PARTITION_TEST = tests/test_hdl_partition
 HOST_HDL_TRANSACTION_TEST = tests/test_hdl_transaction
+HOST_HDL_HASH_CHECKPOINT_TEST = tests/test_hdl_hash_checkpoint
 HOST_SPLEEN_GENERATED = tests/generated_spleen_font_data.c
 HOST_HDD_FIXTURE_DIR = tests/generated_hdds
 HOST_FORENSIC_FIXTURE_DIR = tests/generated_forensic_hdds
-HOST_TESTS = $(HOST_APP_ERROR_TEST) $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_APA_FORENSIC_TEST) $(HOST_APA_FORENSIC_DORMANT_TEST) $(HOST_VIDEO_MODE_TEST) $(HOST_UI_LAYOUT_TEST) $(HOST_UI_FONT_TEST) $(HOST_FORENSIC_FIXTURE_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST) $(HOST_HDD_REPAIR_FIXTURE_TEST) $(HOST_HDL_ISO_TEST) $(HOST_HDL_PARTITION_TEST) $(HOST_HDL_TRANSACTION_TEST)
+HOST_TESTS = $(HOST_APP_ERROR_TEST) $(HOST_FORMAT_TEST) $(HOST_APA_REPAIR_TEST) $(HOST_APA_FORENSIC_TEST) $(HOST_APA_FORENSIC_DORMANT_TEST) $(HOST_VIDEO_MODE_TEST) $(HOST_UI_LAYOUT_TEST) $(HOST_UI_FONT_TEST) $(HOST_FORENSIC_FIXTURE_TEST) $(HOST_BOOT_CHAIN_TEST) $(HOST_BOOT_PAYLOAD_TEST) $(HOST_BOOT_REPORT_TEST) $(HOST_KELF_TEST) $(HOST_BOOTSTRAP_TRANSACTION_TEST) $(HOST_RESCUE_IMAGE_TEST) $(HOST_HDD_FIXTURE_TEST) $(HOST_HDD_MUTATION_TEST) $(HOST_HDD_REPAIR_FIXTURE_TEST) $(HOST_HDL_ISO_TEST) $(HOST_HDL_PARTITION_TEST) $(HOST_HDL_TRANSACTION_TEST) $(HOST_HDL_HASH_CHECKPOINT_TEST)
 
 all: $(EE_BIN)
 
@@ -140,9 +162,14 @@ test-host:
 		tests/test_hdl_transaction.c src/hdl_transaction.c src/sha256.c \
 		-o $(HOST_HDL_TRANSACTION_TEST)
 	./$(HOST_HDL_TRANSACTION_TEST)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -Iinclude \
+		tests/test_hdl_hash_checkpoint.c src/hdl_hash_checkpoint.c src/sha256.c \
+		-o $(HOST_HDL_HASH_CHECKPOINT_TEST)
+	./$(HOST_HDL_HASH_CHECKPOINT_TEST)
 
 clean:
 	rm -f $(EE_BIN) $(EE_MAP) $(EE_OBJS) $(IRX_FILES:.irx=_irx.c) $(HOST_TESTS)
+	rm -f hdl_hash_checkpoint.o
 	rm -f $(CUSTOM_IRX) hdl_stream_irx.c iop/hdl_stream/*.o \
 		iop/hdl_stream/*.elf iop/hdl_stream/*.irx
 	rm -f ps2hdd_posix_irx.c
@@ -303,7 +330,13 @@ hdl_partition.o: src/hdl_partition.c
 hdl_transaction.o: src/hdl_transaction.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
+hdl_hash_checkpoint.o: src/hdl_hash_checkpoint.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
 hdl_installer_ps2.o: src/hdl_installer_ps2.c
+	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
+
+r5900_perf.o: src/r5900_perf.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@
 
 %_irx.c:
@@ -316,7 +349,7 @@ ps2hdd_posix_irx.c:
 	$(PS2SDK)/bin/bin2c $(PS2SDK)/iop/irx/ps2hdd-bdm.irx $@ ps2hdd_posix_irx
 
 hdl_stream.irx:
-	$(MAKE) -C iop/hdl_stream IOP_BIN=$(abspath $@)
+	$(MAKE) -C iop/hdl_stream IOP_BIN=$(abspath $@) HDL_PROFILE=$(HDL_PROFILE)
 
 hdl_stream_irx.c: hdl_stream.irx
 	$(PS2SDK)/bin/bin2c $< $@ hdl_stream_irx
