@@ -46,6 +46,11 @@ It deliberately does not guess ThreadMan implementation-owned backing memory
 from `CreateThread`/`CreateSema` call counts. Those costs remain part of the
 runtime IOP-memory gate.
 
+CI #753 records 25 direct allocation calls and 72 direct frees (97 events total),
+including 22 IOP SysMem events that the earlier libc-only scanner could not see.
+This is a direct-call source inventory, not a claim that allocator-internal or
+ThreadMan-owned memory has been measured.
+
 ## Lifetime classes
 
 ```text
@@ -230,7 +235,7 @@ serialization tests before hardware use.
 
 # IOP SysMem
 
-The custom `hdl_stream` service has three direct SysMem ownership classes.
+The custom `hdl_stream` service has four direct SysMem ownership classes.
 
 ## Stream object
 
@@ -294,6 +299,39 @@ This is producer representation state, not generic scratch. Any compaction must
 preserve fragmented-file correctness and the sequential cursor behaviour that
 avoids rescanning thousands of fragments for every 64 KiB block.
 
+## Metadata-commit read-back buffer
+
+`commit_metadata()` allocates one fixed-size SysMem buffer:
+
+```text
+verify = AllocSysMemory(ALLOC_FIRST, HDL_STREAM_METADATA_SIZE, NULL)
+```
+
+Lifetime: only the metadata commit call.
+
+Producer/consumer chain:
+
+```text
+canonical EE metadata
+  -> IOP write at HDL_STREAM_METADATA_OFFSET
+  -> HIOCFLUSH durability barrier
+  -> read_metadata() into IOP verify
+  -> memcmp(canonical, verify)
+  -> FreeSysMemory(verify)
+```
+
+**POTWIERDZONE:** the buffer participates in mandatory post-flush read-back
+verification. It is not retained across transactions and is not allocated in a
+payload chunk loop.
+
+**CURRENT IMPLEMENTATION:** the allocation is only `HDL_STREAM_METADATA_SIZE`
+(1024 B in the current HDL metadata contract).
+
+Priority: **KEEP**. Reusing staging memory or removing this allocation would
+couple a tiny cold allocation to the much more important stream/durability
+ownership path for at most 1 KiB peak savings. No measured evidence justifies
+that risk.
+
 ## IOP memory outside the direct SysMem inventory
 
 ThreadMan owns backing memory for resources including:
@@ -318,9 +356,11 @@ unmeasured until real hardware records active modules and minimum free IOP RAM.
 4. Measure ISO/game catalogue cardinality before changing growth strategy.
 5. Leave payload-owning allocations intact until their consumers can use a
    different representation.
-6. Do not introduce global pools/arenas or global 64-byte heap alignment merely
+6. Keep the fixed 1 KiB metadata-commit read-back allocation until evidence says
+   otherwise; correctness/durability value dominates its tiny peak cost.
+7. Do not introduce global pools/arenas or global 64-byte heap alignment merely
    to reduce allocator call counts in source.
-7. Do not expand IOP staging before runtime free-memory and latency attribution
+8. Do not expand IOP staging before runtime free-memory and latency attribution
    are available.
 
 ## Acceptance record for allocator/lifetime changes
