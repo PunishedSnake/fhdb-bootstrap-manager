@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Validate and bind the active Phase-5 bounded HDDMETA verification A/B.
+"""Validate and bind the active Phase-5 bounded HDDMETA verification v2 A/B.
 
 Frozen references:
 - Phase-0 baseline: CI #666
 - transaction workspace v1: CI #724
 - workspace v1 + source-fingerprint malloc: CI #739
+- bounded HDDMETA read-back v1: CI #749
 
-The active incremental change bounds forensic snapshot read-back scratch to
-64 KiB while retaining exact byte-for-byte comparison.
+V2 keeps the same 64 KiB exact byte-comparison memory model as v1 but replaces
+v1's two fileXioLseek size-check RPCs with one final one-byte read that must
+report EOF after all expected bytes have been consumed.
 """
 
 from __future__ import annotations
@@ -51,6 +53,27 @@ FINGERPRINT_MALLOC = {
     },
 }
 
+BOUNDED_V1 = {
+    "OFF": {
+        "elf_sha256": "64bcc758c9a848cb8c2a85284a47e9217693d725004b6a016813f825339a2775",
+        "elf_bytes": 633012,
+        "section_text": 286789,
+        "named_text": 230112,
+        "instructions": 57579,
+        "execute_transaction_bytes": 6008,
+        "execute_transaction_instructions": 1502,
+    },
+    "ON": {
+        "elf_sha256": "ad13f89be93575fe63cbb762893e2c4f7ee102b37ffd73794ef91bf224988af7",
+        "elf_bytes": 638516,
+        "section_text": 290749,
+        "named_text": 232908,
+        "instructions": 58278,
+        "execute_transaction_bytes": 6008,
+        "execute_transaction_instructions": 1502,
+    },
+}
+
 MAX_PATCHES = 2048
 SNAPSHOT_ENTRY_BYTES = 4 + 32 + 1024
 SNAPSHOT_MAX_BYTES = 64 + MAX_PATCHES * SNAPSHOT_ENTRY_BYTES + 32
@@ -75,20 +98,22 @@ def validate_frozen(label: str, elf: dict[str, object], irx: dict[str, object]) 
 
 def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -> dict:
     return {
-        "experiment": "forensic-snapshot-bounded-readback",
+        "experiment": "forensic-snapshot-bounded-readback-v2",
         "profile": profile,
         "workload": "forensic-HDDMETA-save-existing-slot-and-new-slot-readback",
-        "incremental_reference": FINGERPRINT_MALLOC[profile],
+        "bounded_v1_reference": BOUNDED_V1[profile],
         "expected_source_change": {
             "snapshot_format_changed": False,
             "exact_byte_compare_preserved": True,
             "max_patch_count": MAX_PATCHES,
             "max_snapshot_bytes": SNAPSHOT_MAX_BYTES,
-            "baseline_verify_allocation_bytes_at_max": SNAPSHOT_MAX_BYTES,
-            "experiment_verify_allocation_bytes_at_max": VERIFY_CHUNK_BYTES,
+            "verify_chunk_bytes": VERIFY_CHUNK_BYTES,
             "baseline_image_plus_verify_peak_bytes_at_max": BASELINE_MAX_PEAK_BYTES,
             "experiment_image_plus_verify_peak_bytes_at_max": EXPERIMENT_MAX_PEAK_BYTES,
             "peak_reduction_bytes_at_max": BASELINE_MAX_PEAK_BYTES - EXPERIMENT_MAX_PEAK_BYTES,
+            "bounded_v1_seek_rpcs_per_verify": 2,
+            "bounded_v2_seek_rpcs_per_verify": 0,
+            "bounded_v2_final_eof_reads_per_verify": 1,
             "iop_binary_change": False,
         },
         "baseline": baseline,
@@ -150,22 +175,23 @@ def main() -> int:
     validate_frozen("OFF", baseline_off, baseline_irx_off)
     validate_frozen("ON", baseline_on, baseline_irx_on)
     if experiment_irx_off["sha256"] != baseline_irx_off["sha256"]:
-        raise SystemExit("PROFILE OFF forensic experiment changed hdl_stream.irx")
+        raise SystemExit("PROFILE OFF forensic v2 experiment changed hdl_stream.irx")
     if experiment_irx_on["sha256"] != baseline_irx_on["sha256"]:
-        raise SystemExit("PROFILE ON forensic experiment changed hdl_stream.irx")
-    if experiment_off["sha256"] == FINGERPRINT_MALLOC["OFF"]["elf_sha256"]:
-        raise SystemExit("PROFILE OFF forensic experiment did not change the EE ELF")
-    if experiment_on["sha256"] == FINGERPRINT_MALLOC["ON"]["elf_sha256"]:
-        raise SystemExit("PROFILE ON forensic experiment did not change the EE ELF")
+        raise SystemExit("PROFILE ON forensic v2 experiment changed hdl_stream.irx")
+    if experiment_off["sha256"] == BOUNDED_V1["OFF"]["elf_sha256"]:
+        raise SystemExit("PROFILE OFF bounded v2 experiment did not change the EE ELF from bounded v1")
+    if experiment_on["sha256"] == BOUNDED_V1["ON"]["elf_sha256"]:
+        raise SystemExit("PROFILE ON bounded v2 experiment did not change the EE ELF from bounded v1")
 
     identity = {
-        "experiment": "forensic-snapshot-bounded-readback",
+        "experiment": "forensic-snapshot-bounded-readback-v2",
         "project_git_sha": args.project_git_sha,
         "frozen_phase0_commit": "7875b14d837d6332f5edc37f1c12a55527d7dd87",
         "workspace_v1_frozen_ci": 724,
         "fingerprint_malloc_frozen_ci": 739,
         "storage_scratch_natural_rejected_ci": 743,
-        "incremental_reference": FINGERPRINT_MALLOC,
+        "bounded_readback_v1_frozen_ci": 749,
+        "bounded_v1_reference": BOUNDED_V1,
         "ps2sdk_commit": "b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b",
         "toolchain": "mips64r5900el-ps2-elf GCC 15.2.0",
         "memory_model": {
@@ -176,10 +202,18 @@ def main() -> int:
             "experiment_image_plus_verify_peak_bytes": EXPERIMENT_MAX_PEAK_BYTES,
             "peak_reduction_bytes": BASELINE_MAX_PEAK_BYTES - EXPERIMENT_MAX_PEAK_BYTES,
         },
+        "io_model": {
+            "bounded_v1_seek_rpcs_per_verify": 2,
+            "bounded_v2_seek_rpcs_per_verify": 0,
+            "bounded_v2_final_eof_reads_per_verify": 1,
+            "short_read_handling_preserved": True,
+        },
         "correctness_contract": {
             "on_disk_format_changed": False,
             "slot_policy_changed": False,
             "overwrite_policy_changed": False,
+            "truncation_detection_preserved": True,
+            "trailing_data_detection_preserved": True,
             "exact_byte_compare_preserved": True,
         },
         "PROFILE_OFF": {"baseline_elf": baseline_off, "experiment_elf": experiment_off, "hdl_stream_irx": baseline_irx_off},
