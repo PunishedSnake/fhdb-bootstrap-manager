@@ -10,7 +10,9 @@ set -eu
 # Active bounded-v2 experiment keeps the 64 KiB exact read-back scratch but
 # removes the two seek RPCs used by v1. It reads exactly the expected bytes and
 # then requires one extra byte read to report EOF, preserving truncation and
-# trailing-data detection.
+# trailing-data detection. An independent APAMETA1 reference vector is validated
+# before materializing the runtime experiment so future streaming work has a
+# byte-exact oracle that does not share the runtime implementation.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BACKUP=$(mktemp -d)
 TRANSACTION="$ROOT/src/hdl_tools/transaction.inc"
@@ -30,6 +32,9 @@ restore_sources() {
     rm -rf "$BACKUP"
 }
 trap restore_sources EXIT HUP INT TERM
+
+cd "$ROOT"
+python3 tools/forensic_snapshot_reference.py --selftest
 
 cp "$TRANSACTION" "$BACKUP/transaction.inc"
 cp "$SOURCE_UI" "$BACKUP/source_ui.inc"
@@ -86,9 +91,10 @@ forensic_snapshot_verify_chunk_bytes: "65536"
 forensic_snapshot_verify_policy: "exact-byte-compare"
 forensic_snapshot_size_check: "exact-bytes-plus-eof-read"
 forensic_snapshot_seek_rpcs_per_verify: "0"
+forensic_snapshot_reference_format: "APAMETA1"
+forensic_snapshot_reference_image_sha256: "601ba74fc619738dac19baa2a6cb53054b67803e00b1fccb6bf89c69ef4bab6f"
 EOF
 }
 
-cd "$ROOT"
 build_variant 0 OFF
 build_variant 1 ON
