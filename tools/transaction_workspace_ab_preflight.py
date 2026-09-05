@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""Validate and bind the active Phase-5 streaming APAMETA1 A/B.
+"""Bind the active cold-isolated streaming APAMETA1 v3 experiment.
 
-Frozen references:
-- Phase-0 baseline: CI #666
-- transaction workspace v1: CI #724
-- workspace v1 + source-fingerprint malloc: CI #739
-- bounded HDDMETA read-back v1: CI #749
-- bounded HDDMETA read-back v2: CI #752 (runtime identity re-proved by CI #757)
-
-The active experiment removes the complete canonical snapshot allocation and
-uses one bounded workspace for serialized write chunks, exact read-back chunks
-and cached per-entry SHA-256 digests.
+V3 changes only code placement relative to streaming v2 (CI #762): the exported
+forensic snapshot save boundary is `cold,noinline` so LTO cannot inflate the
+repair-plan UI controller. Streaming representation, fileXio sequencing,
+workspace ownership and exact read-back semantics remain unchanged.
 """
 
 from __future__ import annotations
@@ -35,39 +29,42 @@ FROZEN = {
     },
 }
 
-BOUNDED_V2 = {
+STREAM_V2 = {
     "OFF": {
-        "elf_sha256": "ecd99a7aee199039146cfa8275d2ecbe360b9b486bb290adb3bd30d86ae10a54",
-        "elf_bytes": 633012,
-        "section_text": 286757,
-        "named_text": 230076,
-        "instructions": 57571,
+        "elf_sha256": "161b68d578e4ac0cbe1a37b34259d630f22822f43973c8462beb169fd494e223",
+        "elf_bytes": 634420,
+        "section_text": 288077,
+        "named_text": 231436,
+        "instructions": 57911,
+        "repair_plan_screen_bytes": 6916,
+        "repair_plan_screen_instructions": 1730,
         "execute_transaction_bytes": 6008,
         "execute_transaction_instructions": 1502,
     },
     "ON": {
-        "elf_sha256": "3ace7ea8730dc7dd56fe6bea078b2aeedc1e7735c5bcc831e7d7b883f65bdd2f",
-        "elf_bytes": 638516,
-        "section_text": 290717,
-        "named_text": 232872,
-        "instructions": 58270,
+        "elf_sha256": "08e1694c9fafef6db0f09fc1e696baed3bb5518c675914ca48515e9a8ba10898",
+        "elf_bytes": 639924,
+        "section_text": 292037,
+        "named_text": 234232,
+        "instructions": 58610,
+        "repair_plan_screen_bytes": 6916,
+        "repair_plan_screen_instructions": 1730,
         "execute_transaction_bytes": 6008,
         "execute_transaction_instructions": 1502,
     },
 }
 
 MAX_PATCHES = 2048
-SNAPSHOT_ENTRY_BYTES = 4 + 32 + 1024
-SNAPSHOT_MAX_BYTES = 64 + MAX_PATCHES * SNAPSHOT_ENTRY_BYTES + 32
+SNAPSHOT_MAX_BYTES = 64 + MAX_PATCHES * (4 + 32 + 1024) + 32
 STREAM_CHUNK_BYTES = 64 * 1024
 DIGEST_CACHE_BYTES_MAX = MAX_PATCHES * 32
 STREAM_WORKSPACE_BYTES_MAX = STREAM_CHUNK_BYTES * 2 + DIGEST_CACHE_BYTES_MAX
-ORIGINAL_PAIR_PEAK_BYTES = SNAPSHOT_MAX_BYTES * 2
 BOUNDED_V2_PEAK_BYTES = SNAPSHOT_MAX_BYTES + STREAM_CHUNK_BYTES
+ORIGINAL_PAIR_PEAK_BYTES = SNAPSHOT_MAX_BYTES * 2
 ORDER = ["BASE", "EXP", "EXP", "BASE", "EXP", "BASE", "BASE", "EXP"]
 
 
-def info(path: Path) -> dict[str, object]:
+def file_info(path: Path) -> dict[str, object]:
     data = path.read_bytes()
     return {"path": path.name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
@@ -77,27 +74,21 @@ def validate_frozen(label: str, elf: dict[str, object], irx: dict[str, object]) 
     if elf["sha256"] != expected["elf_sha256"] or elf["bytes"] != expected["elf_bytes"]:
         raise SystemExit(f"{label} baseline ELF is not the frozen Phase-0 binary")
     if irx["sha256"] != expected["irx_sha256"] or irx["bytes"] != expected["irx_bytes"]:
-        raise SystemExit(f"{label} baseline IRX is not the frozen Phase-0 binary")
+        raise SystemExit(f"{label} baseline IRX is not frozen Phase-0 identity")
 
 
 def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -> dict:
     return {
-        "experiment": "forensic-snapshot-streaming-apameta1-v2",
+        "experiment": "forensic-snapshot-streaming-apameta1-v3-cold",
         "profile": profile,
         "workload": "forensic-HDDMETA-save-existing-slot-and-new-slot-readback",
-        "bounded_v2_reference": BOUNDED_V2[profile],
+        "stream_v2_reference": STREAM_V2[profile],
         "expected_source_change": {
+            "dataflow_changed_from_stream_v2": False,
+            "cold_noinline_boundary_added": True,
             "snapshot_format_changed": False,
             "exact_byte_compare_preserved": True,
-            "per_header_sha256_preserved": True,
-            "trailer_sha256_preserved": True,
-            "max_patch_count": MAX_PATCHES,
-            "max_snapshot_bytes": SNAPSHOT_MAX_BYTES,
-            "stream_chunk_bytes": STREAM_CHUNK_BYTES,
-            "digest_cache_bytes_max": DIGEST_CACHE_BYTES_MAX,
             "stream_workspace_bytes_max": STREAM_WORKSPACE_BYTES_MAX,
-            "bounded_v2_peak_bytes_at_max": BOUNDED_V2_PEAK_BYTES,
-            "stream_peak_bytes_at_max": STREAM_WORKSPACE_BYTES_MAX,
             "peak_reduction_vs_bounded_v2": BOUNDED_V2_PEAK_BYTES - STREAM_WORKSPACE_BYTES_MAX,
             "peak_reduction_vs_original_full_pair": ORIGINAL_PAIR_PEAK_BYTES - STREAM_WORKSPACE_BYTES_MAX,
             "iop_binary_change": False,
@@ -118,8 +109,6 @@ def sample_template(profile: str, baseline: dict, experiment: dict, irx: dict) -
                 "variant": variant,
                 "patch_count": None,
                 "snapshot_bytes": None,
-                "existing_slot_match": None,
-                "new_slot_write_readback_match": None,
                 "elapsed_us": None,
                 "correctness_hash": None,
                 "result": None,
@@ -149,54 +138,43 @@ def main() -> int:
     parser.add_argument("--profile-on-template", type=Path, default=Path("TRANSACTION_WORKSPACE_AB_PROFILE_ON_TEMPLATE.json"))
     args = parser.parse_args()
 
-    baseline_off = info(args.baseline_off)
-    baseline_on = info(args.baseline_on)
-    baseline_irx_off = info(args.baseline_irx_off)
-    baseline_irx_on = info(args.baseline_irx_on)
-    experiment_off = info(args.experiment_off)
-    experiment_on = info(args.experiment_on)
-    experiment_irx_off = info(args.experiment_irx_off)
-    experiment_irx_on = info(args.experiment_irx_on)
+    baseline = {"OFF": file_info(args.baseline_off), "ON": file_info(args.baseline_on)}
+    irx = {"OFF": file_info(args.baseline_irx_off), "ON": file_info(args.baseline_irx_on)}
+    experiment = {"OFF": file_info(args.experiment_off), "ON": file_info(args.experiment_on)}
+    experiment_irx = {"OFF": file_info(args.experiment_irx_off), "ON": file_info(args.experiment_irx_on)}
 
-    validate_frozen("OFF", baseline_off, baseline_irx_off)
-    validate_frozen("ON", baseline_on, baseline_irx_on)
-    if experiment_irx_off["sha256"] != baseline_irx_off["sha256"]:
-        raise SystemExit("PROFILE OFF streaming experiment changed hdl_stream.irx")
-    if experiment_irx_on["sha256"] != baseline_irx_on["sha256"]:
-        raise SystemExit("PROFILE ON streaming experiment changed hdl_stream.irx")
-    if experiment_off["sha256"] == BOUNDED_V2["OFF"]["elf_sha256"]:
-        raise SystemExit("PROFILE OFF streaming experiment did not change the EE ELF from bounded v2")
-    if experiment_on["sha256"] == BOUNDED_V2["ON"]["elf_sha256"]:
-        raise SystemExit("PROFILE ON streaming experiment did not change the EE ELF from bounded v2")
+    for label in ("OFF", "ON"):
+        validate_frozen(label, baseline[label], irx[label])
+        if experiment_irx[label]["sha256"] != irx[label]["sha256"]:
+            raise SystemExit(f"PROFILE {label} streaming v3 changed hdl_stream.irx")
+        if experiment[label]["sha256"] == STREAM_V2[label]["elf_sha256"]:
+            raise SystemExit(f"PROFILE {label} cold boundary did not change EE ELF from streaming v2")
 
     identity = {
-        "experiment": "forensic-snapshot-streaming-apameta1-v2",
+        "experiment": "forensic-snapshot-streaming-apameta1-v3-cold",
         "project_git_sha": args.project_git_sha,
         "frozen_phase0_commit": "7875b14d837d6332f5edc37f1c12a55527d7dd87",
-        "workspace_v1_frozen_ci": 724,
-        "fingerprint_malloc_frozen_ci": 739,
-        "storage_scratch_natural_rejected_ci": 743,
-        "bounded_readback_v1_frozen_ci": 749,
         "bounded_readback_v2_frozen_ci": 752,
-        "bounded_readback_v2_identity_reproved_ci": 757,
-        "bounded_v2_reference": BOUNDED_V2,
+        "streaming_v2_frozen_ci": 762,
+        "stream_v2_reference": STREAM_V2,
         "reference_vector": {
             "format": "APAMETA1",
             "bytes": 2216,
             "image_sha256": "601ba74fc619738dac19baa2a6cb53054b67803e00b1fccb6bf89c69ef4bab6f",
         },
-        "ps2sdk_commit": "b12f8af37bd42ec13b1bafb7ab6e7bdcfb4b683b",
-        "toolchain": "mips64r5900el-ps2-elf GCC 15.2.0",
         "memory_model": {
-            "max_patch_count": MAX_PATCHES,
             "max_snapshot_bytes": SNAPSHOT_MAX_BYTES,
             "stream_chunk_bytes": STREAM_CHUNK_BYTES,
             "digest_cache_bytes_max": DIGEST_CACHE_BYTES_MAX,
             "stream_workspace_bytes_max": STREAM_WORKSPACE_BYTES_MAX,
-            "original_full_pair_peak_bytes": ORIGINAL_PAIR_PEAK_BYTES,
             "bounded_v2_peak_bytes": BOUNDED_V2_PEAK_BYTES,
+            "original_full_pair_peak_bytes": ORIGINAL_PAIR_PEAK_BYTES,
             "peak_reduction_vs_bounded_v2": BOUNDED_V2_PEAK_BYTES - STREAM_WORKSPACE_BYTES_MAX,
             "peak_reduction_vs_original_full_pair": ORIGINAL_PAIR_PEAK_BYTES - STREAM_WORKSPACE_BYTES_MAX,
+        },
+        "code_placement": {
+            "forensic_snapshot_save": "cold,noinline",
+            "reason": "prevent streaming serializer growth from inflating repair_plan_screen through LTO",
         },
         "correctness_contract": {
             "on_disk_format_changed": False,
@@ -208,12 +186,12 @@ def main() -> int:
             "trailing_data_detection_preserved": True,
             "exact_byte_compare_preserved": True,
         },
-        "PROFILE_OFF": {"baseline_elf": baseline_off, "experiment_elf": experiment_off, "hdl_stream_irx": baseline_irx_off},
-        "PROFILE_ON": {"baseline_elf": baseline_on, "experiment_elf": experiment_on, "hdl_stream_irx": baseline_irx_on},
+        "PROFILE_OFF": {"baseline_elf": baseline["OFF"], "experiment_elf": experiment["OFF"], "hdl_stream_irx": irx["OFF"]},
+        "PROFILE_ON": {"baseline_elf": baseline["ON"], "experiment_elf": experiment["ON"], "hdl_stream_irx": irx["ON"]},
     }
     args.identity_output.write_text(json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    args.profile_off_template.write_text(json.dumps(sample_template("OFF", baseline_off, experiment_off, baseline_irx_off), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    args.profile_on_template.write_text(json.dumps(sample_template("ON", baseline_on, experiment_on, baseline_irx_on), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    args.profile_off_template.write_text(json.dumps(sample_template("OFF", baseline["OFF"], experiment["OFF"], irx["OFF"]), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    args.profile_on_template.write_text(json.dumps(sample_template("ON", baseline["ON"], experiment["ON"], irx["ON"]), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 
 
