@@ -5,9 +5,12 @@ set -eu
 # default runtime sources. Frozen references:
 #   workspace v1                        CI #724
 #   workspace v1 + fingerprint malloc   CI #739
+#   bounded HDDMETA read-back v1        CI #749
 #
-# Active experiment additionally bounds forensic HDDMETA read-back verification
-# scratch to 64 KiB while preserving exact byte-for-byte comparison.
+# Active bounded-v2 experiment keeps the 64 KiB exact read-back scratch but
+# removes the two seek RPCs used by v1. It reads exactly the expected bytes and
+# then requires one extra byte read to report EOF, preserving truncation and
+# trailing-data detection.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BACKUP=$(mktemp -d)
 TRANSACTION="$ROOT/src/hdl_tools/transaction.inc"
@@ -78,8 +81,11 @@ hdl_transaction_workspace_bytes: "65536"
 hdl_transaction_workspace_alignment: "64"
 hdl_source_fingerprint_heap_experiment: "malloc"
 forensic_snapshot_bounded_verify_enabled: "1"
+forensic_snapshot_bounded_verify_version: "2"
 forensic_snapshot_verify_chunk_bytes: "65536"
 forensic_snapshot_verify_policy: "exact-byte-compare"
+forensic_snapshot_size_check: "exact-bytes-plus-eof-read"
+forensic_snapshot_seek_rpcs_per_verify: "0"
 EOF
 }
 
