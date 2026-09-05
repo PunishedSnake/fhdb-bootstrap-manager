@@ -6,13 +6,11 @@ set -eu
 #   workspace v1                        CI #724
 #   workspace v1 + fingerprint malloc   CI #739
 #   bounded HDDMETA read-back v1        CI #749
+#   bounded HDDMETA read-back v2        CI #752 / identical runtime CI #757
 #
-# Active bounded-v2 experiment keeps the 64 KiB exact read-back scratch but
-# removes the two seek RPCs used by v1. It reads exactly the expected bytes and
-# then requires one extra byte read to report EOF, preserving truncation and
-# trailing-data detection. An independent APAMETA1 reference vector is validated
-# before materializing the runtime experiment so future streaming work has a
-# byte-exact oracle that does not share the runtime implementation.
+# Active experiment replaces the full canonical APAMETA1 image with one bounded
+# streaming workspace while preserving exact serialized bytes and exact read-back.
+# The independent APAMETA1 reference vector is validated before materialization.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BACKUP=$(mktemp -d)
 TRANSACTION="$ROOT/src/hdl_tools/transaction.inc"
@@ -35,6 +33,7 @@ trap restore_sources EXIT HUP INT TERM
 
 cd "$ROOT"
 python3 tools/forensic_snapshot_reference.py --selftest
+python3 tools/materialize_forensic_snapshot_streaming_v2.py --selftest
 
 cp "$TRANSACTION" "$BACKUP/transaction.inc"
 cp "$SOURCE_UI" "$BACKUP/source_ui.inc"
@@ -44,7 +43,7 @@ python3 "$ROOT/tools/materialize_transaction_workspace.py" \
     "$TRANSACTION" "$TRANSACTION"
 python3 "$ROOT/tools/materialize_source_fingerprint_malloc.py" \
     "$SOURCE_UI"
-python3 "$ROOT/tools/materialize_forensic_snapshot_bounded_verify.py" \
+python3 "$ROOT/tools/materialize_forensic_snapshot_streaming_v2.py" \
     "$FORENSIC_SNAPSHOT"
 
 python3 "$ROOT/tools/allocation_inventory.py" \
@@ -85,12 +84,14 @@ hdl_transaction_workspace_version: "1"
 hdl_transaction_workspace_bytes: "65536"
 hdl_transaction_workspace_alignment: "64"
 hdl_source_fingerprint_heap_experiment: "malloc"
-forensic_snapshot_bounded_verify_enabled: "1"
-forensic_snapshot_bounded_verify_version: "2"
-forensic_snapshot_verify_chunk_bytes: "65536"
+forensic_snapshot_streaming_enabled: "1"
+forensic_snapshot_streaming_version: "2"
+forensic_snapshot_stream_chunk_bytes: "65536"
+forensic_snapshot_actual_chunk_bytes: "65536"
+forensic_snapshot_digest_cache_bytes_max: "65536"
+forensic_snapshot_workspace_bytes_max: "196608"
 forensic_snapshot_verify_policy: "exact-byte-compare"
 forensic_snapshot_size_check: "exact-bytes-plus-eof-read"
-forensic_snapshot_seek_rpcs_per_verify: "0"
 forensic_snapshot_reference_format: "APAMETA1"
 forensic_snapshot_reference_image_sha256: "601ba74fc619738dac19baa2a6cb53054b67803e00b1fccb6bf89c69ef4bab6f"
 EOF
