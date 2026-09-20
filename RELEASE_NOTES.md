@@ -1,105 +1,172 @@
-# PS2 HDD Bootstrap Manager 0.4.3 — Michishirube
+# PS2 HDD Bootstrap Manager 0.5.0 — Kakehashi
 
-0.4.3 is the corrective display release for the Michishirube line. The work
-was temporarily labeled `0.5.0-dev` while its final scope was being discovered,
-but shipping it as 0.5.0 would imply a new product milestone. What actually
-happened was that the PS2's video modes were taught to display pixels, survive
-being selected more than three times, and return to native without requiring a
-small religious ceremony.
+**Kakehashi (架け橋, "bridge")** brings the first console-side HDL management
+features into PS2 HDD Bootstrap Manager while keeping the recovery and safety
+model established by Michishirube.
 
-The APA recovery policy and every HDD write invariant remain unchanged.
+The point of 0.5.0 is not to turn the manager into another general-purpose HDD
+utility. It adds a guarded bridge between removable ISO sources and the PS2's
+existing internal APA/HDL storage, while preserving the diagnostic, backup and
+recovery tools already present in the application.
 
-## Corrected video modes
+## New: HDL Tools
 
-**System -> Video mode** now provides:
+0.5.0 adds a dedicated **HDL Tools** workspace.
 
-| `HDDMAN.CFG` value | Output | Backing format | Status |
-|---|---:|---:|---|
-| `native` | automatic region-correct interlaced | 640x224x32 FIELD pair | proven default and fallback |
-| `480p` | 720x448 progressive | 768x448x32 pair | 20-cycle PS2 + PCSX2 pass |
-| `576p` | 720x576 progressive | 768x576x32 single surface | visible and calibrated |
-| `720p` | 1280x720 progressive | 640x720x32 single surface, 2x read-circuit width | visible and calibrated |
-| `1080i` | 1920x1080 interlaced | two 640x540x32 FRAME buffers | visible, stable fields and rollback |
+### Installed games
 
-Every non-native mode must be confirmed with X within ten seconds, including
-when loaded from a saved configuration. TRIANGLE, timeout or an internal
-failure restores native output. A failed startup also rewrites the preference
-to `native`, because a permanent black-screen preference is technically
-persistent configuration but not especially useful persistence.
+- Builds the installed-game catalogue from one validated raw APA chain walk.
+- Removes the old fixed 128-game limit.
+- Reads HDLoader metadata lazily for the visible page instead of opening every
+  game partition up front.
+- Shows startup ID, allocated size and APA part count.
+- Keeps malformed or unreadable metadata visible but locks destructive actions.
+- Supports paged navigation on large game collections.
+- Guarded deletion rechecks the live disk, journal state, APA identity,
+  partition count and metadata SHA-256 before the normal APA remove call.
 
-Explicit `ntsc-480i` and `pal-576i` selectors remain removed. Old values are
-sanitized to `native` before the GS is touched. Native already supplies the
-console's region-correct interlaced output without reviving the PAL 576i VBlank
-failure.
+The catalogue path has been exercised on a real large PS2 HDD with **354 HDL
+games**. Guarded deletion has also been exercised on physical hardware.
 
-## GS transaction repairs
+### ISO browser
 
-- Replaced incomplete HDTV descriptions with explicit signal, complete
-  surface, framebuffer stride, viewport, pixel format and field contracts.
-- Corrected 1080i FRAME storage from 1080 stored lines to two 640x540 buffers;
-  each completed frame remains active for both fields.
-- Fixed black 576p/720p/1080i output by writing the locally assembled DISPLAY
-  value directly to both GS read circuits. Privileged DISPLAY registers are
-  write-only from the EE and cannot safely double as temporary variables.
-- Added a guarded legacy-ROM 576p setup using the kernel's 480p DVE path and
-  established GS timing, without raw DVE access through the active DEV9 bus.
-- Added bounded GIF-idle, GS FINISH and VBlank waits.
-- Rebuilt native rollback around the proven CRT/read-circuit bootstrap without
-  repeating libdebug's global DMAC reset.
-- Fixed the repeated-switch heap corruption: clearing both 480p buffers emits
-  100 qwords, while the old transition packet reserved only 64. The replacement
-  persistent 256-qword packet is budgeted and checked before submission.
-- Kept alternate VRAM reservations and both font atlases at fixed addresses so
-  mode switching performs no allocation or texture upload.
+- Browses ISO sources from `mass:/`.
+- Removes the former fixed 64-image source limit.
+- Uses paged navigation for large source sets.
+- Validates ISO9660 structure and extracts PS2 disc identity from
+  `SYSTEM.CNF` before any HDD mutation.
+- Rejects unsupported or malformed sources instead of treating every `.iso`
+  filename as trustworthy.
 
-## Resolution-independent UI and fonts
+Real-console ISO discovery has been verified with a normal PS2 DVD image.
 
-The application still authors every screen in a logical 640x224 space. The GS
-renderer now maps it through a per-mode viewport with independently snapped
-edges, preventing fractional scaling drift between text, cards and outlines.
+## Trial ISO-to-HDL installer
 
-Two fonts are selectable through **System -> UI font** or `HDDMAN.CFG`:
+0.5.0 includes ISO-to-HDL installation as an **experimental / trial feature**.
 
-- `msx` — the original PS2SDK bitmap;
-- `spleen` — Spleen 5x8 in native and 8x16 in scaled modes.
+The transaction is deliberately conservative:
 
-The project remains MIT-licensed. PS2SDK and the adapted Open PS2 Loader timing
-reference retain AFL-2.0 notices; Spleen remains BSD-2-Clause. The ZIP contains
-the applicable licenses and notices rather than relying on telepathy.
+1. validate the source image and game identity;
+2. re-read and validate the live APA layout;
+3. prove the generated target name is not already allocated;
+4. allocate the HDL layout through the normal PS2 HDD stack;
+5. stream the image in bounded blocks;
+6. accumulate source SHA-256 while copying;
+7. flush the payload;
+8. read the HDD payload back and compare the final SHA-256;
+9. commit HDLoader metadata only after payload verification;
+10. flush and read the metadata back before declaring success.
 
-## Validation
+Interrupted installs use an external transaction journal so incomplete work is
+not silently presented as a finished game.
 
-- Full portable host suite: **PASS**.
-- 30 generated mounted-HDD fixtures: **PASS**.
-- 9 sparse forensic raw-HDD fixtures: **PASS**.
-- Guarded physical-HDD fault-injector self-test: **PASS**.
-- Stripped R5900 build with pinned PS2DEV v2.0.0 and LTO: **PASS**.
-- Twenty uninterrupted native/480p/native cycles on SCPH-50000: **PASS**.
-- The same twenty-cycle transaction in PCSX2: **PASS**.
-- PCSX2 reproduced the earlier console failure and is now the primary fast GS
-  gate; physical hardware remains the final DVE/cable/display authority.
-- 576p, 720p and 1080i visible output and rollback: **PASS**.
-- Final dev10 576p/720p geometry accepted by the maintainer: **PASS**.
+The current fast path keeps source bytes on the IOP while they are written to
+the internal HDD, sends one copy to the EE for hashing, and can prefetch the
+next 64 KiB USB block in parallel. If the second staging buffer or worker
+cannot be created, it falls back to a synchronous one-buffer path.
 
-## Recovery safety contract
+**This release does not claim a complete install compatibility matrix yet.**
+A produced installation should still be verified on the target HDD and booted
+through OPL before it is treated as proven. DVD9 layer-break handling, split
+FAT32 ISO sets and recursive source directories are not implemented.
 
-0.4.3 does not change APA evidence weights, confidence thresholds, repair
-authorization, snapshot policy, source-stability checks, non-master-first /
-master-last ordering, flush/read-back verification, or the payload-first /
-pointer-last normal bootstrap transaction.
+## Storage target for 0.5.0
 
-Exceptional direct APA master and topology repair remains experimental. Use
-sacrificial or fully imaged media for destructive recovery testing.
+Kakehashi ships **one normal release storage variant** rather than a collection
+of benchmark builds.
 
-## Release assets
+The authoritative target is the classic PS2 internal HDD path through the
+expansion bay / official Sony Network Adapter using the established DEV9/ATA,
+APA and HDL stack. The release does not include the later experimental
+HDD-write/checkpoint/materialized benchmark variants developed during
+performance research.
+
+Third-party adapters, SATA conversions and bridge devices may work, but their
+write behavior is not claimed as the reference configuration for 0.5.0.
+
+## UI and usability
+
+- New two-by-three main dashboard.
+- Dedicated HDL workspace.
+- Cleaner controller navigation and paged game/ISO lists.
+- High-rate storage status messages are coalesced so the GS UI does not add a
+  VBlank wait to every 64 KiB transfer.
+- Existing native, 480p, 576p, 720p and 1080i guarded video modes remain.
+- Existing MSX and Spleen bitmap-font choices remain.
+
+## Code and performance work
+
+Kakehashi keeps the accepted code-side optimization work without shipping the
+profiling experiments themselves.
+
+- Normal runtime code remains built with `-O2` and LTO.
+- Selected cold, human-paced controllers use `-Os` to reduce R5900 I-cache
+  footprint.
+- Unused generic file/libc paths were removed where the application contract
+  did not require them.
+- Formatting paths remain integer-only where floating conversion was unused.
+- Large control flows were split around actual responsibility/lifetime
+  boundaries instead of mechanically inlining or unrolling them.
+- The Phase-2 build reduced named EE text by roughly **4.5 KiB** and about
+  **1100 instructions** versus its earlier Phase-1 baseline.
+
+No runtime speed percentage is claimed from those static results. The release
+simply keeps the smaller, cleaner code layout.
+
+## Existing recovery features retained
+
+Kakehashi retains the Michishirube recovery toolkit, including:
+
+- full APA master-header validation;
+- header backups and full rescue capsules;
+- signed HDD bootstrap install/restore;
+- boot-chain diagnostics and reports;
+- degraded raw APA forensic scanning;
+- forward/reverse/geometry reconstruction;
+- guarded deterministic master recovery;
+- guarded multi-header topology repair;
+- HDDRAW/HDDMETA/FORENSIC evidence artifacts;
+- source-stability checks, master-last commit ordering, flush and read-back
+  verification;
+- fail-closed behavior when evidence is ambiguous or a scan is truncated.
+
+Exceptional raw metadata repair remains experimental and should still be tested
+on sacrificial or fully imaged media.
+
+## Validation status
+
+**Validated:**
+
+- full portable host regression suite;
+- 30 deterministic mounted-HDD fixtures;
+- 9 sparse forensic HDD fixtures;
+- pinned PS2DEV v2.0.0 EE/IOP build;
+- physical large-HDD catalogue with 354 installed games;
+- physical installed-game metadata browsing;
+- guarded deletion on physical hardware;
+- physical USB ISO discovery;
+- the existing Michishirube GS/video-mode validation.
+
+**Still experimental / pending broader physical validation:**
+
+- end-to-end ISO allocation + copy + metadata commit across a representative
+  game set;
+- produced-game OPL boot matrix;
+- sustained installer throughput characterization;
+- interruption / resume across real power-loss cases;
+- DVD9 and split-image support;
+- broad third-party adapter / SATA / bridge write matrix.
+
+## Upgrade notes
+
+0.5.0 does not require reformatting the HDD and does not replace the existing
+APA recovery safety policy. Existing `HDDMAN.CFG` installations remain usable.
 
 The recommended download is:
 
 ```text
-PS2_HDD_BOOTSTRAP_MANAGER-0.4.3.zip
+PS2_HDD_BOOTSTRAP_MANAGER-0.5.0.zip
 ```
 
-It contains the versioned ELF, `HDDMAN.CFG`, `SHA256SUMS.txt`, project license,
-PS2SDK license and third-party notices. The ELF, configuration and checksum
-list also remain available separately for anyone who prefers assembling a
-release one collectible at a time.
+It contains the versioned ELF, default configuration, checksums, project
+license, PS2SDK license and bundled third-party notices.
