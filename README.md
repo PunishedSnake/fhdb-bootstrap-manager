@@ -1,41 +1,73 @@
 # PS2 HDD Bootstrap Manager
 
 PS2 HDD Bootstrap Manager is a standalone PlayStation 2 HDD bootstrap,
-diagnostic, forensic-backup and guarded-recovery toolkit. It manages the HDD
-OSD boot chain and APA metadata without formatting the disk or treating
-"delete everything" as a particularly inspired recovery algorithm.
+diagnostic, forensic-recovery and guarded HDL-management toolkit. It manages
+the HDD OSD boot chain and APA metadata, preserves recovery evidence, and can
+inspect installed HDL games without requiring a PC-side disk workflow.
 
-It began after a real console got trapped in a post-uninstall FHDB boot loop: FHDB was gone, but the bootstrap pointer was still enabled, so the machine faithfully rebooted into software that no longer existed. Apparently uninstalling a program and persuading the console to stop launching it were separate premium features.
+It began after a real console got trapped in a post-uninstall FHDB boot loop:
+FHDB was gone, but the bootstrap pointer was still enabled, so the machine
+faithfully rebooted into software that no longer existed. Apparently
+uninstalling a program and persuading the console to stop launching it were
+separate premium features.
 
 ## Current release
 
-**0.4.3 — Michishirube (道標)** is the current stable release.
+**0.5.0 — Kakehashi (架け橋, "bridge")** is the current release.
 
-Michishirube expands the project into a modular PS2-side recovery toolkit while preserving the established normal bootstrap write contract from Torii. The release includes:
+Kakehashi keeps the recovery architecture of Michishirube and adds the first
+console-side HDL Tools. The release is intentionally conservative about HDD
+I/O: it ships one normal internal-HDD path aimed at the PS2 expansion-bay /
+Network Adapter configuration through the established DEV9/ATA + APA/HDL
+stack. Experimental alternate HDD-write optimization variants and profiling
+builds are not part of the release.
 
-- full-screen Graphics Synthesizer UI;
-- hierarchical navigation and explicit `LOCKED` states;
-- live HDD operation/LBA telemetry with VBlank-synchronized presentation;
-- domain/stage-aware error explanations instead of bare negative integers;
-- portable APA forensic graph reconstruction;
-- read-only degraded shadow-map inspection;
-- guarded deterministic master recovery;
-- guarded multi-header topology repair;
-- `HDDRAW`, `HDDMETA`, rescue, log and forensic evidence artifacts;
-- guarded native, 480p, 576p, 720p and 1080i output with automatic native
-  recovery;
-- resolution-independent GS layout and selectable MSX/Spleen bitmap fonts;
-- a large host regression laboratory and guarded physical-HDD fault injector.
+### New in 0.5.0
 
-0.4.x maintenance builds EE code with `-O2` plus link-time
-optimization. This lets the R5900 compiler optimize across module boundaries
-while the existing section garbage collection continues to remove unused code
-from the stripped release ELF.
+- dedicated **HDL Tools** workspace;
+- raw APA catalogue of installed HDL games without the old fixed 128-game cap;
+- lazy HDLoader metadata reads for only the visible page;
+- guarded installed-game deletion with repeated disk, APA, metadata and journal
+  identity checks;
+- ISO browser for `mass:/` with paging and no fixed 64-image limit;
+- ISO9660 / `SYSTEM.CNF` probing before any target allocation;
+- large-HDD admission using the driver's full unsigned 32-bit sector geometry;
+- bounded ISO-to-HDL transaction model with source fingerprinting, SHA-256,
+  target-layout checks, journaled progress and final HDD read-back;
+- a dedicated IOP streaming path that keeps game data on the IOP while writing
+  to the internal HDD and sends one copy to the EE for SHA-256;
+- double-buffered USB prefetch with a safe single-buffer fallback;
+- coalesced high-rate storage status updates so the UI does not insert a VBlank
+  wait between every 64 KiB block;
+- a two-by-three dashboard and cleaner HDL navigation;
+- R5900 code-size / locality cleanup from the Corpus-v2 work: unused work and
+  libc paths were removed, cold human-paced control code is compiled for size,
+  and hot runtime code remains at `-O2` with LTO.
 
-The renderer was temporarily developed under `0.5.0-dev` identifiers while its
-scope was still uncertain. The completed work is released as 0.4.3 because it
-repairs and hardens the 0.4.x display subsystem rather than introducing the
-interchange features assigned to the real 0.5.x roadmap.
+### Experimental HDL installer
+
+**ISO-to-HDL installation is included as a trial/experimental feature in
+0.5.0.** Browsing installed games, metadata inspection and guarded deletion
+have received real-console validation, but a complete installation matrix is
+not yet claimed.
+
+The installer deliberately fails closed on unsupported or ambiguous inputs.
+DVD9 layer-break handling, split FAT32 ISO sets and directory recursion are not
+implemented. A newly installed title should be treated as test data until its
+partition layout, metadata and OPL boot have been verified on the target
+hardware.
+
+For 0.5.0 the recommended storage target is the classic internal HDD path via
+the official Sony Network Adapter / expansion-bay interface. Other adapters,
+SATA conversions and bridge combinations may work, but they are not the
+release authority for write behavior.
+
+### Build policy
+
+The release build does **not** include the profiling variants used during the
+optimization research. It retains the accepted code/locality improvements and
+uses the normal storage implementation rather than the later experimental
+HDD-write/materialized benchmark variants.
 
 ## Important recovery disclaimer
 
