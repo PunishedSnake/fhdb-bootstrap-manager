@@ -164,6 +164,21 @@ Any bug found there should become a 0.4.x regression/fix if it does not require 
 
 # 0.5.x — Kakehashi
 
+## Status: 0.5.0 released 2026-09-20
+
+0.5.0 opens the Kakehashi line with the console-side HDL bridge. The release
+keeps the established recovery formats and safety policy, ships the first
+guarded HDL Tools workflow, and deliberately labels ISO-to-HDL installation as
+experimental while the physical install/OPL matrix grows.
+
+The broader machine-readable recovery-interchange work remains a **0.5.x
+follow-up**, not a claim made by the initial 0.5.0 release.
+
+For 0.5.0 the reference write configuration is the internal PS2 HDD through
+the expansion-bay / official Network Adapter DEV9/ATA path. Experimental
+profiling builds and later storage-write benchmark variants are not release
+variants.
+
 **Two bridge contracts: portable recovery evidence between tools, and guarded
 deployment of game images from removable storage into the PS2's established
 HDL layout.**
