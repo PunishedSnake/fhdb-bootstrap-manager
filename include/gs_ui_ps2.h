@@ -35,13 +35,36 @@ int gs_ui_video_mode_apply(video_mode_id_t mode);
 ui_font_id_t gs_ui_font_current(void);
 int gs_ui_font_apply(ui_font_id_t font);
 
-void gs_ui_render_menu(const char *title,
-                       const char *status,
-                       const char *const *labels,
-                       const char *const *hints,
-                       const unsigned char *enabled,
-                       unsigned int item_count,
-                       unsigned int selected);
+#if defined(__GNUC__)
+#define GS_UI_MENU_SIZE_OPT __attribute__((optimize("Os")))
+#else
+#define GS_UI_MENU_SIZE_OPT
+#endif
+
+/* Human-speed menu presentation is VBlank/controller paced. Keep these two
+ * ordinary navigation renderers compact; disk-status telemetry and lower-level
+ * GS primitives retain their independent optimization policy. */
+void GS_UI_MENU_SIZE_OPT gs_ui_render_menu(
+    const char *title,
+    const char *status,
+    const char *const *labels,
+    const char *const *hints,
+    const unsigned char *enabled,
+    unsigned int item_count,
+    unsigned int selected);
+
+/* Root-only card dashboard. It keeps the short section descriptions without
+ * forcing six two-line entries into the ordinary vertical-menu geometry. */
+void GS_UI_MENU_SIZE_OPT gs_ui_render_dashboard(
+    const char *title,
+    const char *status,
+    const char *const *labels,
+    const char *const *hints,
+    const unsigned char *enabled,
+    unsigned int item_count,
+    unsigned int selected);
+
+#undef GS_UI_MENU_SIZE_OPT
 
 void gs_ui_render_message(const char *title,
                           const char *body,
@@ -52,6 +75,9 @@ void gs_ui_render_message(const char *title,
  * incrementally. Linker wrappers route historical scr_* calls here, so the
  * real libdebug renderer is used only as an initialization-failure fallback. */
 void gs_ui_console_clear(void);
+/* Drop an already-presented compatibility screen without scheduling a blank
+ * replacement frame. This prevents prompts from surviving behind GS menus. */
+void gs_ui_console_discard(void);
 void gs_ui_console_printf(const char *format, ...)
     __attribute__((format(printf, 1, 2)));
 void gs_ui_console_vprintf(const char *format, va_list arguments);

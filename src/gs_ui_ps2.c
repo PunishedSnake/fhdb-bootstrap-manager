@@ -1322,6 +1322,105 @@ void gs_ui_render_menu(const char *title,
     end_frame(packet, q);
 }
 
+void gs_ui_render_dashboard(const char *title,
+                            const char *status,
+                            const char *const *labels,
+                            const char *const *hints,
+                            const unsigned char *enabled,
+                            unsigned int item_count,
+                            unsigned int selected)
+{
+    const ui_theme_palette_t *theme = ui_theme_current();
+    static const float card_x0[] = {18.0f, 222.0f, 426.0f};
+    static const float card_x1[] = {214.0f, 418.0f, 622.0f};
+    static const float card_y0[] = {69.0f, 113.0f};
+    static const float card_y1[] = {107.0f, 151.0f};
+    packet_t *packet;
+    qword_t *q;
+    unsigned int i;
+
+    if (!renderer_ready && gs_ui_initialize() < 0)
+        return;
+    if (item_count > 6u)
+        item_count = 6u;
+    if (selected >= item_count)
+        selected = 0u;
+
+    q = begin_frame(&packet);
+    q = draw_shell(q, "MANAGER", GS_UI_TONE_INFO);
+    q = text_string_box(q, 20, 35, 620, 44,
+                        title != NULL ? title : "Dashboard", theme->text);
+    q = filled_rect_rgb(q, 16, 48, 624, 64, theme->panel);
+    q = outline_rect_rgb(q, 16, 48, 624, 64, theme->border);
+    q = text_string_box(q, 26, 52, 614, 61,
+                        status != NULL ? status : "", theme->muted);
+
+    for (i = 0; i < item_count; i++) {
+        unsigned int column = i % 3u;
+        unsigned int row = i / 3u;
+        int is_enabled = enabled == NULL || enabled[i] != 0u;
+        int is_selected = i == selected;
+        ui_rgb_t background = theme->panel;
+        ui_rgb_t border = theme->panel;
+        ui_rgb_t bar = theme->panel;
+        ui_rgb_t label_color = theme->text;
+
+        if (!is_enabled) {
+            background = theme->disabled_bg;
+            border = theme->disabled_border;
+            bar = theme->warning;
+            label_color = theme->disabled_text;
+        } else if (is_selected) {
+            background = theme->panel_alt;
+            border = theme->border;
+            bar = theme->accent;
+        }
+
+        q = filled_rect_rgb(q, card_x0[column], card_y0[row],
+                            card_x1[column], card_y1[row], background);
+        if (is_selected || !is_enabled)
+            q = outline_rect_rgb(q, card_x0[column], card_y0[row],
+                                 card_x1[column], card_y1[row], border);
+        q = filled_rect_rgb(q, card_x0[column], card_y0[row],
+                            card_x0[column] + 5.0f, card_y1[row], bar);
+        q = text_string_box(q, card_x0[column] + 14.0f,
+                            card_y0[row] + 9.0f,
+                            card_x1[column] - 8.0f,
+                            card_y0[row] + 19.0f,
+                            labels != NULL && labels[i] != NULL
+                                ? labels[i] : "(unnamed)",
+                            label_color);
+        if (!is_enabled)
+            q = text_string_box(q, card_x0[column] + 14.0f,
+                                card_y0[row] + 22.0f,
+                                card_x1[column] - 8.0f,
+                                card_y1[row] - 3.0f,
+                                "LOCKED", theme->warning);
+    }
+
+    q = filled_rect_rgb(q, 18, 157, 622, 201, theme->panel);
+    q = outline_rect_rgb(q, 18, 157, 622, 201, theme->border);
+    q = filled_rect_rgb(q, 18, 157, 23, 201, theme->accent);
+    q = text_string_box(q, 34, 162, 610, 171,
+                        labels != NULL && item_count != 0u &&
+                                labels[selected] != NULL
+                            ? labels[selected] : "Section",
+                        theme->text);
+    q = text_string_box(q, 34, 175, 610, 197,
+                        hints != NULL && item_count != 0u &&
+                                hints[selected] != NULL
+                            ? hints[selected] : "",
+                        enabled == NULL || enabled[selected] != 0u
+                            ? theme->muted : theme->disabled_text);
+
+    q = filled_rect_rgb(q, 0, 205, GS_UI_WIDTH, GS_UI_HEIGHT,
+                        theme->panel_alt);
+    q = text_string_box(q, 20, 211, 620, 220,
+                        "D-PAD Select       X Open       TRIANGLE Power",
+                        theme->muted);
+    end_frame(packet, q);
+}
+
 void gs_ui_render_message(const char *title,
                           const char *body,
                           const char *footer,
@@ -1389,6 +1488,13 @@ void gs_ui_console_clear(void)
     console_buffer[0] = '\0';
     console_used = 0;
     console_dirty = 1;
+}
+
+void gs_ui_console_discard(void)
+{
+    console_buffer[0] = '\0';
+    console_used = 0;
+    console_dirty = 0;
 }
 
 void gs_ui_console_vprintf(const char *format, va_list arguments)

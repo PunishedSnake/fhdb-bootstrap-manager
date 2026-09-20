@@ -22,6 +22,10 @@ void disk_status_begin_at(const char *operation, const char *phase,
 void disk_status_phase(const char *phase);
 void disk_status_location(const char *location);
 void disk_status_phase_at(const char *phase, const char *location);
+/* Mark the active semantic operation as destructive/write-capable even while
+ * it is still performing mandatory validation reads. This keeps the current
+ * I/O truthful without advertising the armed path as read-only. */
+void disk_status_set_write_intent(int armed);
 void disk_status_io(disk_status_kind_t kind, unsigned int lba,
                     unsigned int sectors, unsigned int current,
                     unsigned int total);
