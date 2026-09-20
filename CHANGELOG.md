@@ -2,7 +2,18 @@
 
 All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
-## [Unreleased]
+## [0.5.0] - 2026-09-20
+
+**Codename: Kakehashi (架け橋)**
+
+Kakehashi bridges the established PS2-side recovery toolkit with the first
+guarded HDL-management workflow. The release intentionally ships a single
+conservative internal-HDD implementation for the normal DEV9/ATA + APA/HDL
+stack. Profiling builds and experimental alternate HDD-write optimization
+variants are not included.
+
+### HDL Tools
+
 
 ### HDL Tools
 
@@ -35,6 +46,43 @@ All notable changes to PS2 HDD Bootstrap Manager are documented here.
   vertical navigation of ordinary submenus.
 - Discarded acknowledged compatibility-console screens so repeated visits no
   longer append another `Press X to return.` footer.
+
+### Installer and transaction safety
+
+- Added ISO9660 / `SYSTEM.CNF` identity probing before target allocation.
+- Added bounded ISO-to-HDL transfer with source fingerprinting, transaction
+  journal state, SHA-256 accumulation and mandatory target read-back.
+- Added target-layout and metadata revalidation around destructive stages.
+- Added a dedicated IOP streamer with direct USB/BDM source reads when
+  supported, normal fallback otherwise, internal-HDD writes through ps2hdd,
+  one IOP-to-EE copy for hashing, and double-buffered USB prefetch.
+- Added safe single-buffer fallback when the second IOP staging allocation or
+  prefetch worker cannot be created.
+- Kept DVD9, split FAT32 image sets and recursive source discovery unsupported
+  rather than guessing at partially defined formats.
+- Marked ISO-to-HDL installation as **experimental/trial** for 0.5.0 pending a
+  wider physical install + OPL boot matrix.
+
+### Code and runtime cleanup
+
+- Retained the accepted Corpus-v2 code-removal and locality work.
+- Removed unused generic pathname/libc work from the application contract.
+- Kept integer-only bounded formatting for the UI/status paths.
+- Split large human-paced control flows into coarse stages and compile selected
+  cold controller code with `-Os` while normal runtime code remains
+  `-O2 -flto`.
+- Reduced the Phase-2 static EE footprint versus the earlier Phase-1 baseline
+  by roughly 4.5 KiB of named text and about 1100 instructions.
+- Release builds do not enable the later PROFILE ON/OFF research variants.
+
+### Release storage policy
+
+- 0.5.0 ships one release path centered on the PS2 internal HDD connected
+  through the expansion-bay / Network Adapter DEV9/ATA interface.
+- Later experimental storage-write, checkpoint and materialized forensic
+  benchmark variants are deliberately excluded from the release.
+- Third-party adapters, SATA conversions and bridge devices remain outside the
+  authoritative write-behavior matrix for this release.
 
 ## [0.4.3] - 2026-08-22
 
