@@ -14,20 +14,39 @@ jobs:
   cleanup:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete all Actions artifacts
+      - name: Wait for sibling workflows, then delete all Actions artifacts
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          echo "Waiting for other workflow runs on commit $GITHUB_SHA to finish..."
+          for attempt in $(seq 1 120); do
+            pending=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&per_page=100"               --jq ".workflow_runs | map(select((.id != ${GITHUB_RUN_ID}) and (.status != \"completed\"))) | length")
+            if [ "$pending" -eq 0 ]; then
+              break
+            fi
+            echo "$pending sibling workflow run(s) still active; waiting..."
+            sleep 10
+          done
+
+          pending=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&per_page=100"             --jq ".workflow_runs | map(select((.id != ${GITHUB_RUN_ID}) and (.status != \"completed\"))) | length")
+          if [ "$pending" -ne 0 ]; then
+            echo "::error::$pending sibling workflow run(s) did not finish within the wait window."
+            exit 1
+          fi
+
           mapfile -t ids < <(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq '.artifacts[].id')
           echo "Found ${#ids[@]} artifact(s)."
+
           deleted=0
           for id in "${ids[@]}"; do
             [ -z "$id" ] && continue
             gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
             deleted=$((deleted + 1))
           done
+
           echo "Deleted $deleted artifact(s)."
           remaining=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=1" --jq '.total_count')
           echo "Remaining artifacts: $remaining"
