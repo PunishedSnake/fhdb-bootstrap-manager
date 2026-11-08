@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "apa.h"
+#include "apa_layout.h"
 #include "app_ui_ps2.h"
 #include "disk_status_ps2.h"
 #include "gs_ui_ps2.h"
@@ -59,7 +60,8 @@ enum {
     HDL_INSTALL_NO_GAMES = -574,
     HDL_INSTALL_TARGET_CHANGED = -575,
     HDL_INSTALL_TARGET_BUSY = -576,
-    HDL_INSTALL_CHAIN_INVALID = -577
+    HDL_INSTALL_CHAIN_INVALID = -577,
+    HDL_INSTALL_OUTSIDE_APA_FENCE = -578
 };
 
 typedef struct {
@@ -92,6 +94,7 @@ typedef struct {
     uint32_t total_sectors;
     uint64_t used_sectors;
     uint64_t free_sectors;
+    apa_layout_t layout;
 } hdl_catalog_t;
 
 static unsigned char admission_header[APA_HEADER_SIZE]

@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "apa.h"
+#include "apa_layout.h"
 #include "app_config.h"
 #include "app_identity.h"
 #include "app_ui_ps2.h"
@@ -98,6 +99,7 @@ int main(int argc, char **argv)
     u64 stage_start;
     u64 stage_end;
     int result;
+    apa_layout_t layout;
     int hdd_status;
     int app_config_result;
     int font_result;
@@ -197,12 +199,19 @@ int main(int argc, char **argv)
         disk_status_end();
         app_ui_fatal_screen("Invalid APA __mbr header or checksum.", -101);
     }
-    disk_status_phase_at("Checking for hybrid GPT signatures",
-                         "Sector 0 protective/PC partition metadata");
-    if (is_hybrid_gpt(header_buffer)) {
+    disk_status_phase_at("Classifying APA / APA-Jail / GPT layout",
+                         "Sector 0 PC partition metadata");
+    apa_layout_classify(header_buffer, 0, &layout);
+    if (layout.kind == APA_LAYOUT_BLOCKED) {
+        static char message[96];
+
         disk_status_end();
-        app_ui_fatal_screen("Hybrid APA/GPT layout is not supported.", -102);
+        snprintf(message, sizeof(message),
+                 "Hybrid layout is not supported: %s.",
+                 apa_layout_reason_name(layout.reason));
+        app_ui_fatal_screen(message, -102);
     }
+    apa_layout_session_set(&layout);
     disk_status_end();
 
     mark_boot_chain_pending(&boot_chain);
@@ -211,6 +220,13 @@ int main(int argc, char **argv)
     session_log_line("Session started: %s v%s; launch storage=%s", APP_NAME,
                      APP_VERSION,
                      storage_targets[storage_selected()].name);
+    if (layout.kind == APA_LAYOUT_JAIL)
+        session_log_line("Disk layout: %s; PC entries=%u; APA fence LBA=0x%08x",
+                         apa_layout_kind_name(layout.kind),
+                         layout.entry_count,
+                         (unsigned int)layout.fence_lba);
+    else
+        session_log_line("Disk layout: %s", apa_layout_kind_name(layout.kind));
     session_log_line("APA header valid; osdStart=0x%08x; osdSize=0x%08x",
                      (unsigned int)read_le32(
                          header_buffer + APA_OSD_START_OFFSET),

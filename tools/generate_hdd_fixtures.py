@@ -23,6 +23,7 @@ PAYLOAD_LBA = 0x2000
 IMAGE_SECTORS = 0x8000
 IMAGE_BYTES = IMAGE_SECTORS * SECTOR_SIZE
 DEFAULT_MBR_SECTORS = 0x4000
+JAIL_FENCE_LBA = 0x5800
 
 
 def write_le16(buffer, offset, value):
@@ -74,6 +75,28 @@ def make_apa_header(start=0, sectors=0, pc_signature=False, gpt_header=False):
     if gpt_header:
         gpt = make_gpt_header(1, IMAGE_SECTORS - 1, IMAGE_SECTORS)
         header[SECTOR_SIZE:SECTOR_SIZE + len(gpt)] = gpt
+    write_le32(header, 0, apa_checksum(header))
+    return header
+
+
+def make_apa_jail_header(start=0, sectors=0, overlap=False):
+    """APA-Jail type A2 as written by the PSBBN Definitive installers:
+    "APAJ-A2\0" at 0xE0, sfdisk DOS table (container 0x17, 32 MiB-style
+    recovery 0x17, exFAT 0x07) and a recomputed APA checksum. Scaled to the
+    16 MiB fixture image; the fence is the recovery partition start."""
+    header = make_apa_header(start, sectors, pc_signature=True)
+    header[0xE0:0xE8] = b"APAJ-A2\0"
+    write_le32(header, 0x1B8, 0x1234ABCD)
+    container_end = JAIL_FENCE_LBA + (0x100 if overlap else 0)
+    entries = ((0x17, 0x800, container_end - 0x800),
+               (0x17, JAIL_FENCE_LBA, 0x800),
+               (0x07, JAIL_FENCE_LBA + 0x800,
+                IMAGE_SECTORS - JAIL_FENCE_LBA - 0x800))
+    for index, (kind, first, count) in enumerate(entries):
+        entry = 0x1BE + index * 16
+        header[entry + 4] = kind
+        write_le32(header, entry + 8, first)
+        write_le32(header, entry + 12, count)
     write_le32(header, 0, apa_checksum(header))
     return header
 
@@ -226,6 +249,16 @@ def main():
     add("apa_pc_signature_only", make_apa_header(pc_signature=True),
         standard=True, hybrid=True, gpt=False, start=0, sectors=0,
         bounds=-170, mbr_size=DEFAULT_MBR_SECTORS)
+    add("apa_jail_a2",
+        make_apa_jail_header(PAYLOAD_LBA, 1),
+        [(PAYLOAD_LBA * SECTOR_SIZE, make_valid_kelf_sector())],
+        standard=True, hybrid=True, gpt=False, start=PAYLOAD_LBA, sectors=1,
+        bounds=0, kelf=0, payload_lba=PAYLOAD_LBA,
+        mbr_size=DEFAULT_MBR_SECTORS, layout="jail", fence=JAIL_FENCE_LBA)
+    add("apa_jail_overlap",
+        make_apa_jail_header(overlap=True),
+        standard=True, hybrid=True, gpt=False, start=0, sectors=0,
+        bounds=-170, mbr_size=DEFAULT_MBR_SECTORS, layout="blocked")
     add("hybrid_apa_gpt",
         make_apa_header(PAYLOAD_LBA, 1, pc_signature=True, gpt_header=True),
         [(PAYLOAD_LBA * SECTOR_SIZE, make_valid_kelf_sector())],

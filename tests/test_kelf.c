@@ -157,6 +157,29 @@ static int test_sector_padded_image(void)
            KELF_IMAGE_ERR_LAYOUT;
 }
 
+/*
+ * OSDMenu MBR 1.3.0 ships OSDMBR.XLF as 761 whole sectors whose declared
+ * header+content size is 104 bytes short of the file. Accept exactly that
+ * sector-aligned form and nothing looser.
+ */
+static int test_sector_aligned_declared_short(void)
+{
+    unsigned char data[FIXTURE_CAPACITY];
+
+    (void)make_kelf(data, 72u, 1440u - 104u, 0u, 0u);
+    if (kelf_validate_layout(data, 1536u) != KELF_VALID)
+        return 0; /* 72 + 1336 = 1408, ends inside sector 3 of 1536 */
+    if (kelf_validate_layout(data, 1500u) != KELF_ERR_FILE_SIZE)
+        return 0; /* not sector-aligned */
+    (void)make_kelf(data, 72u, 900u, 0u, 0u);
+    if (kelf_validate_layout(data, 1536u) != KELF_ERR_FILE_SIZE)
+        return 0; /* 972 declared: a whole sector or more is unexplained */
+    (void)make_kelf(data, 72u, 1536u, 0u, 0u);
+    if (kelf_validate_layout(data, 1536u) != KELF_ERR_FILE_SIZE)
+        return 0; /* declared larger than the file */
+    return 1;
+}
+
 int main(void)
 {
     if (!test_valid_layouts()) {
@@ -170,6 +193,11 @@ int main(void)
     if (!test_sector_padded_image()) {
         fprintf(stderr, "Sector-padded KELF image fixtures failed.\n");
         return 3;
+    }
+
+    if (!test_sector_aligned_declared_short()) {
+        fprintf(stderr, "Sector-aligned declared-short KELF fixtures failed.\n");
+        return 4;
     }
 
     puts("All portable KELF parser tests passed.");

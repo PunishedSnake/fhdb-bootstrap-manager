@@ -71,8 +71,7 @@ static int scan_apa_catalog_for_target(hdl_catalog_t *catalog,
     if (target_found != NULL)
         *target_found = 0;
     result = hdd_read_raw_sectors(0, 2, admission_header);
-    if (result < 0 || !is_standard_apa_header(admission_header) ||
-        is_hybrid_gpt(admission_header))
+    if (result < 0 || !is_standard_apa_header(admission_header))
         return HDL_INSTALL_DISK_UNSAFE;
     /* HDIOC_TOTALSECTOR is transported through a signed int by fileXio.
      * The bit pattern is still the driver's u32 sector count, so do not
@@ -85,6 +84,11 @@ static int scan_apa_catalog_for_target(hdl_catalog_t *catalog,
     if (total_sectors < 2u)
         return HDL_INSTALL_DISK_TOO_LARGE;
     catalog->total_sectors = total_sectors;
+    /* Re-classify the live header with real geometry on every scan: an
+     * APA-Jail fence decides how much of the APA free chain is usable. */
+    apa_layout_classify(admission_header, total_sectors, &catalog->layout);
+    if (catalog->layout.kind == APA_LAYOUT_BLOCKED)
+        return HDL_INSTALL_DISK_UNSAFE;
     catalog->used_sectors = read_le32(admission_header + APA_LENGTH_OFFSET);
     current = read_le32(admission_header + APA_NEXT_OFFSET);
 
@@ -104,10 +108,11 @@ static int scan_apa_catalog_for_target(hdl_catalog_t *catalog,
         length = read_le32(header + APA_LENGTH_OFFSET);
         type = read_le16(header + APA_TYPE_OFFSET);
         if (type == 0) {
-            if (catalog->free_sectors > UINT64_MAX - length)
-                return HDL_INSTALL_CHAIN_INVALID;
-            catalog->free_sectors += length;
+            catalog->free_sectors +=
+                apa_layout_clip_sectors(&catalog->layout, current, length);
         } else {
+            if (!apa_layout_extent_allowed(&catalog->layout, current, length))
+                return HDL_INSTALL_DISK_UNSAFE;
             if (catalog->used_sectors > UINT64_MAX - length)
                 return HDL_INSTALL_CHAIN_INVALID;
             catalog->used_sectors += length;

@@ -37,3 +37,7 @@ ps2-hdd-fault-*/
 .DS_Store
 Thumbs.db
 *.swp
+/tests/test_apa_layout
+*.map
+/hdl_stream.irx
+/hdl_stream.notiopmod*.elf

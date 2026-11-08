@@ -8,6 +8,7 @@
  */
 
 #include "boot_chain.h"
+#include "boot_payload_catalog.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -156,6 +157,8 @@ void expected_system_folder(const char *romver, char *destination,
 void classify_boot_chain(boot_chain_info_t *info,
                          unsigned int start, unsigned int sectors)
 {
+    const boot_payload_catalog_entry_t *catalog;
+
     if (info == NULL)
         return;
 
@@ -244,5 +247,15 @@ void classify_boot_chain(boot_chain_info_t *info,
         snprintf(info->family, sizeof(info->family), "Other / unknown KELF");
         snprintf(info->confidence, sizeof(info->confidence), "low");
         snprintf(info->next_stage, sizeof(info->next_stage), "not detected");
+    }
+
+    /* A byte-identical published payload is an exact identity. Keep the
+     * downstream next-stage evidence, which the catalogue cannot know. */
+    catalog = boot_payload_catalog_find(info->payload_sha256,
+                                        info->kelf_sha256);
+    if (catalog != NULL) {
+        snprintf(info->family, sizeof(info->family), "%s %s",
+                 catalog->family, catalog->version);
+        snprintf(info->confidence, sizeof(info->confidence), "exact SHA-256");
     }
 }

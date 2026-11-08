@@ -9,6 +9,7 @@
  * or raw HDD access is equally portable.
  */
 
+#include "boot_payload_catalog.h"
 #include "boot_report.h"
 #include "sha256.h"
 
@@ -59,6 +60,7 @@ unsigned int boot_report_render(char *buffer, unsigned int capacity,
     char payload_hash[65];
     char kelf_hash[65];
     unsigned int length = 0;
+    const boot_payload_catalog_entry_t *catalog;
     unsigned int port;
     unsigned int i;
 
@@ -111,6 +113,16 @@ unsigned int boot_report_render(char *buffer, unsigned int capacity,
             report_append(buffer, capacity, &length,
                           "Unpadded KELF SHA-256: %s\n", kelf_hash);
     }
+    catalog = (start != 0 && info->payload_read_result == 0)
+                  ? boot_payload_catalog_find(info->payload_sha256,
+                                              info->kelf_sha256)
+                  : NULL;
+    if (catalog != NULL)
+        report_append(buffer, capacity, &length,
+                      "Catalogue match: %s %s (%s)%s\n",
+                      catalog->family, catalog->version, catalog->source,
+                      (catalog->flags & BOOT_PAYLOAD_CATALOG_PRESIGNED)
+                          ? ", distributed pre-signed" : "");
     report_append(buffer, capacity, &length,
                   "Probable family: %s\n"
                   "Confidence: %s\n"

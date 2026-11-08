@@ -469,6 +469,48 @@ static int test_missing_master_never_becomes_writable(void)
     return 1;
 }
 
+/* APA-Jail: the grid sweep must stop at the fence, while the referenced
+ * chain below it is reconstructed exactly as on a pure APA disk. A stray
+ * APA-looking sector in the PC (exFAT) region must not become a node. */
+static int test_bounded_grid_ignores_pc_region(void)
+{
+    mock_disk_t disk;
+    apa_forensic_result_t full;
+    apa_forensic_result_t bounded;
+    unsigned char header[APA_HEADER_SIZE];
+    apa_forensic_repair_plan_t plan;
+    int map;
+
+    memset(&disk, 0, sizeof(disk));
+    make_master(header, 0x80000, 0x40000);
+    add_slot(&disk, 0, header);
+    make_header(header, 0x40000, 0x40000, 0, 0x80000, "__system", 0x0100);
+    add_slot(&disk, 0x40000, header);
+    make_header(header, 0x80000, 0x40000, 0x40000, 0, "+OPL", 0x0100);
+    add_slot(&disk, 0x80000, header);
+    make_header(header, 0x180000, 0x40000, 0x80000, 0, "stray", 0x0100);
+    add_slot(&disk, 0x180000, header);
+
+    if (apa_forensic_scan(mock_read, &disk, 0x200000, NULL, NULL, &full) != 0 ||
+        apa_forensic_scan_bounded(mock_read, &disk, 0x200000, 0xc0000,
+                                  NULL, NULL, &bounded) != 0)
+        return 0;
+    if (find_node_by_lba(&full, 0x180000) < 0)
+        return 0; /* sanity: the unbounded sweep does see the stray header */
+    if (find_node_by_lba(&bounded, 0x180000) >= 0 ||
+        bounded.node_count != 3 || bounded.grid_limit != 0xc0000u ||
+        bounded.total_sectors != 0x200000u ||
+        bounded.grid_reads >= full.grid_reads)
+        return 0;
+    map = find_map(&bounded, APA_FORENSIC_MAP_FORWARD);
+    if (map < 0 || bounded.maps[map].confidence != 100 ||
+        apa_forensic_build_repair_plan(&bounded, (unsigned int)map,
+                                       &plan) != 0 ||
+        plan.patch_count != 0)
+        return 0;
+    return full.grid_limit == full.total_sectors;
+}
+
 int main(void)
 {
     if (!test_healthy_graph()) {
@@ -509,6 +551,11 @@ int main(void)
     }
     if (!test_missing_master_never_becomes_writable()) {
         fprintf(stderr, "missing-master write gate test failed\n");
+        return 1;
+    }
+
+    if (!test_bounded_grid_ignores_pc_region()) {
+        fprintf(stderr, "APA-Jail bounded grid test failed\n");
         return 1;
     }
 

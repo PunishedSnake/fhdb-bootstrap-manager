@@ -16,7 +16,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "apa.h"
 #include "apa_forensic.h"
+#include "apa_layout.h"
 #include "app_ui_ps2.h"
 #include "forensic_controller_ps2.h"
 #include "forensic_snapshot.h"
@@ -58,22 +60,47 @@ static int get_total_sectors(uint32_t *total_out)
     return 0;
 }
 
+/*
+ * On a recognised APA-Jail disk, sectors past the fence belong to the PC
+ * partitions (ext2 recovery + exFAT). Sweeping them only produces garbage
+ * candidates and minutes of extra reads on a 2 TB disk, so stop the grid at
+ * the fence. A damaged or unrecognised master simply gets the full sweep.
+ */
+static uint32_t forensic_grid_limit(uint32_t total_sectors)
+{
+    unsigned char header[APA_HEADER_SIZE] __attribute__((aligned(64)));
+    apa_layout_t layout;
+
+    if (hdd_read_raw_sectors(0, 2, header) < 0 ||
+        !is_standard_apa_header(header))
+        return total_sectors;
+    apa_layout_classify(header, total_sectors, &layout);
+    if (layout.kind != APA_LAYOUT_JAIL)
+        return total_sectors;
+    session_log_line("APA forensic scan: APA-Jail grid limited to fence 0x%08x",
+                     (unsigned int)layout.fence_lba);
+    return layout.fence_lba;
+}
+
 static int run_scan(void)
 {
     uint32_t total_sectors;
+    uint32_t grid_limit;
     int result;
 
     result = get_total_sectors(&total_sectors);
     if (result < 0)
         return result;
+    grid_limit = forensic_grid_limit(total_sectors);
 
     pad_activity_begin();
     /* Every physical raw read publishes its exact LBA directly through the
      * GS/GIF live monitor. The portable scanner callback is intentionally NULL:
      * a second presentation callback would duplicate/flicker over the transport
      * telemetry and used to re-enter libdebug's per-character renderer. */
-    result = apa_forensic_scan(raw_reader, NULL, total_sectors,
-                               NULL, NULL, &forensic_scan_result);
+    result = apa_forensic_scan_bounded(raw_reader, NULL, total_sectors,
+                                       grid_limit, NULL, NULL,
+                                       &forensic_scan_result);
     pad_activity_end();
     if (result < 0) {
         forensic_scan_valid = 0;

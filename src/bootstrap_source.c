@@ -17,7 +17,7 @@
 static const char *stage_name(bootstrap_source_stage_t stage)
 {
     switch (stage) {
-        case BOOTSTRAP_SOURCE_STAGE_LOAD: return "load MBR.XIN/XLF from selected storage";
+        case BOOTSTRAP_SOURCE_STAGE_LOAD: return "load MBR.XIN/XLF or OSDMBR.XLF from selected storage";
         case BOOTSTRAP_SOURCE_STAGE_KELF: return "KELF structural validation";
         case BOOTSTRAP_SOURCE_STAGE_CAPACITY: return "validate source against live __mbr capacity";
         default: return "bootstrap source preparation";
@@ -53,6 +53,8 @@ void bootstrap_source_init(bootstrap_source_t *source, unsigned int storage)
 
     memset(source, 0, sizeof(*source));
     storage_path(source->path, sizeof(source->path), storage, "MBR.XLF");
+    storage_path(source->presigned_path, sizeof(source->presigned_path),
+                 storage, "OSDMBR.XLF");
 }
 
 static int load_payload_file(unsigned int storage, bootstrap_source_t *source,
@@ -65,9 +67,19 @@ static int load_payload_file(unsigned int storage, bootstrap_source_t *source,
     unsigned char *data;
 
     while (attempts-- > 0) {
+        /* MBR.XIN/MBR.XLF keep their historical precedence and signing. */
         fd = fileXioOpen(source->path, FIO_O_RDONLY, 0);
         if (fd >= 0)
             break;
+        if (source->presigned_path[0] != '\0') {
+            fd = fileXioOpen(source->presigned_path, FIO_O_RDONLY, 0);
+            if (fd >= 0) {
+                memcpy(source->path, source->presigned_path,
+                       sizeof(source->path));
+                source->presigned = 1;
+                break;
+            }
+        }
         DelayThread(250000);
     }
     if (fd < 0)

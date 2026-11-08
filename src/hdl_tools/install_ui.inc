@@ -56,6 +56,17 @@ static HDL_INSTALL_UI_STAGE void show_result(const hdl_transaction_t *transactio
         return;
     }
 
+    if (result == HDL_INSTALL_OUTSIDE_APA_FENCE) {
+        hdl_status_wait(
+            "APA-Jail space exhausted",
+            "This PSBBN/HOSDMenu disk reserves only its first part for APA. "
+            "The driver placed the new game beyond that boundary, inside the "
+            "exFAT area, so the allocation was removed again before any data "
+            "was written.\n\nFree APA space or install the game to the exFAT "
+            "partition from a PC instead.",
+            GS_UI_TONE_DANGER);
+        return;
+    }
     snprintf(body, sizeof(body),
              "Operation stopped with code %d.\n\n"
              "No game metadata is exposed unless the journal reaches "

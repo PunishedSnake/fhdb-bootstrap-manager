@@ -181,12 +181,45 @@ static int create_partitions(const hdl_transaction_t *transaction,
     return 0;
 }
 
+/*
+ * APA-Jail guard. ps2hdd chooses where a new partition goes and will append
+ * past the end of the APA chain, straight into the exFAT region of a PSBBN /
+ * HOSDMenu disk. Re-read and re-classify the live master, then require every
+ * allocated main/sub extent to finish below the jail fence.
+ */
+static int layout_inside_apa_fence(const hdl_stream_layout_t *layout)
+{
+    unsigned char header[APA_HEADER_SIZE] __attribute__((aligned(64)));
+    apa_layout_t disk_layout;
+    unsigned int i;
+
+    if (hdd_read_raw_sectors(0, 2, header) < 0 ||
+        !is_standard_apa_header(header))
+        return HDL_INSTALL_DISK_UNSAFE;
+    apa_layout_classify(header, 0, &disk_layout);
+    if (disk_layout.kind == APA_LAYOUT_BLOCKED)
+        return HDL_INSTALL_DISK_UNSAFE;
+    for (i = 0; i < layout->count; i++) {
+        if (!apa_layout_extent_allowed(&disk_layout, layout->starts[i],
+                                       layout->lengths[i])) {
+            session_log_line("HDL extent %u at LBA 0x%08x+0x%08x crosses "
+                             "APA-Jail fence 0x%08x",
+                             i, (unsigned int)layout->starts[i],
+                             (unsigned int)layout->lengths[i],
+                             (unsigned int)disk_layout.fence_lba);
+            return HDL_INSTALL_OUTSIDE_APA_FENCE;
+        }
+    }
+    return 0;
+}
+
 static int open_target(const hdl_transaction_t *transaction,
                        const hdl_partition_plan_t *plan,
                        hdl_stream_layout_t *layout)
 {
     char path[64];
     int fd;
+    int fence_result;
     unsigned int i;
 
     if (target_path("hdl0:", transaction->target, path, sizeof(path)) < 0)
@@ -206,6 +239,11 @@ static int open_target(const hdl_transaction_t *transaction,
             fileXioClose(fd);
             return HDL_INSTALL_LAYOUT_MISMATCH;
         }
+    }
+    fence_result = layout_inside_apa_fence(layout);
+    if (fence_result < 0) {
+        fileXioClose(fd);
+        return fence_result;
     }
     return fd;
 }
@@ -508,6 +546,18 @@ static __attribute__((noinline)) int transaction_prepare_target(
         result = create_partitions(transaction, plan);
         if (result < 0)
             return result;
+        /* Prove the fresh allocation is inside APA space before the journal
+         * records it. A fence violation is undone immediately so no partition
+         * is ever left reaching into the APA-Jail exFAT region. */
+        *target_fd = open_target(transaction, plan, layout);
+        if (*target_fd < 0) {
+            result = *target_fd;
+            *target_fd = -1;
+            (void)remove_incomplete_target(transaction->target);
+            return result;
+        }
+        fileXioClose(*target_fd);
+        *target_fd = -1;
         result = hdl_transaction_set_stage(
             transaction, HDL_TRANSACTION_STAGE_PARTITIONS_CREATED, 0);
         if (result < 0 || journal_save(transaction) < 0)

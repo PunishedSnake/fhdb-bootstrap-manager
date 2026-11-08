@@ -29,12 +29,23 @@ typedef struct {
 
 typedef struct {
     char path[BOOTSTRAP_SOURCE_PATH_SIZE];
+    /* OSDMBR.XLF: tried only when no MBR.XIN/MBR.XLF exists. */
+    char presigned_path[BOOTSTRAP_SOURCE_PATH_SIZE];
     unsigned char *payload;
     unsigned int payload_size;
     unsigned int sectors;
+    /*
+     * 1 when the loaded file is a distributed, already-bound __mbr payload
+     * (OSDMenu's OSDMBR.XLF). PSBBN Definitive writes that exact file raw to
+     * every console, so the manager installs it as-is, without MagicGate.
+     */
+    int presigned;
 } bootstrap_source_t;
 
-/* Initialize the writable source path used by the MBR.XIN/XLF compatibility shim. */
+/*
+ * Initialize the writable source path used by the MBR.XIN/XLF compatibility
+ * shim, plus the OSDMBR.XLF pre-signed fallback.
+ */
 void bootstrap_source_init(bootstrap_source_t *source, unsigned int storage);
 
 /*

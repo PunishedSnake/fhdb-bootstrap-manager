@@ -1,6 +1,7 @@
 /* Portable regression fixtures for boot-chain parsing and classification. */
 
 #include "boot_chain.h"
+#include "boot_payload_catalog.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -241,6 +242,37 @@ static int test_heuristic_family_fallbacks(void)
            expect_string(info.confidence, "low", "unknown confidence");
 }
 
+/* A byte-identical published payload is named exactly; the next stage still
+ * comes from downstream filesystem evidence. */
+static int test_catalogue_exact_identity(void)
+{
+    static const unsigned char osdmenu_130_sector[32] = {
+        0x6e, 0xe6, 0x0d, 0x75, 0xfd, 0x33, 0x36, 0x44,
+        0x15, 0x38, 0x65, 0x5b, 0xaa, 0x06, 0xf7, 0x5a,
+        0x6c, 0x95, 0x18, 0x91, 0x7f, 0xd1, 0x47, 0x5a,
+        0xa2, 0x48, 0x12, 0xd7, 0x98, 0x0c, 0x5e, 0x9f};
+    boot_chain_info_t info;
+
+    valid_active_chain(&info);
+    info.osdmenu_mbr_config = 1;
+    info.osdmenu_auto_target = BOOT_AUTO_PSBBN;
+    info.psbbn_boot = 1;
+    memcpy(info.payload_sha256, osdmenu_130_sector, 32);
+    classify_boot_chain(&info, 0x2000, 761);
+    if (!expect_string(info.family, "OSDMenu MBR 1.3.0", "catalogue family") ||
+        !expect_string(info.confidence, "exact SHA-256", "catalogue conf") ||
+        !expect_string(info.next_stage,
+                       "hdd0:__system:pfs:/p2lboot/osdboot.elf",
+                       "catalogue keeps next stage"))
+        return 0;
+
+    valid_active_chain(&info);
+    info.payload_sha256[0] = 0x6e; /* partial match is no match */
+    classify_boot_chain(&info, 0x2000, 4);
+    return expect_string(info.confidence, "low", "unknown hash stays heuristic") &&
+           boot_payload_catalog_count() >= 1u;
+}
+
 int main(void)
 {
     if (!test_config_parser()) {
@@ -270,6 +302,10 @@ int main(void)
     if (!test_heuristic_family_fallbacks()) {
         fprintf(stderr, "Heuristic family classification tests failed.\n");
         return 7;
+    }
+    if (!test_catalogue_exact_identity()) {
+        fprintf(stderr, "Exact payload catalogue tests failed.\n");
+        return 8;
     }
 
     puts("All boot-chain parser and classification tests passed.");
