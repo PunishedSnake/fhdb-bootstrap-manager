@@ -219,6 +219,47 @@ static int parse_system_cnf(const unsigned char *data, size_t size,
     return HDL_ISO_SYSTEM_CNF_INVALID;
 }
 
+/*
+ * DVD9 layer break, following hdl_dump's isofs.c: the layer-1 primary volume
+ * descriptor sits at sector N, where N is layer 0's volume_space_size, and
+ * HDLoader stores the break as N - 16 (layer 1's own system area). mkps2iso's
+ * dual-layer writer independently places layer 1 at layer0_length - 16 with
+ * its PVD at layer0_length. This is
+ * stricter than hdl_dump: the descriptor must be a complete PVD with 2048-byte
+ * blocks, consistent both-endian sizes and the same system identifier as
+ * layer 0, and it must lie inside the image. Anything else leaves the break
+ * unproven (layer1_start == 0) so the installer keeps refusing the image.
+ */
+static int probe_layer_break(const hdl_iso_source_t *source,
+                             uint32_t layer0_sectors, uint32_t image_sectors,
+                             const unsigned char *layer0_pvd,
+                             uint32_t *layer1_start)
+{
+    unsigned char pvd[HDL_ISO_SECTOR_SIZE];
+    uint32_t layer1_sectors;
+    int result;
+
+    *layer1_start = 0;
+    if (layer0_sectors <= ISO_PVD_SECTOR + 16u ||
+        layer0_sectors >= image_sectors)
+        return 0;
+    result = read_source(source, (uint64_t)layer0_sectors *
+                         HDL_ISO_SECTOR_SIZE, pvd, sizeof(pvd));
+    if (result < 0)
+        return result;
+    if (pvd[0] != 1 || memcmp(pvd + 1, "CD001", 5) != 0 || pvd[6] != 1 ||
+        read_le16(pvd + 128) != HDL_ISO_SECTOR_SIZE ||
+        read_be16(pvd + 130) != HDL_ISO_SECTOR_SIZE ||
+        memcmp(pvd + 8, layer0_pvd + 8, 32) != 0)
+        return 0;
+    layer1_sectors = read_le32(pvd + 80);
+    if (layer1_sectors == 0 || layer1_sectors != read_be32(pvd + 84) ||
+        layer1_sectors > image_sectors)
+        return 0;
+    *layer1_start = layer0_sectors - 16u;
+    return 0;
+}
+
 int hdl_iso_probe(const hdl_iso_source_t *source, hdl_iso_info_t *info)
 {
     unsigned char pvd[HDL_ISO_SECTOR_SIZE];
@@ -293,5 +334,12 @@ int hdl_iso_probe(const hdl_iso_source_t *source, hdl_iso_info_t *info)
         info->media_type_confident = 0;
     }
     info->requires_layer_break = source->image_bytes > ISO_DVD5_MAX_BYTES;
+    if (info->requires_layer_break) {
+        result = probe_layer_break(source, volume_sectors, info->image_sectors,
+                                   pvd, &info->layer1_start);
+        if (result < 0)
+            return result;
+        info->layer_break_verified = info->layer1_start != 0;
+    }
     return 0;
 }

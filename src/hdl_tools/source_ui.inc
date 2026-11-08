@@ -363,7 +363,9 @@ static int source_identity_matches(hdl_file_source_t *source,
     iso_source.context = source;
     iso_source.image_bytes = source->bytes;
     result = hdl_iso_probe(&iso_source, &info);
-    if (result < 0 || info.requires_layer_break ||
+    if (result < 0 ||
+        (info.requires_layer_break && !info.layer_break_verified) ||
+        info.layer1_start != transaction->layer1_start ||
         info.image_bytes != transaction->source_bytes ||
         strcmp(info.startup, transaction->startup) != 0)
         return HDL_INSTALL_SOURCE_CHANGED;

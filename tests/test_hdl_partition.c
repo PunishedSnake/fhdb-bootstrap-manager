@@ -202,8 +202,29 @@ static void test_partition_id_is_sanitized_and_bounded(void)
     assert(strchr(id, '!') == NULL);
 }
 
+/* A real ~8.4 GB DVD9 plans completely, with 1 GiB slices and even with the
+ * smallest 128 MiB driver maximum, without exceeding 65 partitions. */
+static void test_dvd9_sized_plans(void)
+{
+    hdl_partition_plan_t plan;
+    uint64_t dvd9 = 4095104ull * 2048ull;
+    uint64_t covered = 0;
+    unsigned int i;
+
+    assert(hdl_partition_plan(dvd9, 0x200000, &plan) == 0);
+    assert(plan.count >= 8 && plan.count <= HDL_MAX_PARTITIONS);
+    for (i = 0; i < plan.count; i++) {
+        assert(plan.slices[i].payload_offset == covered);
+        covered += plan.slices[i].payload_bytes;
+    }
+    assert(covered == dvd9 && plan.image_bytes == dvd9);
+    assert(hdl_partition_plan(dvd9, 0x40000, &plan) == 0);
+    assert(plan.count <= HDL_MAX_PARTITIONS && plan.image_bytes == dvd9);
+}
+
 int main(void)
 {
+    test_dvd9_sized_plans();
     test_physical_metadata_offset();
     test_small_image_uses_one_main();
     test_large_image_is_split_without_gaps();
