@@ -2,6 +2,7 @@
 #define PS2_HDD_BOOTSTRAP_MANAGER_BOOT_CHAIN_H
 
 #include "capsule_format.h"
+#include "dev9_fingerprint.h"
 
 /* Explicit values keep OSDMenu target evidence stable across host and EE code. */
 #define BOOT_AUTO_NONE 0
@@ -46,6 +47,10 @@ typedef struct {
     int legacy_osdmain;
     int sysconf_mount_result;
     int system_mount_result;
+    /* Hardware/layout evidence (zero = not collected). */
+    int disk_layout;          /* apa_layout_kind_t */
+    unsigned int jail_fence;  /* APA-Jail fence LBA, 0 when not APA-Jail */
+    dev9_fingerprint_t dev9;
 } boot_chain_info_t;
 
 /* Portable CNF/config helpers. */

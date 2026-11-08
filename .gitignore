@@ -41,3 +41,4 @@ Thumbs.db
 *.map
 /hdl_stream.irx
 /hdl_stream.notiopmod*.elf
+/tests/test_dev9_fingerprint

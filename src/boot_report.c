@@ -132,6 +132,51 @@ unsigned int boot_report_render(char *buffer, unsigned int capacity,
                   "claimed from plaintext strings.\n\n",
                   info->family, info->confidence, info->next_stage);
 
+    {
+        dev9_adapter_class_t adapter = dev9_fingerprint_classify(&info->dev9);
+
+        report_append(buffer, capacity, &length,
+                      "HARDWARE AND LAYOUT\n"
+                      "Disk layout: %s\n",
+                      info->disk_layout == 1 ? "APA-Jail type A2 (APA + PC/exFAT)"
+                                             : "APA");
+        if (info->disk_layout == 1)
+            report_append(buffer, capacity, &length,
+                          "APA-Jail fence LBA: 0x%08x (APA must stay below)\n",
+                          info->jail_fence);
+        report_append(buffer, capacity, &length,
+                      "DEV9 model: %s\n"
+                      "HDD adapter: %s\n",
+                      info->dev9.sampled ? dev9_model_name(info->dev9.model)
+                                         : "not sampled",
+                      dev9_adapter_class_name(adapter));
+        if (info->dev9.sampled)
+            report_append(buffer, capacity, &length,
+                          "SPEED REV=0x%02x REV_1=0x%04x REV_3=0x%04x "
+                          "REV_8=0x%04x COMPAT[0x20]=0x%04x\n"
+                          "SPEED capabilities:%s%s%s%s%s\n",
+                          (unsigned int)info->dev9.spd_rev,
+                          (unsigned int)info->dev9.spd_rev1,
+                          (unsigned int)info->dev9.spd_rev3,
+                          (unsigned int)info->dev9.spd_rev8,
+                          (unsigned int)info->dev9.compat20,
+                          info->dev9.spd_rev3 & DEV9_FP_CAPS_SMAP ? " SMAP" : "",
+                          info->dev9.spd_rev3 & DEV9_FP_CAPS_ATA ? " ATA" : "",
+                          info->dev9.spd_rev3 & DEV9_FP_CAPS_UART ? " UART" : "",
+                          info->dev9.spd_rev3 & DEV9_FP_CAPS_DVR ? " DVR" : "",
+                          info->dev9.spd_rev3 & DEV9_FP_CAPS_FLASH ? " FLASH" : "");
+        if (dev9_psbbn_adapter_risk(&info->dev9,
+                                    info->psbbn_boot ||
+                                        info->psbbn_partition_count >= 4))
+            report_append(buffer, capacity, &length,
+                          "WARNING: PSBBN is installed on a third-party "
+                          "adapter. Full PSBBN is known to freeze at the "
+                          "PlayStation 2 logo on unofficial adapters; "
+                          "HOSDMenu-only setups work. This is not an HDD "
+                          "or bootstrap fault.\n");
+        report_append(buffer, capacity, &length, "\n");
+    }
+
     report_append(buffer, capacity, &length, "FMCB CONFIGURATION\n");
     for (i = 0; i < 3; i++) {
         const char *state = info->skip_hdd[i] == 1 ? "ON" :
