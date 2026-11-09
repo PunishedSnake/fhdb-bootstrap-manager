@@ -32,7 +32,6 @@ void select_launch_storage(int argc, char **argv);
  */
 int storage_launch_file_path(char *destination, unsigned int capacity,
                              const char *filename);
-const char *storage_launch_directory(void);
 
 int write_whole_file(const char *path, const void *data, int size);
 int append_log_file(const char *path, const void *data, int size, int truncate);

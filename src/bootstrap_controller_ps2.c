@@ -10,9 +10,11 @@
 #include <libpad.h>
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "app_identity.h"
 #include "app_ui_ps2.h"
+#include "boot_payload_catalog.h"
 #include "bootstrap_controller_ps2.h"
 #include "bootstrap_signing.h"
 #include "bootstrap_source.h"
@@ -25,6 +27,7 @@
 #include "platform.h"
 #include "rescue_storage.h"
 #include "session_log.h"
+#include "sha256.h"
 #include "storage.h"
 #include "version.h"
 
@@ -409,6 +412,27 @@ void bootstrap_controller_restore(
     app_ui_wait_to_return();
 }
 
+/* Exact catalogue identity of a loaded source file (sector + KELF digests). */
+static const boot_payload_catalog_entry_t *identify_source(
+    const bootstrap_source_t *source)
+{
+    unsigned char sector_digest[32];
+    unsigned char kelf_digest[32];
+    unsigned int declared;
+
+    if (source->payload == NULL || source->payload_size < 0x20u)
+        return NULL;
+    declared = (unsigned int)read_le16(source->payload + 0x14) +
+               read_le32(source->payload + 0x10);
+    if (declared == 0 || declared > source->payload_size)
+        return NULL;
+    sha256_buffer(source->payload, declared, kelf_digest);
+    if ((source->payload_size % HDD_SECTOR_SIZE) != 0)
+        return boot_payload_catalog_find(NULL, kelf_digest);
+    sha256_buffer(source->payload, source->payload_size, sector_digest);
+    return boot_payload_catalog_find(sector_digest, kelf_digest);
+}
+
 void bootstrap_controller_install(
     unsigned char header[APA_HEADER_SIZE],
     boot_chain_info_t *boot_chain)
@@ -420,8 +444,11 @@ void bootstrap_controller_install(
     int signing_port;
     bootstrap_signing_result_t signing_result;
     bootstrap_transaction_result_t transaction;
+    const boot_payload_catalog_entry_t *catalog;
+    int source_was_presigned;
     int result;
 
+    memset(&signing_result, 0, sizeof(signing_result));
     if (read_le32(header + APA_OSD_START_OFFSET) != 0 ||
         read_le32(header + APA_OSD_SIZE_OFFSET) != 0) {
         scr_clear();
@@ -486,22 +513,37 @@ void bootstrap_controller_install(
         return;
     }
 
-    signing_port = storage_targets[storage_selected()].memory_card_port;
-    if (signing_port < 0)
-        signing_port = app_ui_choose_signing_card();
-    if (signing_port < 0) {
-        bootstrap_source_release(&source);
-        return;
-    }
+    catalog = identify_source(&source);
+    if (catalog != NULL)
+        session_log_line("MBR source identified: %s %s (%s)%s",
+                         catalog->family, catalog->version, catalog->source,
+                         source.presigned ? "; installing as distributed" : "");
+    if (source.presigned) {
+        /* OSDMBR.XLF is already bound for __mbr. Re-binding through a memory
+         * card is unnecessary and unproven, so it is installed byte-for-byte,
+         * exactly as the PSBBN Definitive installer writes it. */
+        session_log_line("MBR source %s is pre-signed; MagicGate step skipped",
+                         source.path);
+        result = 0;
+    } else {
+        signing_port = storage_targets[storage_selected()].memory_card_port;
+        if (signing_port < 0)
+            signing_port = app_ui_choose_signing_card();
+        if (signing_port < 0) {
+            bootstrap_source_release(&source);
+            return;
+        }
 
-    status_step_begin("Install signed HDD bootstrap",
-                      "MagicGate-signing bootstrap KELF",
-                      signing_port == 0 ? "mc0: MagicGate card" :
-                                          "mc1: MagicGate card",
-                      3, 4);
-    result = bootstrap_signing_sign(
-        signing_port, source.payload, source.payload_size, &signing_result);
-    disk_status_end();
+        status_step_begin("Install signed HDD bootstrap",
+                          "MagicGate-signing bootstrap KELF",
+                          signing_port == 0 ? "mc0: MagicGate card" :
+                                              "mc1: MagicGate card",
+                          3, 4);
+        result = bootstrap_signing_sign(
+            signing_port, source.payload, source.payload_size,
+            &signing_result);
+        disk_status_end();
+    }
     if (result < 0) {
         bootstrap_source_release(&source);
         if (signing_result.stage == BOOTSTRAP_SIGNING_STAGE_MAGICGATE) {
@@ -520,6 +562,10 @@ void bootstrap_controller_install(
     scr_clear();
     scr_printf("Ready to install signed HDD bootstrap\n\n");
     scr_printf("Source : %s\n", source.path);
+    if (catalog != NULL)
+        scr_printf("Ident  : %s %s\n", catalog->family, catalog->version);
+    if (source.presigned)
+        scr_printf("Mode   : pre-signed, installed as distributed\n");
     scr_printf("Backup : %s\n", backup_path);
     scr_printf("Target : sector 0x%08x\n", MBR_PAYLOAD_START);
     scr_printf("Size   : %u bytes / 0x%x sectors\n\n",
@@ -535,6 +581,7 @@ void bootstrap_controller_install(
 
     /* hdd_write.c publishes every payload WRITE, FLUSH, VERIFY and final
        pointer update with the exact LBA/range. */
+    source_was_presigned = source.presigned;
     result = bootstrap_transaction_ps2_activate(
         header, source.payload, source.payload_size,
         MBR_PAYLOAD_START, source.sectors, free, source.payload,
@@ -567,7 +614,9 @@ void bootstrap_controller_install(
 
     scr_clear();
     scr_printf("Bootstrap installed, enabled, and verified.\n\n");
-    scr_printf("The payload is signed for this console.\n");
+    scr_printf("%s\n", source_was_presigned ?
+                   "The distributed pre-signed payload was installed." :
+                   "The payload is signed for this console.");
     scr_printf("Rescue: %s\n",
                installed_rescue != NULL ? installed_rescue : "not available");
     scr_printf("Remember: its expected partitions must also exist.\n");

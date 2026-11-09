@@ -41,6 +41,10 @@ static int test_disabled_golden_report(void)
         "Confidence: certain\n"
         "Probable next stage: none\n"
         "Identification method: KELF structure plus downstream filesystem evidence. Encrypted payload identity is not claimed from plaintext strings.\n\n"
+        "HARDWARE AND LAYOUT\n"
+        "Disk layout: APA\n"
+        "DEV9 model: not sampled\n"
+        "HDD adapter: not sampled\n\n"
         "FMCB CONFIGURATION\n"
         "mc0:/SYS-CONF/FREEMCB.CNF -> Skip_HDD: file not found\n"
         "mc1:/SYS-CONF/FREEMCB.CNF -> Skip_HDD: file not found\n"
@@ -191,8 +195,56 @@ static int test_bounded_output(void)
     return boot_report_render(NULL, 0, &info, 0, 0, "test", "1") == 0;
 }
 
+static int test_hardware_layout_section(void)
+{
+    static const uint16_t mechapwn_seed[5] = {
+        0x654du, 0x6863u, 0x5061u, 0x6e77u, 0xec00u};
+    boot_chain_info_t info;
+    char report[BOOT_REPORT_SIZE];
+
+    init_info(&info);
+    snprintf(info.family, sizeof(info.family), "%s", "fixture");
+    snprintf(info.confidence, sizeof(info.confidence), "%s", "fixture");
+    snprintf(info.next_stage, sizeof(info.next_stage), "%s", "fixture");
+    info.pointer_consistent = 1;
+    info.disk_layout = 1;
+    info.jail_fence = 0x0e400800u;
+    info.dev9.sampled = 1;
+    info.dev9.model = DEV9_FP_MODEL_EXPBAY;
+    info.dev9.spd_rev1 = 0x0011u;
+    info.dev9.spd_rev3 = DEV9_FP_CAPS_SMAP | DEV9_FP_CAPS_ATA;
+    info.dev9.compat20 = 0x0000u;
+    info.psbbn_partition_count = 8;
+    boot_report_render(report, sizeof(report), &info, 0, 0, "test", "1");
+    if (!contains(report, "Disk layout: APA-Jail type A2 (APA + PC/exFAT)\n") ||
+        !contains(report, "APA-Jail fence LBA: 0x0e400800") ||
+        !contains(report, "DEV9 model: expansion bay (CXD9611 class)\n") ||
+        !contains(report, "HDD adapter: third-party compatible\n") ||
+        !contains(report, "SPEED capabilities: SMAP ATA\n") ||
+        !contains(report, "WARNING: PSBBN is installed on a third-party adapter."))
+        return 0;
+    info.dev9.compat20 = 0x0001u;
+    info.console.collected = 1;
+    snprintf(info.console.romver, sizeof(info.console.romver), "%s",
+             "0250EC20100415");
+    info.console.mecha_version[1] = 6;
+    info.console.mecha_version[2] = 6;
+    memcpy(info.console.nvm_keyseed, mechapwn_seed, sizeof(mechapwn_seed));
+    console_profile_classify(&info.console);
+    boot_report_render(report, sizeof(report), &info, 0, 0, "test", "1");
+    return contains(report, "HDD adapter: official Sony (SPEED 0x20=0x0001)\n") &&
+           !contains(report, "WARNING: PSBBN is installed") &&
+           contains(report, "MechaCon: 6.06 (Deckard)\n") &&
+           contains(report, "Region unlock: MechaPwn region patch\n") &&
+           contains(report, "Region policy: MechaPwn Deckard CEX;");
+}
+
 int main(void)
 {
+    if (!test_hardware_layout_section()) {
+        fprintf(stderr, "Hardware/layout report section failed.\n");
+        return 9;
+    }
     if (!test_disabled_golden_report()) {
         fprintf(stderr, "Disabled boot report golden fixture failed.\n");
         return 1;

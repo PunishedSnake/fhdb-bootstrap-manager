@@ -22,6 +22,7 @@
 #define KELF_BIT_COUNT_OFFSET 0x1au
 #define KELF_OPTIONAL_AREA_BYTES 8u
 #define KELF_KEY_AREA_BYTES 32u
+#define KELF_SECTOR_BYTES 512u
 
 static uint16_t kelf_read_le16(const unsigned char *source)
 {
@@ -62,9 +63,19 @@ int kelf_validate_layout(const unsigned char *data, unsigned int size)
     if (bit_count > KELF_MAX_BIT_COUNT)
         return KELF_ERR_BIT_COUNT;
 
-    /* The supplied buffer must be exactly one unpadded KELF file. */
-    if (elf_size == 0 || elf_size > size - header_size ||
-        (unsigned int)header_size + elf_size != size)
+    if (elf_size == 0 || elf_size > size - header_size)
+        return KELF_ERR_FILE_SIZE;
+    /*
+     * Normally the buffer is exactly one unpadded KELF file. kelftool itself
+     * documents the content-size field as non-authoritative, and real MBR
+     * payloads (OSDMenu MBR 1.3.0's OSDMBR.XLF: 761 sectors, declared size
+     * 104 bytes short) are distributed as whole sectors whose final sector
+     * holds real data past the declared size. Accept only that narrow form:
+     * a sector-aligned file whose declared content ends in its last sector.
+     */
+    if ((unsigned int)header_size + elf_size != size &&
+        ((size % KELF_SECTOR_BYTES) != 0 ||
+         size - ((unsigned int)header_size + elf_size) >= KELF_SECTOR_BYTES))
         return KELF_ERR_FILE_SIZE;
 
     /* Every BIT entry occupies the 16-byte SecrBitBlockData_t wire layout. */

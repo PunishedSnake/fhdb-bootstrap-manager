@@ -35,7 +35,8 @@ typedef struct {
     uint32_t layer1_start;
     uint32_t disc_type;
     int media_type_confident;
-    int requires_layer_break;
+    int requires_layer_break;   /* larger than a single-layer DVD */
+    int layer_break_verified;   /* layer1_start proven from a layer-1 PVD */
     char startup[HDL_ISO_STARTUP_MAX];
     char disc_id[HDL_ISO_DISC_ID_MAX];
     char volume_title[HDL_ISO_TITLE_MAX];
@@ -49,7 +50,8 @@ typedef struct {
  * alone. They are reported as PS2 CD with media_type_confident == 0 so the PS2
  * front-end can require an explicit user choice. Images larger than a CD are
  * classified as PS2 DVD. DVD9-sized images additionally require a verified
- * layer break before an installer may commit HDL metadata.
+ * layer break (layer_break_verified, layer1_start) before an installer may
+ * commit HDL metadata.
  */
 int hdl_iso_probe(const hdl_iso_source_t *source, hdl_iso_info_t *info);
 

@@ -1,6 +1,7 @@
 /* Host-side tests for sparse synthetic HDD images generated from known cases. */
 
 #include "apa.h"
+#include "apa_layout.h"
 #include "hdd_bounds.h"
 #include "hdd_limits.h"
 #include "kelf.h"
@@ -21,67 +22,77 @@ typedef struct {
     int bounds;
     int kelf;
     unsigned int payload_lba;
+    /* 0 = derive (signature => blocked, none => pure); else explicit. */
+    int layout;
+    unsigned int fence;
 } fixture_case_t;
+
+#define LAYOUT_JAIL 1
+#define LAYOUT_BLOCKED 2
 
 static const fixture_case_t cases[] = {
     {"valid_disabled", 1, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"valid_enabled", 1, 0, 0, 0x2000, 1, 0x4000,
-     0, KELF_IMAGE_VALID, 0x2000},
+     0, KELF_IMAGE_VALID, 0x2000, 0, 0},
     {"garbage_payload", 1, 0, 0, 0x2000, 1, 0x4000,
-     0, KELF_IMAGE_ERR_CALCULATED_SIZE, 0x2000},
-    {"bad_checksum", 0, 0, 0, 0x2000, 1, 0x4000, 0, NO_CHECK, 0},
+     0, KELF_IMAGE_ERR_CALCULATED_SIZE, 0x2000, 0, 0},
+    {"bad_checksum", 0, 0, 0, 0x2000, 1, 0x4000, 0, NO_CHECK, 0, 0, 0},
     {"bad_apa_magic", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bad_mbr_id", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bad_sony_magic", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bitflip_apa_magic", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bitflip_mbr_id", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bitflip_sony_magic", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bad_master_start", 1, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bad_master_type", 1, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bad_mbr_version", 1, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bitflip_master_start", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bitflip_master_type", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"bitflip_mbr_version", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"pointer_start_only", 1, 0, 0, 0x2000, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"pointer_size_only", 1, 0, 0, 0, 1, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
     {"pointer_before_reserved", 1, 0, 0, 0x1000, 1, 0x4000,
-     HDD_PAYLOAD_ERR_BEFORE_RESERVED_AREA, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_BEFORE_RESERVED_AREA, NO_CHECK, 0, 0, 0},
     {"pointer_too_large", 1, 0, 0, 0x2000, 8193, 0x6000,
-     HDD_PAYLOAD_ERR_TOO_LARGE, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_TOO_LARGE, NO_CHECK, 0, 0, 0},
     {"pointer_outside_mbr", 1, 0, 0, 0x3fff, 2, 0x4000,
-     HDD_PAYLOAD_ERR_OUTSIDE_MBR, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_OUTSIDE_MBR, NO_CHECK, 0, 0, 0},
     {"apa_pc_signature_only", 1, 1, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
+    {"apa_jail_a2", 1, 1, 0, 0x2000, 1, 0x4000,
+     0, KELF_IMAGE_VALID, 0x2000, LAYOUT_JAIL, 0x5800},
+    {"apa_jail_overlap", 1, 1, 0, 0, 0, 0x4000,
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, LAYOUT_BLOCKED, 0},
     {"hybrid_apa_gpt", 1, 1, 1, 0x2000, 1, 0x4000,
-     0, KELF_IMAGE_VALID, 0x2000},
+     0, KELF_IMAGE_VALID, 0x2000, 0, 0},
     {"gpt_only", 0, 1, 1, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0},
-    {"deterministic_garbage", 0, 0, 0, 0, 0, 0, NO_CHECK, NO_CHECK, 0},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0},
+    {"deterministic_garbage", 0, 0, 0, 0, 0, 0, NO_CHECK, NO_CHECK, 0, 0, 0},
     {"interrupted_payload_written_pointer_zero", 1, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, KELF_IMAGE_VALID, 0x2000},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, KELF_IMAGE_VALID, 0x2000, 0, 0},
     {"interrupted_partial_payload_pointer_zero", 1, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, KELF_IMAGE_ERR_SIZE_FIELDS, 0x2000},
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, KELF_IMAGE_ERR_SIZE_FIELDS, 0x2000, 0, 0},
     {"enabled_zeroed_payload", 1, 0, 0, 0x2000, 1, 0x4000,
-     0, KELF_IMAGE_ERR_CALCULATED_SIZE, 0x2000},
+     0, KELF_IMAGE_ERR_CALCULATED_SIZE, 0x2000, 0, 0},
     {"enabled_partial_overwrite", 1, 0, 0, 0x2000, 1, 0x4000,
-     0, KELF_IMAGE_ERR_SIZE_FIELDS, 0x2000},
+     0, KELF_IMAGE_ERR_SIZE_FIELDS, 0x2000, 0, 0},
     {"torn_disable_stale_checksum", 0, 0, 0, 0, 0, 0x4000,
-     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0}
+     HDD_PAYLOAD_ERR_EMPTY_POINTER, NO_CHECK, 0, 0, 0}
 };
 
 static int read_fixture(const char *directory, const char *name, long offset,
@@ -125,6 +136,25 @@ static int run_case(const char *directory, const fixture_case_t *test)
         fprintf(stderr, "%s: protective-MBR classification mismatch.\n",
                 test->name);
         return 0;
+    }
+    {
+        apa_layout_t layout;
+        apa_layout_kind_t expected = test->layout == LAYOUT_JAIL
+                                         ? APA_LAYOUT_JAIL
+                                         : (test->layout == LAYOUT_BLOCKED ||
+                                                    test->hybrid
+                                                ? APA_LAYOUT_BLOCKED
+                                                : APA_LAYOUT_PURE);
+
+        apa_layout_classify(header, 0x8000u, &layout);
+        if (layout.kind != expected ||
+            (expected == APA_LAYOUT_JAIL && layout.fence_lba != test->fence)) {
+            fprintf(stderr, "%s: disk layout %s (%s), expected %s.\n",
+                    test->name, apa_layout_kind_name(layout.kind),
+                    apa_layout_reason_name(layout.reason),
+                    apa_layout_kind_name(expected));
+            return 0;
+        }
     }
     result = memcmp(header + HDD_SECTOR_SIZE, "EFI PART", 8) == 0;
     if (result != test->gpt) {

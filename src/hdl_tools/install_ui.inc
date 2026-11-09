@@ -56,6 +56,17 @@ static HDL_INSTALL_UI_STAGE void show_result(const hdl_transaction_t *transactio
         return;
     }
 
+    if (result == HDL_INSTALL_OUTSIDE_APA_FENCE) {
+        hdl_status_wait(
+            "APA-Jail space exhausted",
+            "This PSBBN/HOSDMenu disk reserves only its first part for APA. "
+            "The driver placed the new game beyond that boundary, inside the "
+            "exFAT area, so the allocation was removed again before any data "
+            "was written.\n\nFree APA space or install the game to the exFAT "
+            "partition from a PC instead.",
+            GS_UI_TONE_DANGER);
+        return;
+    }
     snprintf(body, sizeof(body),
              "Operation stopped with code %d.\n\n"
              "No game metadata is exposed unless the journal reaches "
@@ -132,17 +143,21 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
         hdl_status_wait("Invalid PS2 ISO", body, GS_UI_TONE_DANGER);
         return;
     }
-    if (info.requires_layer_break) {
+    if (info.requires_layer_break && !info.layer_break_verified) {
         fileXioClose(source.fd);
         free(images);
         hdl_status_wait(
             "DVD9 installation blocked",
-            "The image is valid, but its layer break has not been proven. "
-            "DVD9 remains disabled rather than writing plausible-looking "
-            "garbage to the HDD.",
+            "The image is larger than a single-layer DVD, but no valid "
+            "layer-1 volume descriptor was found where the layer break must "
+            "be. It is refused rather than writing a plausible-looking but "
+            "unbootable game.",
             GS_UI_TONE_WARNING);
         return;
     }
+    if (info.layer_break_verified)
+        session_log_line("HDL DVD9 layer break: layer1_start=%u sectors",
+                         (unsigned int)info.layer1_start);
 
     memset(&transaction, 0, sizeof(transaction));
     transaction.stage = HDL_TRANSACTION_STAGE_PLANNED;
@@ -155,6 +170,7 @@ static HDL_INSTALL_UI_STAGE void begin_new_install(void)
     snprintf(transaction.game_title, sizeof(transaction.game_title), "%s",
              info.volume_title[0] != '\0' ? info.volume_title : info.disc_id);
     transaction.disc_type = info.disc_type;
+    transaction.layer1_start = info.layer1_start;
     if (!info.media_type_confident) {
         result = choose_media_type(info.disc_type);
         if (result < 0) {

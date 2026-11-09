@@ -1001,11 +1001,6 @@ int gs_ui_initialize(void)
     return 0;
 }
 
-int gs_ui_is_ready(void)
-{
-    return renderer_ready;
-}
-
 video_mode_id_t gs_ui_video_mode_current(void)
 {
     return video_mode;

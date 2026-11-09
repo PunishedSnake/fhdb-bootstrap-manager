@@ -166,12 +166,111 @@ static void test_rejects_partial_sector_image(void)
     assert(hdl_iso_probe(&source, &info) == HDL_ISO_IMAGE_SIZE_INVALID);
 }
 
+/*
+ * Sparse DVD9: the first TEST_SECTORS come from a normal fixture, layer 1's
+ * PVD is synthesised at sector LAYER0_SECTORS, everything else reads zero.
+ * 2,295,104 + 1,800,000 sectors is a realistic ~8.4 GB dual-layer image.
+ */
+#define LAYER0_SECTORS 2295104u
+#define DVD9_SECTORS (LAYER0_SECTORS + 1800000u)
+
+typedef struct {
+    fake_iso_t base;
+    unsigned char layer1_pvd[HDL_ISO_SECTOR_SIZE];
+    int fail_layer1;
+} sparse_dvd9_t;
+
+static int sparse_read(void *context, uint64_t offset, void *destination,
+                       size_t size)
+{
+    sparse_dvd9_t *iso = context;
+    unsigned char *out = destination;
+    uint64_t layer1 = (uint64_t)LAYER0_SECTORS * HDL_ISO_SECTOR_SIZE;
+    size_t i;
+
+    if (offset + size > (uint64_t)DVD9_SECTORS * HDL_ISO_SECTOR_SIZE)
+        return -1;
+    if (iso->fail_layer1 && offset < layer1 + HDL_ISO_SECTOR_SIZE &&
+        offset + size > layer1)
+        return -1;
+    for (i = 0; i < size; i++) {
+        uint64_t at = offset + i;
+
+        if (at < iso->base.size)
+            out[i] = iso->base.data[at];
+        else if (at >= layer1 && at < layer1 + HDL_ISO_SECTOR_SIZE)
+            out[i] = iso->layer1_pvd[at - layer1];
+        else
+            out[i] = 0;
+    }
+    return 0;
+}
+
+static void make_dvd9(sparse_dvd9_t *iso)
+{
+    unsigned char *pvd;
+
+    memset(iso, 0, sizeof(*iso));
+    iso->base = valid_iso("BOOT2 = cdrom0:\\SLES_555.55;1\r\n");
+    pvd = iso->base.data + 16 * HDL_ISO_SECTOR_SIZE;
+    memcpy(pvd + 8, "PLAYSTATION", 11);
+    write_le32(pvd + 80, LAYER0_SECTORS);
+    write_be32(pvd + 84, LAYER0_SECTORS);
+    memcpy(iso->layer1_pvd, pvd, HDL_ISO_SECTOR_SIZE);
+    write_le32(iso->layer1_pvd + 80, DVD9_SECTORS - LAYER0_SECTORS + 16u);
+    write_be32(iso->layer1_pvd + 84, DVD9_SECTORS - LAYER0_SECTORS + 16u);
+}
+
+static void test_dvd9_layer_break(void)
+{
+    sparse_dvd9_t iso;
+    hdl_iso_source_t source = {sparse_read, &iso,
+                               (uint64_t)DVD9_SECTORS * HDL_ISO_SECTOR_SIZE};
+    hdl_iso_info_t info;
+
+    make_dvd9(&iso);
+    assert(hdl_iso_probe(&source, &info) == 0);
+    assert(info.requires_layer_break == 1);
+    assert(info.layer_break_verified == 1);
+    assert(info.layer1_start == LAYER0_SECTORS - 16u); /* hdl_dump rule */
+    assert(info.disc_type == 0x14 && info.media_type_confident == 1);
+    assert(strcmp(info.startup, "SLES_555.55") == 0);
+
+    /* No descriptor where the break must be: unproven, installer refuses. */
+    make_dvd9(&iso);
+    memset(iso.layer1_pvd, 0, sizeof(iso.layer1_pvd));
+    assert(hdl_iso_probe(&source, &info) == 0);
+    assert(info.requires_layer_break == 1 && !info.layer_break_verified &&
+           info.layer1_start == 0);
+
+    /* Foreign system identifier on layer 1. */
+    make_dvd9(&iso);
+    memcpy(iso.layer1_pvd + 8, "SOMETHINGELSE", 13);
+    assert(hdl_iso_probe(&source, &info) == 0 && !info.layer_break_verified);
+
+    /* Inconsistent both-endian size. */
+    make_dvd9(&iso);
+    write_be32(iso.layer1_pvd + 84, 1234u);
+    assert(hdl_iso_probe(&source, &info) == 0 && !info.layer_break_verified);
+
+    /* Wrong logical block size. */
+    make_dvd9(&iso);
+    write_le16(iso.layer1_pvd + 128, 512u);
+    assert(hdl_iso_probe(&source, &info) == 0 && !info.layer_break_verified);
+
+    /* A read failure at the break is an error, not "single layer". */
+    make_dvd9(&iso);
+    iso.fail_layer1 = 1;
+    assert(hdl_iso_probe(&source, &info) == HDL_ISO_READ_FAILED);
+}
+
 int main(void)
 {
     test_valid_ps2_iso();
     test_reader_and_pvd_fail_closed();
     test_missing_and_invalid_system_cnf();
     test_rejects_partial_sector_image();
+    test_dvd9_layer_break();
     puts("All HDL ISO inspection tests passed.");
     return 0;
 }

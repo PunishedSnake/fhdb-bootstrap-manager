@@ -80,6 +80,9 @@ typedef struct {
 typedef struct {
     uint32_t total_sectors;
     uint32_t grid_step;
+    /* Direct-grid sweep stops here (APA-Jail fence); == total_sectors on a
+     * pure APA disk. References are still followed up to total_sectors. */
+    uint32_t grid_limit;
     unsigned int grid_reads;
     unsigned int reference_reads;
     unsigned int unreadable_reads;
@@ -139,6 +142,14 @@ int apa_forensic_scan(apa_forensic_read_fn reader, void *reader_context,
                       apa_forensic_progress_fn progress,
                       void *progress_context,
                       apa_forensic_result_t *result);
+
+/* As apa_forensic_scan, but sweep the direct grid only below grid_limit. */
+int apa_forensic_scan_bounded(apa_forensic_read_fn reader,
+                              void *reader_context,
+                              uint32_t total_sectors, uint32_t grid_limit,
+                              apa_forensic_progress_fn progress,
+                              void *progress_context,
+                              apa_forensic_result_t *result);
 
 int apa_forensic_build_repair_plan(const apa_forensic_result_t *result,
                                    unsigned int map_index,

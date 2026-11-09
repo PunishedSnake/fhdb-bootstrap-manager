@@ -2,10 +2,13 @@
 
 #include <string.h>
 
+#include "apa_layout.h"
 #include "boot_chain.h"
 #include "boot_chain_ps2.h"
 #include "boot_diagnostics_ps2.h"
 #include "boot_payload_ps2.h"
+#include "console_profile_ps2.h"
+#include "dev9_fingerprint_ps2.h"
 #include "disk_status_ps2.h"
 #include "storage.h"
 
@@ -25,6 +28,16 @@ static BOOT_DIAG_STAGE void scan_console_identity_stage(boot_chain_info_t *info)
     read_romver(info->romver);
     expected_system_folder(info->romver, info->expected_system_folder,
                            sizeof(info->expected_system_folder));
+}
+
+static BOOT_DIAG_STAGE void scan_hardware_stage(boot_chain_info_t *info)
+{
+    const apa_layout_t *layout = apa_layout_session();
+
+    info->disk_layout = (int)layout->kind;
+    info->jail_fence = layout->kind == APA_LAYOUT_JAIL ? layout->fence_lba : 0;
+    dev9_fingerprint_sample(&info->dev9);
+    console_profile_collect(&info->console);
 }
 
 static BOOT_DIAG_STAGE void scan_active_payload_stage(boot_chain_info_t *info,
@@ -78,6 +91,7 @@ void boot_diagnostics_scan(boot_chain_info_t *info,
                          "rom0:ROMVER / expected system folder");
     disk_status_io(DISK_STATUS_SCAN, 0, 0, 0, 6);
     scan_console_identity_stage(info);
+    scan_hardware_stage(info);
 
     disk_status_phase_at("Inspecting active bootstrap payload",
                          start != 0 && sectors != 0

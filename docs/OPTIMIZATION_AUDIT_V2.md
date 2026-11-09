@@ -480,6 +480,33 @@ input/schedule implementation.
 
 **P1 profiler**, **P2 MMI/assembly experiment**.
 
+### Scalar step taken (0.5.x)
+
+Before any MMI experiment, the scalar kernel was tightened and measured from
+the actual PS2DEV v2.0.0 GCC 15 `-O2` R5900 output (dynamic instructions per
+64-byte block, derived from the disassembly's straight-line and loop trip
+counts):
+
+| Variant | Instr/block | `sha256_transform` size |
+|---|---:|---:|
+| reference loop (0.5.0) | ~5,820 | 2.0 KiB |
+| 8-way unroll | ~4,840 (−17%) | 5.9 KiB |
+| **16-way unroll, constant schedule (current)** | **~3,990 (−31%)** | **7.6 KiB** |
+
+Sources of the saving: no per-round `i < 16` branch; constant schedule
+indices (the reference loop rebuilt four schedule addresses and reloaded its
+counter from the stack every round); no `h=g, g=f, ...` register shuffle;
+3-op `Ch` and 4-op `Maj`. Host x86 throughput rose ~16% (x86 hides most of
+this with native rotates and out-of-order issue; the in-order R5900 cannot).
+
+`optimization_audit.py` now reports the kernel as `>25% I-cache`. That is a
+deliberate trade: while hashing, the per-block working set is this function
+plus `sha256_update`, and the surrounding HDL loop spends its time in IOP RPC
+waits rather than EE code, so refills only occur at chunk boundaries and are
+amortised over thousands of blocks. Hardware cycles/byte (`r5900_perf`) is
+still the deciding measurement; if it shows I-cache misses dominating, fall
+back to the 8-way variant.
+
 ---
 
 # 3. HDL Tools review

@@ -175,11 +175,6 @@ int storage_launch_file_path(char *destination, unsigned int capacity,
     return launch_directory_valid ? 0 : 1;
 }
 
-const char *storage_launch_directory(void)
-{
-    return launch_directory_valid ? launch_directory : NULL;
-}
-
 /* Write all bytes, handling short fileXio transfers correctly. */
 int write_whole_file(const char *path, const void *data, int size)
 {

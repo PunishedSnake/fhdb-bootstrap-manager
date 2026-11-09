@@ -16,11 +16,8 @@ typedef enum {
  * and semantic-location context. Presentation is GS/GIF-DMA backed and
  * intentionally unthrottled: every published event may become a frame.
  */
-void disk_status_begin(const char *operation, const char *phase);
 void disk_status_begin_at(const char *operation, const char *phase,
                           const char *location);
-void disk_status_phase(const char *phase);
-void disk_status_location(const char *location);
 void disk_status_phase_at(const char *phase, const char *location);
 /* Mark the active semantic operation as destructive/write-capable even while
  * it is still performing mandatory validation reads. This keeps the current

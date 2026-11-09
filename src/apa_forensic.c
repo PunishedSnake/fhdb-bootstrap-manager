@@ -697,18 +697,33 @@ int apa_forensic_scan(apa_forensic_read_fn reader, void *reader_context,
                       void *progress_context,
                       apa_forensic_result_t *result)
 {
+    return apa_forensic_scan_bounded(reader, reader_context, total_sectors,
+                                     total_sectors, progress,
+                                     progress_context, result);
+}
+
+int apa_forensic_scan_bounded(apa_forensic_read_fn reader,
+                              void *reader_context,
+                              uint32_t total_sectors, uint32_t grid_limit,
+                              apa_forensic_progress_fn progress,
+                              void *progress_context,
+                              apa_forensic_result_t *result)
+{
     uint32_t lba;
     apa_forensic_map_t candidate;
     forensic_index_t index;
 
     if (reader == NULL || result == NULL || total_sectors < 2)
         return -1;
+    if (grid_limit == 0 || grid_limit > total_sectors)
+        grid_limit = total_sectors;
 
     memset(result, 0, sizeof(*result));
     memset(&index, 0, sizeof(index));
     index.result = result;
     result->total_sectors = total_sectors;
     result->grid_step = APA_FORENSIC_SCAN_STEP;
+    result->grid_limit = grid_limit;
 
     result->grid_reads++;
     (void)add_candidate(&index, reader, reader_context, 0, total_sectors,
@@ -717,15 +732,15 @@ int apa_forensic_scan(apa_forensic_read_fn reader, void *reader_context,
         progress(progress_context, 0, total_sectors, result->node_count);
 
     for (lba = APA_FORENSIC_SCAN_STEP;
-         lba < total_sectors && !result->truncated;
+         lba < grid_limit && !result->truncated;
          lba += APA_FORENSIC_SCAN_STEP) {
         result->grid_reads++;
         (void)add_candidate(&index, reader, reader_context, lba, total_sectors,
                             APA_FORENSIC_EVIDENCE_GRID);
         if (progress != NULL &&
             ((result->grid_reads & 31u) == 0u ||
-             total_sectors - lba <= APA_FORENSIC_SCAN_STEP))
-            progress(progress_context, lba, total_sectors,
+             grid_limit - lba <= APA_FORENSIC_SCAN_STEP))
+            progress(progress_context, lba, grid_limit,
                      result->node_count);
         if (UINT32_MAX - lba < APA_FORENSIC_SCAN_STEP)
             break;
