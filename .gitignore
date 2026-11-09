@@ -49,3 +49,9 @@ Thumbs.db
 /tests/test_hdl_transaction
 /tests/test_ui_font
 /tests/test_ui_layout
+/tests/test_sha256
+/BENCHMARK_PROVENANCE.yml
+/CORPUS_V2_PROJECT_AUDIT.txt
+/GCC_R5900_TARGET.txt
+/OPTIMIZATION_AUDIT.txt
+/PRINTF_FORMAT_AUDIT.txt
