@@ -42,3 +42,10 @@ Thumbs.db
 /hdl_stream.irx
 /hdl_stream.notiopmod*.elf
 /tests/test_dev9_fingerprint
+/tests/test_console_profile
+/tests/generated_spleen_font_data.c
+/tests/test_hdl_iso
+/tests/test_hdl_partition
+/tests/test_hdl_transaction
+/tests/test_ui_font
+/tests/test_ui_layout

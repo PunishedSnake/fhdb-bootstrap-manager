@@ -2,6 +2,7 @@
 #define PS2_HDD_BOOTSTRAP_MANAGER_BOOT_CHAIN_H
 
 #include "capsule_format.h"
+#include "console_profile.h"
 #include "dev9_fingerprint.h"
 
 /* Explicit values keep OSDMenu target evidence stable across host and EE code. */
@@ -51,6 +52,7 @@ typedef struct {
     int disk_layout;          /* apa_layout_kind_t */
     unsigned int jail_fence;  /* APA-Jail fence LBA, 0 when not APA-Jail */
     dev9_fingerprint_t dev9;
+    console_profile_t console;
 } boot_chain_info_t;
 
 /* Portable CNF/config helpers. */

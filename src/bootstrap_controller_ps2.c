@@ -614,9 +614,9 @@ void bootstrap_controller_install(
 
     scr_clear();
     scr_printf("Bootstrap installed, enabled, and verified.\n\n");
-    scr_printf(source_was_presigned ?
-                   "The distributed pre-signed payload was installed.\n" :
-                   "The payload is signed for this console.\n");
+    scr_printf("%s\n", source_was_presigned ?
+                   "The distributed pre-signed payload was installed." :
+                   "The payload is signed for this console.");
     scr_printf("Rescue: %s\n",
                installed_rescue != NULL ? installed_rescue : "not available");
     scr_printf("Remember: its expected partitions must also exist.\n");

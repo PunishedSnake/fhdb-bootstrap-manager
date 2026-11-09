@@ -7,6 +7,7 @@
 #include "boot_chain_ps2.h"
 #include "boot_diagnostics_ps2.h"
 #include "boot_payload_ps2.h"
+#include "console_profile_ps2.h"
 #include "dev9_fingerprint_ps2.h"
 #include "disk_status_ps2.h"
 #include "storage.h"
@@ -36,6 +37,7 @@ static BOOT_DIAG_STAGE void scan_hardware_stage(boot_chain_info_t *info)
     info->disk_layout = (int)layout->kind;
     info->jail_fence = layout->kind == APA_LAYOUT_JAIL ? layout->fence_lba : 0;
     dev9_fingerprint_sample(&info->dev9);
+    console_profile_collect(&info->console);
 }
 
 static BOOT_DIAG_STAGE void scan_active_payload_stage(boot_chain_info_t *info,

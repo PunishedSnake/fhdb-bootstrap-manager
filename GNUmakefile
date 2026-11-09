@@ -8,7 +8,7 @@ include Makefile
 
 EE_OBJS += filexio_fdman_policy_ps2.o printf_policy_ps2.o
 $(EE_BIN): filexio_fdman_policy_ps2.o printf_policy_ps2.o
-EE_LDFLAGS += -Wl,--wrap=snprintf -Wl,--wrap=vsnprintf
+EE_LDFLAGS += -Wl,--wrap=snprintf -Wl,--wrap=vsnprintf -Wl,--wrap=printf
 
 filexio_fdman_policy_ps2.o: src/filexio_fdman_policy_ps2.c
 	$(EE_CC) $(EE_CFLAGS) $(EE_INCS) -c $< -o $@

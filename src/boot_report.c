@@ -79,9 +79,25 @@ unsigned int boot_report_render(char *buffer, unsigned int capacity,
     report_append(buffer, capacity, &length,
                   "CONSOLE\n"
                   "ROMVER: %s\n"
-                  "Expected regional system folder: %s\n\n",
+                  "Expected regional system folder: %s\n",
                   info->romver[0] != '\0' ? info->romver : "unavailable",
                   info->expected_system_folder);
+    if (info->console.collected) {
+        if (info->console.mecha_rc == 0)
+            report_append(buffer, capacity, &length,
+                          "MechaCon: %u.%02u%s%s\n",
+                          info->console.mecha_major, info->console.mecha_minor,
+                          info->console.is_deckard ? " (Deckard)" :
+                          info->console.is_dragon ? " (Dragon)" : "",
+                          info->console.mecha_dex_like ? ", DEX-like" : "");
+        report_append(buffer, capacity, &length,
+                      "Region unlock: %s\n"
+                      "Region policy: %s\n%s",
+                      console_unlock_kind_text(info->console.unlock_kind),
+                      console_profile_policy_text(&info->console),
+                      info->console.is_psx ? "PSX (DESR) ROM: yes\n" : "");
+    }
+    report_append(buffer, capacity, &length, "\n");
     report_append(buffer, capacity, &length,
                   "APA MBR\n"
                   "Header validation: valid\n"

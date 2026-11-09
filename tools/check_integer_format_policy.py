@@ -24,7 +24,7 @@ EXPECTED_OPAQUE = Counter({
     ("src/gs_debug_compat_ps2.c", "gs_ui_console_vprintf", "format"): 2,
     ("src/gs_ui_ps2.c", "vsnprintf", "format"): 1,
     ("src/gs_ui_ps2.c", "gs_ui_console_vprintf", "format"): 1,
-    ("src/printf_policy_ps2.c", "vsniprintf", "format"): 2,
+    ("src/printf_policy_ps2.c", "vsniprintf", "format"): 3,
     ("src/session_log.c", "vsnprintf", "format"): 2,
 })
 
@@ -38,7 +38,7 @@ def app_name_is_safe(root: Path) -> bool:
 
 
 def selftest() -> int:
-    if sum(EXPECTED_OPAQUE.values()) != 10:
+    if sum(EXPECTED_OPAQUE.values()) != 11:
         print("selftest failed: opaque bridge baseline changed", file=sys.stderr)
         return 1
     print("integer formatter policy checker selftest: PASS")

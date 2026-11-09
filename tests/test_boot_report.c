@@ -197,6 +197,8 @@ static int test_bounded_output(void)
 
 static int test_hardware_layout_section(void)
 {
+    static const uint16_t mechapwn_seed[5] = {
+        0x654du, 0x6863u, 0x5061u, 0x6e77u, 0xec00u};
     boot_chain_info_t info;
     char report[BOOT_REPORT_SIZE];
 
@@ -222,9 +224,19 @@ static int test_hardware_layout_section(void)
         !contains(report, "WARNING: PSBBN is installed on a third-party adapter."))
         return 0;
     info.dev9.compat20 = 0x0001u;
+    info.console.collected = 1;
+    snprintf(info.console.romver, sizeof(info.console.romver), "%s",
+             "0250EC20100415");
+    info.console.mecha_version[1] = 6;
+    info.console.mecha_version[2] = 6;
+    memcpy(info.console.nvm_keyseed, mechapwn_seed, sizeof(mechapwn_seed));
+    console_profile_classify(&info.console);
     boot_report_render(report, sizeof(report), &info, 0, 0, "test", "1");
     return contains(report, "HDD adapter: official Sony (SPEED 0x20=0x0001)\n") &&
-           !contains(report, "WARNING: PSBBN is installed");
+           !contains(report, "WARNING: PSBBN is installed") &&
+           contains(report, "MechaCon: 6.06 (Deckard)\n") &&
+           contains(report, "Region unlock: MechaPwn region patch\n") &&
+           contains(report, "Region policy: MechaPwn Deckard CEX;");
 }
 
 int main(void)
