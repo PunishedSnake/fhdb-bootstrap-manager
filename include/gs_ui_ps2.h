@@ -22,7 +22,6 @@ typedef enum {
  * with the complete signal or framebuffer geometry.
  */
 int gs_ui_initialize(void);
-int gs_ui_is_ready(void);
 
 /* Video-mode changes affect this application only. Native mode replays the
  * complete hardware-proven init_scr() GS bootstrap without repeating its

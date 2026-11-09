@@ -36,7 +36,7 @@ The original generated suite contains **30 raw HDD fixtures**.
 | `pointer_before_reserved.raw` | Pointer begins before reserved sector `0x2000` | clear pointer |
 | `pointer_too_large.raw` | Payload exceeds the 4 MiB policy limit | clear pointer |
 | `pointer_outside_mbr.raw` | Payload crosses supplied `__mbr` geometry | clear pointer |
-| `apa_pc_signature_only.raw` | Valid APA plus PC `0x55AA`, no `EFI PART` | blocked by conservative hybrid guard |
+| `apa_pc_signature_only.raw` | Valid APA plus PC `0x55AA`, no `EFI PART`, no APA-Jail magic | blocked: unrecognised hybrid |
 | `hybrid_apa_gpt.raw` | Valid APA plus `0x55AA` and GPT header at LBA 1 | blocked |
 | `gpt_only.raw` | Protective PC MBR and GPT, no APA | blocked |
 | `deterministic_garbage.raw` | Reproducible pseudo-random first 1024 bytes | blocked |
@@ -45,6 +45,18 @@ The original generated suite contains **30 raw HDD fixtures**.
 | `enabled_zeroed_payload.raw` | Active pointer references a zeroed payload | clear pointer |
 | `enabled_partial_overwrite.raw` | Active pointer references a partially overwritten payload | clear pointer |
 | `torn_disable_stale_checksum.raw` | Pointer bytes reached zero but old checksum remained | blocked; ambiguous raw-header damage |
+
+### APA-Jail layout fixtures
+
+Two further images exercise whole-disk layout classification
+(`apa_layout_classify`) in `tests/test_hdd_fixtures.c`. They are not part of
+the 30-image repair matrix: exceptional raw master repair stays blocked on any
+disk carrying a PC signature.
+
+| Fixture | Disk state | Layout result |
+|---|---|---|
+| `apa_jail_a2.raw` | PSBBN-style APA-Jail A2: `APAJ-A2` magic, type-0x17 container, recovery + exFAT PC entries, valid payload | APA-Jail, fence at LBA `0x5800` |
+| `apa_jail_overlap.raw` | Same, but the APA container overlaps the next PC partition | blocked |
 
 The final mounted/deterministic repair-policy split is:
 

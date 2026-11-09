@@ -2,6 +2,54 @@
 
 All notable changes to PS2 HDD Bootstrap Manager are documented here.
 
+## [Unreleased]
+
+### Disk layouts
+
+- Admit APA-Jail type A2 disks (PSBBN Definitive Project / HOSDMenu: APA plus
+  a PC MBR table exposing exFAT) instead of refusing to start. The classifier
+  recognises exactly what the PSBBN installers write ("APAJ-A2" magic at
+  0xE0, type-0x17 APA container, recomputed checksum); real GPT, protective
+  0xEE, unrecognised and overlapping hybrids stay blocked.
+- Treat the first non-container PC partition as an APA "jail fence": HDL free
+  space is clipped at it, any new allocation that ps2hdd places across it is
+  removed before the journal records it, and the forensic grid sweep stops
+  there. Exceptional master repair stays blocked on any PC-signature disk.
+
+### Bootstrap payloads
+
+- Accept OSDMenu MBR's distributed `OSDMBR.XLF` when no `MBR.XIN`/`MBR.XLF`
+  exists, and install it byte-for-byte without a MagicGate step, as the PSBBN
+  installer does.
+- Accept sector-aligned KELFs whose declared content ends in the final sector
+  (kelftool documents that field as non-authoritative); OSDMenu MBR 1.3.0 was
+  previously rejected with `KELF_ERR_FILE_SIZE`.
+- Name byte-identical published payloads in `BOOTCHAIN.TXT` from an exact
+  SHA-256 catalogue (`tools/payload_catalog_entry.py` adds entries).
+
+### HDL Tools
+
+- Install DVD9 images once the layer break is proven from a valid layer-1
+  primary volume descriptor (hdl_dump convention, confirmed against
+  mkps2iso's dual-layer writer); unproven images are still refused.
+
+### Diagnostics
+
+- New `HARDWARE AND LAYOUT` report section: disk layout and fence, DEV9
+  model, read-only SPEED identity and an official/third-party adapter
+  classification, with an explanation when PSBBN sits on a third-party
+  adapter.
+- `CONSOLE` section adds MechaCon revision, DEX/MechaPwn detection and the
+  effective region policy (read-only CDVD queries, ported from PS2 Memory
+  Card Inspector).
+
+### Performance and cleanup
+
+- SHA-256 kernel ~31% fewer R5900 instructions per block (~3,990 vs ~5,820).
+- Library `printf` output is formatted integer-only into `HDDMAN.LOG`,
+  keeping Newlib's floating `vfprintf` out of the ELF (~40 KiB).
+- Removed unreferenced helpers; ignore generated host-test artefacts.
+
 ## [0.5.0] - 2026-09-20
 
 **Codename: Kakehashi (架け橋)**
@@ -11,9 +59,6 @@ guarded HDL-management workflow. The release intentionally ships a single
 conservative internal-HDD implementation for the normal DEV9/ATA + APA/HDL
 stack. Profiling builds and experimental alternate HDD-write optimization
 variants are not included.
-
-### HDL Tools
-
 
 ### HDL Tools
 

@@ -157,29 +157,6 @@ void disk_status_begin_at(const char *operation, const char *phase,
     render(DISK_STATUS_SCAN, 0, 0, 0, 0);
 }
 
-void disk_status_begin(const char *operation, const char *phase)
-{
-    disk_status_begin_at(operation, phase, NULL);
-}
-
-void disk_status_phase(const char *phase)
-{
-    if (status_depth == 0)
-        return;
-    phase_stack[status_depth - 1u] = phase;
-    reset_render_counters();
-    render(DISK_STATUS_SCAN, 0, 0, 0, 0);
-}
-
-void disk_status_location(const char *location)
-{
-    if (status_depth == 0)
-        return;
-    location_stack[status_depth - 1u] = location;
-    reset_render_counters();
-    render(DISK_STATUS_SCAN, 0, 0, 0, 0);
-}
-
 void disk_status_phase_at(const char *phase, const char *location)
 {
     if (status_depth == 0)

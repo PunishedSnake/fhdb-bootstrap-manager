@@ -52,8 +52,9 @@ have received real-console validation, but a complete installation matrix is
 not yet claimed.
 
 The installer deliberately fails closed on unsupported or ambiguous inputs.
-DVD9 layer-break handling, split FAT32 ISO sets and directory recursion are not
-implemented. A newly installed title should be treated as test data until its
+DVD9 images install only when their layer break is proven from a valid
+layer-1 volume descriptor. Split FAT32 ISO sets and directory recursion are
+not implemented. A newly installed title should be treated as test data until its
 partition layout, metadata and OPL boot have been verified on the target
 hardware.
 
@@ -71,7 +72,7 @@ HDD-write/materialized benchmark variants.
 
 ## Important recovery disclaimer
 
-**Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.4.3.**
+**Read-only diagnostics, backups, forensic scanning, report generation, UI safety gates, and the normal bootstrap workflows have received substantial real-console validation. Exceptional raw metadata repair remains experimental in 0.5.x.**
 
 Experimental paths include:
 
@@ -101,13 +102,13 @@ A 1024-byte header backup preserves metadata but not the program referenced by t
 ## Main features
 
 - Validates the complete 1024-byte APA `__mbr` master header and checksum.
-- Rejects hybrid/protective APA/GPT layouts on write-capable paths.
+- Supports APA-Jail (PSBBN Definitive / HOSDMenu APA + exFAT) disks and keeps every APA allocation below the jail fence; real GPT/protective and unrecognised hybrid layouts remain blocked.
 - Creates non-overwriting verified header backups and full rescue capsules.
 - Restores full payloads before exposing their OSD pointer.
 - Disables only the HDD bootstrap pointer through `HDIOC_SETOSDMBR(0,0)`.
 - Restores compatible `HDDMBR*.BIN` and legacy `FHDBMBR*.BIN` pointer backups.
 - Structurally validates and MagicGate-signs stock MBR KELFs.
-- Prefers `MBR.XIN` and accepts historical `MBR.XLF` as a compatibility fallback.
+- Prefers `MBR.XIN`, accepts historical `MBR.XLF`, and installs OSDMenu's pre-signed `OSDMBR.XLF` as distributed when neither exists.
 - Writes normal bootstrap payloads only inside the reserved `__mbr` program area beginning at sector `0x2000`.
 - Produces `HDDMAN.LOG` and `BOOTCHAIN.TXT` diagnostics.
 - Fingerprints sector images and unpadded KELFs with SHA-256.
@@ -414,6 +415,11 @@ mass:/MBR.XLF
 
 If both names are present, `MBR.XIN` wins. USB has no MagicGate hardware, so an authentic PS2 memory card in `mc0` or `mc1` is required for signing.
 
+OSDMenu MBR is distributed already signed as `OSDMBR.XLF`. When no
+`MBR.XIN`/`MBR.XLF` is present, the manager uses `OSDMBR.XLF` from the same
+device and installs it byte-for-byte, exactly as the PSBBN Definitive
+installer does; no memory card is needed for that path.
+
 ## Recovering from an FHDB boot loop
 
 For the classic stale-pointer boot loop, first make the console capable of reaching homebrew with the HDD connected. In Free McBoot Configurator enable:
@@ -496,8 +502,8 @@ make test-host
 GitHub Actions builds the stripped release ELF using `ps2dev/ps2dev:v2.0.0`, produces SHA-256, and publishes:
 
 ```text
-PS2_HDD_BOOTSTRAP_MANAGER-0.4.3.zip
-PS2_HDD_BOOTSTRAP_MANAGER-0.4.3.ELF
+PS2_HDD_BOOTSTRAP_MANAGER-<version>.zip
+PS2_HDD_BOOTSTRAP_MANAGER-<version>.ELF
 SHA256SUMS.txt
 HDDMAN.CFG
 ```
